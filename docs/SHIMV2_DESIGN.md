@@ -2,7 +2,9 @@
 
 ## Overview
 
-This document outlines the implementation plan for containerd Runtime v2 API (shim protocol) support in Reaper, enabling Kubernetes integration.
+This document outlines the implementation plan for containerd Runtime v2 API (shim protocol) support in Reaper, enabling Kubernetes integration for **command execution on the host system**.
+
+**Important Clarification:** Reaper does not create traditional containers. Instead, it executes commands directly on the Kubernetes cluster nodes, providing a lightweight alternative to full containerization for specific use cases.
 
 ## Background
 
@@ -11,43 +13,44 @@ This document outlines the implementation plan for containerd Runtime v2 API (sh
 The containerd Runtime v2 API is the interface between:
 - **containerd** (Kubernetes container runtime)
 - **Container runtime shim** (our code)
-- **Low-level runtime** (our reaper-runtime binary)
+- **Command executor** (reaper-runtime running commands on host)
 
 ```
-Kubernetes → CRI → containerd → [Shim v2 API] → reaper-shim → reaper-runtime
+Kubernetes → CRI → containerd → [Shim v2 API] → reaper-shim → host command execution
 ```
 
 ### Why Do We Need It?
 
 Without shim v2:
-- ❌ Kubernetes can't communicate with reaper
-- ❌ No pod lifecycle management
-- ❌ No container status reporting
+- ❌ Kubernetes can't execute commands via reaper
+- ❌ No process lifecycle management
+- ❌ No command output streaming
 
 With shim v2:
-- ✅ Kubernetes can create/start/stop containers
-- ✅ Stream logs and exec into containers
-- ✅ Monitor container health
-- ✅ Full pod lifecycle support
+- ✅ Kubernetes can run/start/stop commands
+- ✅ Stream command output and exec into running processes
+- ✅ Monitor command execution status
+- ✅ Full process lifecycle support
 
 ## Architecture Options
 
-### Option 1: Separate Shim Binary (Recommended)
+### Option 1: Direct Command Execution (Recommended)
 
 ```
-containerd-shim-reaper-v2    ← New binary
+containerd-shim-reaper-v2    ← Shim binary
     ↓
-reaper-runtime               ← Existing binary
+Direct command execution     ← Host system commands
 ```
 
 **Pros:**
-- Clean separation of concerns
-- Follows containerd conventions
-- Easier to debug
-- Standard approach (runc, kata, etc.)
+- No container overhead
+- Direct host access for commands
+- Simpler implementation
+- Faster execution
 
 **Cons:**
-- Need to manage two binaries
+- No isolation (by design)
+- Host system dependencies
 
 ### Option 2: Integrated Shim
 
@@ -156,13 +159,20 @@ service Task {
 ### Milestone 3: Process Management
 
 **Tasks:**
-- [ ] Implement `Connect` - reconnect to existing shim (basic version exists)
-- [ ] Add event publishing (container start/stop/exit)
-- [ ] Handle stdout/stderr streaming
-- [ ] Improve `Pids` implementation
-- [ ] Add proper process monitoring in `Wait`
+- [ ] Modify `create` to parse command configuration instead of OCI bundles
+- [ ] Implement direct command execution in `start` (no reaper-runtime subprocess)
+- [ ] Add proper process monitoring in `Wait` with actual exit codes
+- [ ] Implement stdout/stderr streaming to containerd
+- [ ] Add event publishing for command lifecycle events
+- [ ] Improve `Pids` to return actual running process IDs
 
-**Deliverable:** Full process monitoring
+**Deliverable:** Full command execution and monitoring
+
+**Key Changes:**
+- Remove dependency on reaper-runtime binary for execution
+- Parse command config directly from bundle/config.json
+- Execute commands directly using tokio::process::Command
+- Stream output via containerd's stdio mechanisms
 
 ### Milestone 4: Advanced Features
 
@@ -239,27 +249,49 @@ impl Shim for ReaperShim {
 
 ### Task Service Implementation
 
-Core lifecycle methods call `reaper-runtime` as subprocess:
+Instead of calling reaper-runtime as subprocess, execute commands directly:
 
 ```rust
 async fn create(&self, _ctx: &TtrpcContext, req: api::CreateTaskRequest) -> TtrpcResult<api::CreateTaskResponse> {
-    // Call reaper-runtime create
-    let output = Command::new("reaper-runtime")
-        .arg("create")
-        .arg(&req.id)
-        .arg(&req.bundle)
-        .env("REAPER_RUNTIME_ROOT", "/run/reaper")
-        .output()
-        .await?;
+    // Parse command config from bundle/config.json
+    let config_path = Path::new(&req.bundle).join("config.json");
+    let config: CommandConfig = serde_json::from_reader(File::open(config_path)?)?;
 
-    // Store container metadata
-    let container_info = ContainerInfo {
+    // Store command info
+    let command_info = CommandInfo {
         id: req.id.clone(),
         bundle: req.bundle.clone(),
+        command: config.command,
+        args: config.args,
+        env: config.env,
         pid: None,
-        status: ContainerStatus::Created,
+        status: CommandStatus::Created,
+        child: None,
     };
     // ... store in HashMap
+}
+```
+
+### Direct Command Execution
+
+```rust
+async fn start(&self, _ctx: &TtrpcContext, req: api::StartRequest) -> TtrpcResult<api::StartResponse> {
+    let mut command_info = self.get_command_info(&req.id)?;
+
+    // Execute command directly
+    let mut child = Command::new(&command_info.command)
+        .args(&command_info.args)
+        .envs(command_info.env.iter().cloned())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let pid = child.id();
+    command_info.pid = Some(pid);
+    command_info.status = CommandStatus::Running;
+    command_info.child = Some(child);
+
+    // ... update stored info
 }
 ```
 
@@ -267,15 +299,19 @@ async fn create(&self, _ctx: &TtrpcContext, req: api::CreateTaskRequest) -> Ttrp
 
 ```rust
 #[derive(Debug, Clone)]
-struct ContainerInfo {
+struct CommandInfo {
     id: String,
     bundle: String,
+    command: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
     pid: Option<u32>,
-    status: ContainerStatus,
+    status: CommandStatus,
+    child: Option<tokio::process::Child>,
 }
 
 #[derive(Debug, Clone)]
-enum ContainerStatus {
+enum CommandStatus {
     Created,
     Running,
     Stopped,
@@ -304,7 +340,7 @@ tracing-subscriber = "0.3"
 ### System Dependencies
 
 - containerd (for testing)
-- Existing `reaper-runtime` binary (no changes needed)
+- Direct command execution (no reaper-runtime binary needed)
 
 ## Testing Strategy
 
@@ -331,18 +367,18 @@ tracing-subscriber = "0.3"
 
 ### ✅ Resolved
 
-1. **Protobuf Generation:** Using `containerd-shim-protos` crate eliminates need for manual protobuf compilation
-2. **TTRPC Setup:** `containerd-shim` crate provides excellent high-level abstractions
-3. **Async Implementation:** Tokio + async-trait works perfectly for shim requirements
-4. **State Management:** Simple HashMap approach sufficient for core lifecycle
+1. **Command Configuration:** Use simplified config.json format for command specification
+2. **Direct Execution:** Tokio process spawning works perfectly for command execution
+3. **State Management:** Simple HashMap approach sufficient for command tracking
+4. **Shim Integration:** containerd-shim crate provides excellent abstractions
 
 ### 🔄 Still Open
 
-1. **Stdio Handling:** How to stream stdout/stderr from reaper-runtime to containerd?
-   - **Current:** Not implemented (containers run with inherited stdio)
-   - **Options:** Named pipes, Unix domain sockets, or modify reaper-runtime to support `--console-socket`
+1. **Stdio Handling:** How to stream command stdout/stderr to containerd?
+   - **Current:** Not implemented (commands run with piped stdio)
+   - **Options:** Use containerd's stdio forwarding mechanisms
 
-2. **Event Publishing:** How to notify containerd of container events?
+2. **Event Publishing:** How to notify containerd of command lifecycle events?
    - **Current:** No event publishing implemented
    - **Need:** Implement containerd event format and publish to event stream
 
@@ -350,13 +386,28 @@ tracing-subscriber = "0.3"
    - **Current:** Simplified placeholder implementation
    - **Need:** Actual process waiting and exit code reporting
 
-4. **Reaper-runtime Integration:** 
-   - **Current:** Works with existing binary, but may need enhancements for:
-     - Console socket support for terminal handling
-     - Better exit code reporting
-     - Stdio redirection
+4. **Command Configuration Format:**
+   - **Current:** Need to define config.json format for commands
+   - **Need:** Specify command, args, env, working directory, etc.
 
-### 🎯 Key Insights
+### Command Configuration Format
+
+For direct command execution, use a simplified config.json:
+
+```json
+{
+  "command": "/bin/echo",
+  "args": ["hello", "world"],
+  "env": ["PATH=/usr/bin", "HOME=/tmp"],
+  "cwd": "/tmp",
+  "user": {
+    "uid": 1000,
+    "gid": 1000
+  }
+}
+```
+
+This replaces the full OCI runtime spec with a minimal command specification.
 
 - **Shim crate is excellent:** `containerd-shim` provides perfect abstractions
 - **Separate binary approach validated:** Clean separation, follows standards
@@ -376,19 +427,21 @@ tracing-subscriber = "0.3"
 **Current Status:** Milestones 1 & 2 completed ✅
 
 **Immediate Next Steps:**
-1. **Milestone 3: Process Management**
-   - Implement proper `Wait` method with actual process monitoring
-   - Add event publishing for container lifecycle events
-   - Handle stdout/stderr streaming from reaper-runtime
-   - Improve `Pids` implementation with real process listing
+1. **Milestone 3: Command Execution**
+   - Define simplified config.json format for command specification
+   - Modify `create` method to parse command config instead of calling reaper-runtime
+   - Implement direct command execution in `start` using tokio::process::Command
+   - Enhance `Wait` method with proper process monitoring and actual exit codes
+   - Add stdout/stderr streaming to containerd
+   - Implement event publishing for command lifecycle events
 
 2. **Testing & Validation**
    - Test shim with actual containerd (manual testing)
-   - Create integration tests with real OCI bundles
-   - Verify end-to-end container lifecycle
+   - Create integration tests with command bundles
+   - Verify end-to-end command execution lifecycle
 
 3. **Milestone 4: Advanced Features**
-   - Implement `Exec` for running commands in containers
+   - Implement `Exec` for running additional commands in running processes
    - Add `Stats` for resource usage monitoring
    - Implement terminal handling (`ResizePty`)
 
@@ -397,4 +450,4 @@ tracing-subscriber = "0.3"
    - Test with minikube/kind cluster
    - Full pod lifecycle validation
 
-**Architecture Decision Confirmed:** ✅ Separate shim binary approach working well
+**Architecture Decision Confirmed:** ✅ Direct command execution approach

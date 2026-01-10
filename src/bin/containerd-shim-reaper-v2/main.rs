@@ -6,6 +6,7 @@ use containerd_shim::{
 use containerd_shim_protos::{
     api, api::DeleteResponse, shim_async::Task, ttrpc::r#async::TtrpcContext,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::process::Command;
@@ -15,19 +16,36 @@ use tracing_subscriber::EnvFilter;
 #[derive(Clone)]
 struct ReaperShim {
     exit: Arc<ExitSignal>,
-    containers: Arc<Mutex<HashMap<String, ContainerInfo>>>,
+    commands: Arc<Mutex<HashMap<String, CommandInfo>>>,
 }
 
-#[derive(Debug, Clone)]
-struct ContainerInfo {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CommandConfig {
+    command: String,
+    args: Vec<String>,
+    env: Vec<String>,
+    cwd: Option<String>,
+    user: Option<UserConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UserConfig {
+    uid: u32,
+    gid: u32,
+}
+
+#[derive(Debug)]
+struct CommandInfo {
     id: String,
     bundle: String,
+    config: CommandConfig,
     pid: Option<u32>,
-    status: ContainerStatus,
+    status: CommandStatus,
+    child: Option<tokio::process::Child>,
 }
 
 #[derive(Debug, Clone)]
-enum ContainerStatus {
+enum CommandStatus {
     Created,
     Running,
     Stopped,
@@ -40,7 +58,7 @@ impl Shim for ReaperShim {
     async fn new(_runtime_id: &str, _args: &Flags, _config: &mut Config) -> Self {
         ReaperShim {
             exit: Arc::new(ExitSignal::default()),
-            containers: Arc::new(Mutex::new(HashMap::new())),
+            commands: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -60,14 +78,14 @@ impl Shim for ReaperShim {
 
     async fn create_task_service(&self, _publisher: RemotePublisher) -> Self::T {
         ReaperTask {
-            containers: self.containers.clone(),
+            commands: self.commands.clone(),
         }
     }
 }
 
 #[derive(Clone)]
 struct ReaperTask {
-    containers: Arc<Mutex<HashMap<String, ContainerInfo>>>,
+    commands: Arc<Mutex<HashMap<String, CommandInfo>>>,
 }
 
 #[async_trait::async_trait]
@@ -77,44 +95,39 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::CreateTaskRequest,
     ) -> TtrpcResult<api::CreateTaskResponse> {
-        info!("create called for container: {}", req.id);
+        info!("create called for command: {}", req.id);
 
-        // Call reaper-runtime create
-        let output = Command::new("reaper-runtime")
-            .arg("create")
-            .arg(&req.id)
-            .arg(&req.bundle)
-            .env("REAPER_RUNTIME_ROOT", "/run/reaper")
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime create: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to create container: {}", e),
-                ))
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::error!("reaper-runtime create failed: {}", stderr);
-            return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+        // Parse command config from bundle/config.json
+        let config_path = std::path::Path::new(&req.bundle).join("config.json");
+        let config_content = tokio::fs::read_to_string(&config_path).await.map_err(|e| {
+            tracing::error!("Failed to read config.json: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
                 ttrpc::Code::INTERNAL,
-                format!("Container creation failed: {}", stderr),
-            )));
-        }
+                format!("Failed to read config.json: {}", e),
+            ))
+        })?;
 
-        // Store container info
-        let container_info = ContainerInfo {
+        let config: CommandConfig = serde_json::from_str(&config_content).map_err(|e| {
+            tracing::error!("Failed to parse config.json: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to parse config.json: {}", e),
+            ))
+        })?;
+
+        // Store command info
+        let command_info = CommandInfo {
             id: req.id.clone(),
             bundle: req.bundle.clone(),
+            config,
             pid: None,
-            status: ContainerStatus::Created,
+            status: CommandStatus::Created,
+            child: None,
         };
 
         {
-            let mut containers = self.containers.lock().unwrap();
-            containers.insert(req.id.clone(), container_info);
+            let mut commands = self.commands.lock().unwrap();
+            commands.insert(req.id.clone(), command_info);
         }
 
         let mut resp = api::CreateTaskResponse::new();
@@ -127,48 +140,62 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::StartRequest,
     ) -> TtrpcResult<api::StartResponse> {
-        info!("start called for container: {}", req.id);
+        info!("start called for command: {}", req.id);
 
-        // Call reaper-runtime start
-        let output = Command::new("reaper-runtime")
-            .arg("start")
-            .arg(&req.id)
-            .env("REAPER_RUNTIME_ROOT", "/run/reaper")
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime start: {}", e);
+        // Get and update command info
+        {
+            let mut commands = self.commands.lock().unwrap();
+            let command_info = commands.get_mut(&req.id).ok_or_else(|| {
                 ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to start container: {}", e),
+                    ttrpc::Code::NOT_FOUND,
+                    format!("Command {} not found", req.id),
                 ))
             })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::error!("reaper-runtime start failed: {}", stderr);
-            return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
-                ttrpc::Code::INTERNAL,
-                format!("Container start failed: {}", stderr),
-            )));
-        }
+            // Execute command directly
+            let mut cmd = Command::new(&command_info.config.command);
+            cmd.args(&command_info.config.args);
 
-        // Parse PID from output (assuming reaper-runtime prints PID)
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let pid: u32 = stdout.trim().parse().unwrap_or(0);
-
-        // Update container info
-        {
-            let mut containers = self.containers.lock().unwrap();
-            if let Some(container) = containers.get_mut(&req.id) {
-                container.pid = Some(pid);
-                container.status = ContainerStatus::Running;
+            // Set environment variables
+            for env_var in &command_info.config.env {
+                if let Some((key, value)) = env_var.split_once('=') {
+                    cmd.env(key, value);
+                }
             }
-        }
 
-        let mut resp = api::StartResponse::new();
-        resp.set_pid(pid);
-        Ok(resp)
+            // Set working directory
+            if let Some(cwd) = &command_info.config.cwd {
+                cmd.current_dir(cwd);
+            }
+
+            // Set up stdio
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+
+            let child = cmd.spawn().map_err(|e| {
+                tracing::error!("Failed to spawn command: {}", e);
+                ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::INTERNAL,
+                    format!("Failed to spawn command: {}", e),
+                ))
+            })?;
+
+            let pid = child.id().ok_or_else(|| {
+                ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::INTERNAL,
+                    "Failed to get child process ID".to_string(),
+                ))
+            })?;
+
+            // Update command info
+            command_info.pid = Some(pid);
+            command_info.status = CommandStatus::Running;
+            command_info.child = Some(child);
+
+            let mut resp = api::StartResponse::new();
+            resp.set_pid(pid);
+            Ok(resp)
+        }
     }
 
     async fn delete(
@@ -176,73 +203,74 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::DeleteRequest,
     ) -> TtrpcResult<api::DeleteResponse> {
-        info!("delete called for container: {}", req.id);
+        info!("delete called for command: {}", req.id);
 
-        // Call reaper-runtime delete
-        let output = Command::new("reaper-runtime")
-            .arg("delete")
-            .arg(&req.id)
-            .env("REAPER_RUNTIME_ROOT", "/run/reaper")
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime delete: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to delete container: {}", e),
-                ))
-            })?;
+        // Get command info
+        let child = {
+            let mut commands = self.commands.lock().unwrap();
+            if let Some(command_info) = commands.get_mut(&req.id) {
+                command_info.child.take() // Take ownership of the child
+            } else {
+                return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::NOT_FOUND,
+                    format!("Command {} not found", req.id),
+                )));
+            }
+        };
 
-        let exit_status = output.status.code().unwrap_or(0);
+        // Wait for child process if it exists
+        let exit_status = if let Some(mut child) = child {
+            match child.wait().await {
+                Ok(status) => status.code().unwrap_or(0),
+                Err(_) => 0,
+            }
+        } else {
+            0
+        };
 
-        // Remove from our tracking
+        // Remove from tracking
         {
-            let mut containers = self.containers.lock().unwrap();
-            containers.remove(&req.id);
+            let mut commands = self.commands.lock().unwrap();
+            commands.remove(&req.id);
         }
 
         let mut resp = api::DeleteResponse::new();
-        resp.set_pid(0); // We don't track the reaper-runtime PID
+        resp.set_pid(0);
         resp.set_exit_status(exit_status as u32);
         Ok(resp)
     }
 
     async fn kill(&self, _ctx: &TtrpcContext, req: api::KillRequest) -> TtrpcResult<api::Empty> {
-        info!(
-            "kill called for container: {} signal: {}",
-            req.id, req.signal
-        );
+        info!("kill called for command: {} signal: {}", req.id, req.signal);
 
-        // Call reaper-runtime kill
-        let output = Command::new("reaper-runtime")
-            .arg("kill")
-            .arg(&req.id)
-            .arg(req.signal.to_string())
-            .env("REAPER_RUNTIME_ROOT", "/run/reaper")
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime kill: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to kill container: {}", e),
-                ))
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::error!("reaper-runtime kill failed: {}", stderr);
-            return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
-                ttrpc::Code::INTERNAL,
-                format!("Container kill failed: {}", stderr),
-            )));
-        }
-
-        // Update status
+        // Send signal to child process
         {
-            let mut containers = self.containers.lock().unwrap();
-            if let Some(container) = containers.get_mut(&req.id) {
-                container.status = ContainerStatus::Stopped;
+            let commands = self.commands.lock().unwrap();
+            if let Some(command_info) = commands.get(&req.id) {
+                if let Some(pid) = command_info.pid {
+                    // Send signal to process
+                    use nix::sys::signal::{kill, Signal};
+                    use nix::unistd::Pid;
+
+                    let signal = match req.signal {
+                        9 => Signal::SIGKILL,
+                        15 => Signal::SIGTERM,
+                        _ => Signal::SIGTERM, // Default to SIGTERM
+                    };
+
+                    if let Err(e) = kill(Pid::from_raw(pid as i32), signal) {
+                        tracing::error!("Failed to send signal to process {}: {}", pid, e);
+                        return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+                            ttrpc::Code::INTERNAL,
+                            format!("Failed to kill process: {}", e),
+                        )));
+                    }
+                }
+            } else {
+                return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::NOT_FOUND,
+                    format!("Command {} not found", req.id),
+                )));
             }
         }
 
@@ -254,14 +282,36 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::WaitRequest,
     ) -> TtrpcResult<api::WaitResponse> {
-        info!("wait called for container: {}", req.id);
+        info!("wait called for command: {}", req.id);
 
-        // For now, just return success - in a real implementation we'd wait for the process
-        // This is a simplified version for the milestone
-        let exit_status = 0;
+        // Take the child process to wait on
+        let child = {
+            let mut commands = self.commands.lock().unwrap();
+            if let Some(command_info) = commands.get_mut(&req.id) {
+                command_info.child.take()
+            } else {
+                return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::NOT_FOUND,
+                    format!("Command {} not found", req.id),
+                )));
+            }
+        };
+
+        // Wait for the child process to exit
+        let exit_status = if let Some(mut child) = child {
+            match child.wait().await {
+                Ok(status) => status.code().unwrap_or(0),
+                Err(e) => {
+                    tracing::error!("Failed to wait for process: {}", e);
+                    0
+                }
+            }
+        } else {
+            0
+        };
 
         let mut resp = api::WaitResponse::new();
-        resp.set_exit_status(exit_status);
+        resp.set_exit_status(exit_status as u32);
         Ok(resp)
     }
 
@@ -270,20 +320,20 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::StateRequest,
     ) -> TtrpcResult<api::StateResponse> {
-        info!("state called for container: {}", req.id);
+        info!("state called for command: {}", req.id);
 
-        let containers = self.containers.lock().unwrap();
-        let container = containers.get(&req.id);
+        let commands = self.commands.lock().unwrap();
+        let command = commands.get(&req.id);
 
         let mut resp = api::StateResponse::new();
-        if let Some(container) = container {
-            resp.id = container.id.clone();
-            resp.bundle = container.bundle.clone();
-            resp.pid = container.pid.unwrap_or(0);
-            resp.status = match container.status {
-                ContainerStatus::Created => ::protobuf::EnumOrUnknown::new(api::Status::CREATED),
-                ContainerStatus::Running => ::protobuf::EnumOrUnknown::new(api::Status::RUNNING),
-                ContainerStatus::Stopped => ::protobuf::EnumOrUnknown::new(api::Status::STOPPED),
+        if let Some(command) = command {
+            resp.id = command.id.clone();
+            resp.bundle = command.bundle.clone();
+            resp.pid = command.pid.unwrap_or(0);
+            resp.status = match command.status {
+                CommandStatus::Created => ::protobuf::EnumOrUnknown::new(api::Status::CREATED),
+                CommandStatus::Running => ::protobuf::EnumOrUnknown::new(api::Status::RUNNING),
+                CommandStatus::Stopped => ::protobuf::EnumOrUnknown::new(api::Status::STOPPED),
             };
         } else {
             resp.id = req.id;
@@ -298,14 +348,14 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::PidsRequest,
     ) -> TtrpcResult<api::PidsResponse> {
-        info!("pids called for container: {}", req.id);
+        info!("pids called for command: {}", req.id);
 
-        let containers = self.containers.lock().unwrap();
-        let container = containers.get(&req.id);
+        let commands = self.commands.lock().unwrap();
+        let command = commands.get(&req.id);
 
         let mut resp = api::PidsResponse::new();
-        if let Some(container) = container {
-            if let Some(pid) = container.pid {
+        if let Some(command) = command {
+            if let Some(pid) = command.pid {
                 let mut process = api::ProcessInfo::new();
                 process.pid = pid;
                 resp.processes.push(process);
