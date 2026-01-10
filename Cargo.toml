@@ -20,6 +20,8 @@ tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 ttrpc = "0.8"
 protobuf = "3.3"
+containerd-shim = { version = "0.10", features = ["async", "tracing"] }
+containerd-shim-protos = { version = "0.10", features = ["async"] }
 
 [dev-dependencies]
 tempfile = "3"

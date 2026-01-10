@@ -174,13 +174,13 @@ use containerd_shim_protos::shim::TaskService;
 
 fn main() -> Result<()> {
     let task_service = Box::new(TaskServiceImpl::new());
-    
+
     let mut server = Server::new()
         .bind("unix:///run/containerd/reaper.sock")?
         .register_service(task_service);
-    
+
     server.start()?;
-    
+
     // Handle signals, wait for shutdown
     Ok(())
 }
@@ -201,11 +201,11 @@ fn create_container(id: &str, bundle: &Path) -> Result<()> {
         .arg("--bundle")
         .arg(bundle)
         .output()?;
-    
+
     if !output.status.success() {
         bail!("create failed: {}", String::from_utf8_lossy(&output.stderr));
     }
-    
+
     Ok(())
 }
 ```
