@@ -1,0 +1,9 @@
+# Containerd configuration snippet for Reaper runtime
+# Add this to /etc/containerd/config.toml on Kubernetes nodes
+
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
+runtime_type = "io.containerd.reaper.v2"
+# The shim binary should be installed at /usr/local/bin/containerd-shim-reaper-v2
+# or adjust the path as needed
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2.options]
+BinaryName = "/usr/local/bin/containerd-shim-reaper-v2"
