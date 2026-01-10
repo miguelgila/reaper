@@ -8,12 +8,24 @@ repository = "https://github.com/miguelgi/reaper"
 license = "MIT"
 
 [dependencies]
+anyhow = "1"
+thiserror = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nix = { version = "0.28", features = ["signal", "process"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 
 [dev-dependencies]
 
 [[bin]]
 name = "reaper"
 path = "src/main.rs"
+
+[[bin]]
+name = "reaper-runtime"
+path = "src/bin/reaper-runtime.rs"
 
 [profile.release]
 opt-level = 3
