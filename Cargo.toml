@@ -16,6 +16,10 @@ serde_json = "1"
 nix = { version = "0.28", features = ["signal", "process", "user"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+ttrpc = "0.8"
+protobuf = "3.3"
 
 [dev-dependencies]
 tempfile = "3"
@@ -28,6 +32,10 @@ path = "src/main.rs"
 [[bin]]
 name = "reaper-runtime"
 path = "src/bin/reaper-runtime/main.rs"
+
+[[bin]]
+name = "containerd-shim-reaper-v2"
+path = "src/bin/containerd-shim-reaper-v2/main.rs"
 
 [profile.release]
 opt-level = 3
