@@ -241,9 +241,11 @@ handler: reaper
 
 **User/Group ID Management (Security-Critical)**:
 - Parse `process.user.uid`, `process.user.gid`, `process.user.additionalGids`, `process.user.umask` from config.json
-- Drop privileges before executing target process using `setuid()`/`setgid()`/`setgroups()`
-- Without this, all processes run as the runtime's effective user (typically root) — a security risk
-- Example config.json:
+- Set process credentials before exec using `setuid()`/`setgid()`/`setgroups()`
+- **OCI allows root processes** — `uid: 0` is valid; runtime must call `setuid(0)` if specified
+- ⚠️ **Security concern**: Without user namespaces, `uid: 0` = actual host root (full privileges)
+- Without explicit uid/gid handling, processes inherit runtime's effective UID
+- Example config.json (non-root):
   ```json
   {
     "process": {
@@ -252,6 +254,18 @@ handler: reaper
         "gid": 1000,
         "additionalGids": [100, 101],
         "umask": 22
+      },
+      "args": ["/bin/sh"]
+    }
+  }
+  ```
+- Example config.json (root):
+  ```json
+  {
+    "process": {
+      "user": {
+        "uid": 0,
+        "gid": 0
       },
       "args": ["/bin/sh"]
     }
