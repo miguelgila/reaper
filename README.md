@@ -207,7 +207,10 @@ To test with Kubernetes:
 cargo build --release --bin containerd-shim-reaper-v2
 sudo cp target/release/containerd-shim-reaper-v2 /usr/local/bin/
 
-# Configure containerd and Kubernetes (see kubernetes/README.md)
+# Run end-to-end integration test (requires kind/minikube)
+./scripts/test-k8s-integration.sh
+
+# Or manual setup (see kubernetes/README.md)
 kubectl apply -f kubernetes/runtimeclass.yaml
 kubectl logs -f reaper-example
 ```

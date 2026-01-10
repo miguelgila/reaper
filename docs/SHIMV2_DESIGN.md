@@ -355,26 +355,37 @@ tracing-subscriber = "0.3"
 - Verify correct reaper-runtime invocations
 - Test state transitions
 
-### Integration Tests
-
-- Real TTRPC server/client
-- End-to-end container lifecycle
-- Test with actual OCI bundles
-
-### Shim Integration Tests
+### Component Integration Tests
 
 - **tests/integration_shim.rs**: 7 tests validating shim binary and bundle creation
   - Binary existence and basic execution validation
   - Valid bundle creation with various user configurations
   - Invalid bundle detection (missing/malformed config.json)
-- Validates config.json parsing and bundle structure
+- **Purpose**: Validate shim components work correctly in isolation
+- **Scope**: Local testing, no Kubernetes cluster required
 
-### Kubernetes Tests
+### End-to-End Kubernetes Integration Tests
 
-- Deploy to minikube/kind
-- Create pods with reaper runtime
-- Verify pod lifecycle
-- Test exec, logs, port-forwarding
+- **scripts/test-k8s-integration.sh**: Complete integration test with real Kubernetes cluster
+- **Requirements**: kind/minikube cluster, containerd configuration
+- **Coverage**:
+  - Shim binary deployment to cluster nodes
+  - containerd runtime registration
+  - RuntimeClass creation
+  - Pod creation with reaper runtime
+  - Command execution verification
+  - Log collection and validation
+- **Purpose**: Validate complete end-to-end functionality in Kubernetes environment
+
+### Running Integration Tests
+
+```bash
+# Component tests (fast, local)
+cargo test --test integration_shim
+
+# End-to-end Kubernetes test (requires cluster)
+./scripts/test-k8s-integration.sh
+```
 
 ## Open Questions & Lessons Learned
 
