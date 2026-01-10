@@ -44,7 +44,7 @@ struct CommandInfo {
     child: Option<tokio::process::Child>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum CommandStatus {
     Created,
     Running,
@@ -374,6 +374,108 @@ impl Task for ReaperTask {
         }
 
         Ok(resp)
+    }
+
+    async fn exec(
+        &self,
+        _ctx: &TtrpcContext,
+        req: api::ExecProcessRequest,
+    ) -> TtrpcResult<api::Empty> {
+        info!(
+            "exec called for command: {} with spec: {:?}",
+            req.id,
+            req.spec.as_ref().map(|s| &s.type_url)
+        );
+
+        // Verify the parent command exists and is running
+        {
+            let commands = self.commands.lock().unwrap();
+            let command_info = commands.get(&req.id).ok_or_else(|| {
+                ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::NOT_FOUND,
+                    format!("Parent command {} not found", req.id),
+                ))
+            })?;
+
+            if command_info.status != CommandStatus::Running {
+                return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::FAILED_PRECONDITION,
+                    format!("Parent command {} is not running", req.id),
+                )));
+            }
+        }
+
+        // For Milestone 4: Implement exec functionality
+        // This would allow running additional commands within the context of an already running process
+        // For our use case, this could mean spawning related processes or sub-commands
+        // For now, we don't support exec since we run independent commands
+        Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+            ttrpc::Code::UNIMPLEMENTED,
+            "Exec not supported - each command runs independently".to_string(),
+        )))
+    }
+
+    async fn stats(
+        &self,
+        _ctx: &TtrpcContext,
+        req: api::StatsRequest,
+    ) -> TtrpcResult<api::StatsResponse> {
+        info!("stats called for command: {}", req.id);
+
+        // Verify command exists
+        {
+            let commands = self.commands.lock().unwrap();
+            commands.get(&req.id).ok_or_else(|| {
+                ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::NOT_FOUND,
+                    format!("Command {} not found", req.id),
+                ))
+            })?;
+        }
+
+        // For now, return basic stats - in a real implementation we'd collect actual metrics
+        let resp = api::StatsResponse::new();
+        // TODO: Implement actual resource monitoring (CPU, memory, etc.)
+        // For Milestone 4, we provide basic placeholder stats
+
+        Ok(resp)
+    }
+
+    async fn resize_pty(
+        &self,
+        _ctx: &TtrpcContext,
+        req: api::ResizePtyRequest,
+    ) -> TtrpcResult<api::Empty> {
+        info!(
+            "resize_pty called for command: {} to {}x{}",
+            req.id, req.width, req.height
+        );
+
+        // Verify command exists and is running
+        {
+            let commands = self.commands.lock().unwrap();
+            let command_info = commands.get(&req.id).ok_or_else(|| {
+                ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::NOT_FOUND,
+                    format!("Command {} not found", req.id),
+                ))
+            })?;
+
+            if command_info.status != CommandStatus::Running {
+                return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::FAILED_PRECONDITION,
+                    format!("Command {} is not running", req.id),
+                )));
+            }
+        }
+
+        // For Milestone 4: Implement terminal resizing
+        // This would send SIGWINCH to the process and update terminal size
+        // For now, we don't support interactive resizing since we run non-interactive commands
+        Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+            ttrpc::Code::UNIMPLEMENTED,
+            "ResizePty not supported for non-interactive commands".to_string(),
+        )))
     }
 }
 
