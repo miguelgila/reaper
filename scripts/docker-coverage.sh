@@ -15,5 +15,9 @@ docker run --rm \
   -w /usr/src/reaper \
   -e CARGO_TERM_COLOR=always \
   -e RUST_BACKTRACE=1 \
+  -e RUSTUP_NO_UPDATE_CHECK=1 \
+  -e RUSTUP_AUTO_INSTALL=0 \
+  -e RUSTUP_TOOLCHAIN=stable \
+  -e CARGO_NET_OFFLINE=true \
   "${IMAGE_NAME}" \
   cargo tarpaulin --out Xml --timeout 600

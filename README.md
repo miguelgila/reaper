@@ -1,5 +1,10 @@
 # Reaper
 
+[![Tests](https://github.com/miguelgi/reaper/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/miguelgi/reaper/actions/workflows/test.yml)
+[![Build](https://github.com/miguelgi/reaper/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/miguelgi/reaper/actions/workflows/build.yml)
+[![Coverage](https://codecov.io/gh/miguelgi/reaper/branch/main/graph/badge.svg)](https://codecov.io/gh/miguelgi/reaper)
+[![Security](https://github.com/miguelgi/reaper/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/miguelgi/reaper/actions/workflows/build.yml)
+
 A Rust project.
 
 ## Quick start
@@ -11,10 +16,15 @@ cargo build --release
 cargo run
 ```
 
-Run tests:
+Run tests (recommended locally):
 
 ```bash
+# Fast: run tests natively on your machine
 cargo test
+
+# If you need Linux parity or want to reproduce CI, use the Docker helper (optional)
+chmod +x scripts/docker-test.sh
+./scripts/docker-test.sh
 ```
 
 ## Development setup
@@ -62,20 +72,23 @@ CI runs formatting and clippy checks; push will fail if they don't pass.
 
 ## Docker (Linux development / CI parity)
 
-We include a `Dockerfile` and helper scripts to run tests and coverage inside a Linux container (useful on macOS):
+We include a `Dockerfile` and helper scripts to run coverage and reproduce Linux CI locally. You do not need Docker to develop on macOS; prefer `cargo test` locally for speed. Use Docker when you need:
 
-Build and run tests in Docker:
+- `cargo-tarpaulin` (coverage) which is Linux-first, or
+- to reproduce CI failures that only happen on Linux.
 
-```bash
-chmod +x scripts/docker-test.sh
-./scripts/docker-test.sh
-```
-
-Run coverage using tarpaulin inside Docker:
+Run coverage in Docker:
 
 ```bash
 chmod +x scripts/docker-coverage.sh
 ./scripts/docker-coverage.sh
+```
+
+If you still want to run the test container, the helper exists but is optional:
+
+```bash
+chmod +x scripts/docker-test.sh
+./scripts/docker-test.sh
 ```
 
 Note: `docker-coverage.sh` adds `--cap-add=SYS_PTRACE` and `--security-opt seccomp=unconfined` required by `cargo-tarpaulin`.
