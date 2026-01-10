@@ -20,6 +20,18 @@ struct Cli {
     #[arg(global = true, long, default_value = ".")]
     bundle: PathBuf,
 
+    /// Root directory for runtime state (runc-compatible flag, ignored)
+    #[arg(global = true, long)]
+    root: Option<PathBuf>,
+
+    /// Path to write runtime logs (ignored)
+    #[arg(global = true, long)]
+    log: Option<PathBuf>,
+
+    /// Log format (json|text) (ignored)
+    #[arg(global = true, long = "log-format")]
+    log_format: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -39,7 +51,11 @@ enum Commands {
         signal: i32,
     },
     /// Delete container state
-    Delete { id: String },
+    Delete {
+        id: String,
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +158,6 @@ fn main() -> Result<()> {
         Commands::Start { id } => do_start(&id, &cli.bundle),
         Commands::State { id } => do_state(&id),
         Commands::Kill { id, signal } => do_kill(&id, signal),
-        Commands::Delete { id } => do_delete(&id),
+        Commands::Delete { id, .. } => do_delete(&id),
     }
 }

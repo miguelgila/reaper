@@ -113,6 +113,56 @@ GitHub Actions are configured to run the following workflows:
 
 - `Security` — CI also runs `cargo-audit` to scan the dependency tree for known advisories and yanked crates.
 
+## Runtime engine (containerd/Kubernetes)
+
+This repository includes an initial runtime binary `reaper-runtime` that exposes an OCI-like CLI compatible with the containerd runc shim. It is intended for running dummy applications (native binaries) rather than full containers.
+
+Commands implemented:
+- `create <id> [--bundle PATH]` — records container metadata from the bundle's `config.json`.
+- `start <id> [--bundle PATH]` — spawns the process defined in `config.json.process.args` and persists the PID.
+- `state <id>` — prints JSON with `id`, `status`, `pid`, `bundle`.
+- `kill <id> [--signal N]` — sends a Unix signal to the process.
+- `delete <id> [--force]` — removes runtime state.
+
+Accepted global flags for compatibility (ignored): `--root`, `--log`, `--log-format`.
+
+State directory: defaults to `/run/reaper` and can be overridden via `REAPER_RUNTIME_ROOT`.
+
+### Configure containerd to use reaper-runtime
+
+Add a runtime entry in `/etc/containerd/config.toml`:
+
+```toml
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper]
+	runtime_type = "io.containerd.runc.v2"
+	[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper.options]
+		BinaryName = "reaper-runtime"
+```
+
+Restart containerd:
+```bash
+sudo systemctl restart containerd
+```
+
+Now pods using runtimeClass `reaper` will route through this runtime (if you define a `RuntimeClass` in Kubernetes pointing to the `reaper` handler).
+
+### Kubernetes RuntimeClass example
+
+```yaml
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+	name: reaper
+handler: reaper
+```
+
+### Next steps to reach full compatibility
+- Implement OCI `state` output fields matching `runc state` (including `status`, `bundle`, `pid`).
+- Handle container lifecycle more robustly (exit status, `stopped` state).
+- Accept and ignore additional runc options containerd may pass (e.g., `--systemd-cgroup`).
+- Optionally add basic cgroup/namespace handling for isolation (Youki is a good reference).
+- Add integration tests invoking the runtime via containerd.
+
 ## Coverage
 
 Local coverage (Linux) with tarpaulin:
