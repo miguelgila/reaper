@@ -154,7 +154,14 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                 // Set supplementary groups first
                 if !user.additional_gids.is_empty() {
                     let gids: Vec<nix::libc::gid_t> = user.additional_gids.clone();
+                    // setgroups signature differs by platform:
+                    // - Linux: setgroups(size_t, *const gid_t)
+                    // - macOS/BSD: setgroups(c_int, *const gid_t)
+                    #[cfg(target_os = "linux")]
+                    let ret = nix::libc::setgroups(gids.len(), gids.as_ptr());
+                    #[cfg(not(target_os = "linux"))]
                     let ret = nix::libc::setgroups(gids.len() as nix::libc::c_int, gids.as_ptr());
+
                     if ret != 0 {
                         return Err(std::io::Error::last_os_error());
                     }
