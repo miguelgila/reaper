@@ -75,3 +75,144 @@ pub fn delete(id: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    fn setup_test_root() -> tempfile::TempDir {
+        tempfile::tempdir().expect("Failed to create temp dir")
+    }
+
+    fn with_test_root<F>(f: F)
+    where
+        F: FnOnce(String),
+    {
+        let temp = setup_test_root();
+        let root = temp.path().to_string_lossy().to_string();
+        std::env::set_var("REAPER_RUNTIME_ROOT", &root);
+        f(root);
+        std::env::remove_var("REAPER_RUNTIME_ROOT");
+        // temp is dropped here automatically
+    }
+
+    #[test]
+    #[serial]
+    fn test_state_dir_with_env() {
+        with_test_root(|root| {
+            let dir = state_dir();
+            assert_eq!(dir.to_string_lossy(), root);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_state_dir_default() {
+        std::env::remove_var("REAPER_RUNTIME_ROOT");
+        let dir = state_dir();
+        assert_eq!(dir, PathBuf::from("/run/reaper"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_container_dir() {
+        with_test_root(|_root| {
+            let dir = container_dir("my-container");
+            assert!(dir.to_string_lossy().contains("my-container"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_state_path() {
+        with_test_root(|_root| {
+            let path = state_path("my-container");
+            assert!(path.to_string_lossy().contains("state.json"));
+            assert!(path.to_string_lossy().contains("my-container"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_pid_path() {
+        with_test_root(|_root| {
+            let path = pid_path("my-container");
+            assert!(path.to_string_lossy().contains("pid"));
+            assert!(path.to_string_lossy().contains("my-container"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_and_load_state() {
+        with_test_root(|_| {
+            let state = ContainerState {
+                id: "test-container".to_string(),
+                bundle: PathBuf::from("/bundle/path"),
+                status: "running".to_string(),
+                pid: Some(1234),
+            };
+
+            // Save state
+            save_state(&state).expect("Failed to save state");
+
+            // Load state
+            let loaded = load_state("test-container").expect("Failed to load state");
+            assert_eq!(loaded.id, state.id);
+            assert_eq!(loaded.bundle, state.bundle);
+            assert_eq!(loaded.status, state.status);
+            assert_eq!(loaded.pid, state.pid);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_and_load_pid() {
+        with_test_root(|_| {
+            let id = "test-container";
+            let pid = 5678;
+
+            // Save pid
+            save_pid(id, pid).expect("Failed to save pid");
+
+            // Load pid
+            let loaded_pid = load_pid(id).expect("Failed to load pid");
+            assert_eq!(loaded_pid, pid);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_delete_state() {
+        with_test_root(|_| {
+            let state = ContainerState::new("delete-test".to_string(), PathBuf::from("/bundle"));
+            save_state(&state).expect("Failed to save state");
+
+            let dir = container_dir("delete-test");
+            assert!(dir.exists(), "Container dir should exist after save");
+
+            delete("delete-test").expect("Failed to delete");
+
+            assert!(!dir.exists(), "Container dir should not exist after delete");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_delete_nonexistent() {
+        with_test_root(|_| {
+            // Should not error on deleting nonexistent container
+            delete("nonexistent").expect("Delete should not fail on nonexistent container");
+        });
+    }
+
+    #[test]
+    fn test_container_state_new() {
+        let state = ContainerState::new("my-id".to_string(), PathBuf::from("/my/bundle"));
+        assert_eq!(state.id, "my-id");
+        assert_eq!(state.bundle, PathBuf::from("/my/bundle"));
+        assert_eq!(state.status, "created");
+        assert_eq!(state.pid, None);
+    }
+}
