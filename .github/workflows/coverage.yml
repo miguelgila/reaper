@@ -2,9 +2,9 @@ name: Coverage
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,13 +41,13 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Generate coverage
-        run: cargo tarpaulin --out Xml --timeout 600
+      - name: Generate coverage (fail under 75%)
+        run: cargo tarpaulin --out Xml --timeout 600 --fail-under 75
 
-      - name: Upload coverage to Codecov
+      - name: Upload coverage to Codecov (fail on error)
         uses: codecov/codecov-action@v3
         with:
           files: ./cobertura.xml
           token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
+          fail_ci_if_error: true
           verbose: true
