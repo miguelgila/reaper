@@ -107,7 +107,7 @@ Workspace settings enable CodeLens and configure rust-analyzer to run clippy on 
 
 GitHub Actions are configured to run the following workflows:
 
-- `Tests` — runs `cargo test` and doc tests
+- `Tests` — runs `cargo test`
 - `Build` — builds across OS/rust matrix, checks formatting, runs clippy, and builds release
 - `Coverage` — runs `cargo-tarpaulin` and uploads to Codecov
 
