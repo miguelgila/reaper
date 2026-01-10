@@ -115,7 +115,45 @@ GitHub Actions are configured to run the following workflows:
 
 ## Runtime engine (containerd/Kubernetes)
 
-This repository includes an initial runtime binary `reaper-runtime` that exposes an OCI-like CLI compatible with the containerd runc shim. It is intended for running dummy applications (native binaries) rather than full containers.
+This repository includes an initial runtime binary `reaper-runtime` that exposes an OCI-like CLI for running native binaries directly on the host.
+
+### Quick start: Running binaries with reaper-runtime
+
+**Create a bundle with config.json:**
+
+```bash
+mkdir -p /tmp/my-bundle
+cat > /tmp/my-bundle/config.json <<'EOF'
+{
+  "process": {
+    "args": ["/bin/sh", "-c", "echo Hello from reaper && sleep 2"],
+    "cwd": "/tmp",
+    "env": ["PATH=/usr/bin:/bin:/usr/local/bin"]
+  }
+}
+EOF
+```
+
+**Create, start, and manage the container:**
+
+```bash
+# Create metadata
+reaper-runtime create my-app --bundle /tmp/my-bundle
+
+# Start the process (runs immediately)
+reaper-runtime start my-app --bundle /tmp/my-bundle
+
+# Check status
+reaper-runtime state my-app
+
+# Kill if needed
+reaper-runtime kill my-app --signal 15
+
+# Cleanup
+reaper-runtime delete my-app
+```
+
+### CLI Commands
 
 Commands implemented:
 - `create <id> [--bundle PATH]` — records container metadata from the bundle's `config.json`.
@@ -128,7 +166,22 @@ Accepted global flags for compatibility (ignored): `--root`, `--log`, `--log-for
 
 State directory: defaults to `/run/reaper` and can be overridden via `REAPER_RUNTIME_ROOT`.
 
-### Configure containerd to use reaper-runtime
+### Kubernetes Integration (Experimental)
+
+⚠️ **Current Status**: The runtime is registered in containerd but requires **shim v2 protocol implementation** for Kubernetes pods to work. The CLI runs successfully locally; full Kubernetes support is pending.
+
+To test locally with Minikube:
+
+```bash
+# Setup containerd with reaper handler
+chmod +x scripts/minikube-setup-runtime.sh
+./scripts/minikube-setup-runtime.sh
+
+# Deploy a test pod (currently fails; shim v2 protocol needed)
+bash scripts/minikube-test.sh
+```
+
+#### Configure containerd to use reaper-runtime
 
 Add a runtime entry in `/etc/containerd/config.toml`:
 
@@ -144,9 +197,7 @@ Restart containerd:
 sudo systemctl restart containerd
 ```
 
-Now pods using runtimeClass `reaper` will route through this runtime (if you define a `RuntimeClass` in Kubernetes pointing to the `reaper` handler).
-
-### Kubernetes RuntimeClass example
+#### Kubernetes RuntimeClass example
 
 ```yaml
 apiVersion: node.k8s.io/v1
@@ -156,12 +207,13 @@ metadata:
 handler: reaper
 ```
 
-### Next steps to reach full compatibility
-- Implement OCI `state` output fields matching `runc state` (including `status`, `bundle`, `pid`).
-- Handle container lifecycle more robustly (exit status, `stopped` state).
-- Accept and ignore additional runc options containerd may pass (e.g., `--systemd-cgroup`).
-- Optionally add basic cgroup/namespace handling for isolation (Youki is a good reference).
-- Add integration tests invoking the runtime via containerd.
+### Next steps to reach full Kubernetes compatibility
+- **Implement containerd shim v2 protocol**: Handle socket-based task lifecycle (create, start, delete) and write required state files (init.pid, exit status).
+- Implement full OCI `state` output matching `runc state`.
+- Handle container lifecycle robustly (exit status, `stopped` state).
+- Accept and ignore additional runc options (e.g., `--systemd-cgroup`).
+- Add integration tests invoking the runtime via containerd's shim layer.
+
 
 ## Coverage
 
