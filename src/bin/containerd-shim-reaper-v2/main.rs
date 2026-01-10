@@ -228,9 +228,12 @@ impl Task for ReaperTask {
             0
         };
 
-        // Remove from tracking
+        // Update status to Stopped and remove from tracking
         {
             let mut commands = self.commands.lock().unwrap();
+            if let Some(command_info) = commands.get_mut(&req.id) {
+                command_info.status = CommandStatus::Stopped;
+            }
             commands.remove(&req.id);
         }
 
@@ -309,6 +312,14 @@ impl Task for ReaperTask {
         } else {
             0
         };
+
+        // Update command status to Stopped
+        {
+            let mut commands = self.commands.lock().unwrap();
+            if let Some(command_info) = commands.get_mut(&req.id) {
+                command_info.status = CommandStatus::Stopped;
+            }
+        }
 
         let mut resp = api::WaitResponse::new();
         resp.set_exit_status(exit_status as u32);
