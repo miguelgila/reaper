@@ -237,12 +237,33 @@ metadata:
 handler: reaper
 ```
 
-### Next steps to reach full Kubernetes compatibility
-- **Implement containerd shim v2 protocol**: Handle socket-based task lifecycle (create, start, delete) and write required state files (init.pid, exit status).
-- Implement full OCI `state` output matching `runc state`.
-- Handle container lifecycle robustly (exit status, `stopped` state).
-- Accept and ignore additional runc options (e.g., `--systemd-cgroup`).
-- Add integration tests invoking the runtime via containerd's shim layer.
+### Next steps to reach full OCI/CRI compatibility
+
+**User/Group ID Management (Security-Critical)**:
+- Parse `process.user.uid`, `process.user.gid`, `process.user.additionalGids`, `process.user.umask` from config.json
+- Drop privileges before executing target process using `setuid()`/`setgid()`/`setgroups()`
+- Without this, all processes run as the runtime's effective user (typically root) — a security risk
+- Example config.json:
+  ```json
+  {
+    "process": {
+      "user": {
+        "uid": 1000,
+        "gid": 1000,
+        "additionalGids": [100, 101],
+        "umask": 22
+      },
+      "args": ["/bin/sh"]
+    }
+  }
+  ```
+
+**Kubernetes/containerd Integration**:
+- **Implement containerd shim v2 protocol**: Handle socket-based task lifecycle (create, start, delete) and write required state files (init.pid, exit status)
+- Implement full OCI `state` output matching `runc state`
+- Handle container lifecycle robustly (exit status, `stopped` state)
+- Accept and ignore additional runc options (e.g., `--systemd-cgroup`)
+- Add integration tests invoking the runtime via containerd's shim layer
 
 
 ## Coverage
