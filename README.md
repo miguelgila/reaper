@@ -153,6 +153,25 @@ reaper-runtime kill my-app --signal 15
 reaper-runtime delete my-app
 ```
 
+### Testing core binary execution
+
+Integration tests verify that the core functionality works: running host binaries with OCI-like syntax. Tests are located in `tests/integration_basic_binary.rs`:
+
+```bash
+# Run integration tests explicitly
+cargo test --test integration_basic_binary
+
+# Run all tests (includes unit + integration)
+cargo test
+```
+
+Tests cover:
+1. **`test_run_echo_hello_world`** — Full lifecycle (create → start → state → delete) for `echo "hello world"`
+2. **`test_run_shell_script`** — Multi-line shell command execution with output capture
+3. **`test_invalid_bundle`** — Error handling for missing `config.json`
+
+All tests use isolated temporary directories to avoid state pollution.
+
 ### CLI Commands
 
 Commands implemented:
