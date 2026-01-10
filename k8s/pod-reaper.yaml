@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-dummy
+spec:
+  runtimeClassName: reaper
+  # Run a simple command via our runtime (containerd will invoke the runtime to start the process).
+  # For dummy apps, we just run a native binary (sh) to echo and sleep.
+  # Note: This relies on the node having /bin/sh available and the runtime parsing process.args.
+  # In a full OCI setup, you'd provide a bundle; for demo we assume process args are provided by containerd.
+  containers:
+  - name: dummy
+    image: busybox:latest
+    command: ["/bin/sh", "-c", "echo hello-from-reaper && sleep 1"]
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        cpu: 50m
+        memory: 32Mi
+  restartPolicy: Never

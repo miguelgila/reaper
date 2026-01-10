@@ -1,0 +1,44 @@
+name: Integration
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  kind-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.30.0'
+
+      - name: Create Kind cluster
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+          kind create cluster --name reaper-ci --config kind-config.yaml
+
+      - name: Build runtime
+        run: cargo build --release --bin reaper-runtime
+
+      - name: Copy runtime into node and restart containerd
+        run: |
+          NODE_ID=$(docker ps --filter "name=reaper-ci-control-plane" --format '{{.ID}}')
+          docker cp target/release/reaper-runtime "$NODE_ID":/usr/local/bin/reaper-runtime
+          docker exec "$NODE_ID" bash -lc "pkill -HUP containerd || true"
+
+      - name: Apply RuntimeClass and test pod
+        run: |
+          kubectl apply -f k8s/runtimeclass.yaml
+          kubectl apply -f k8s/pod-reaper.yaml
+          kubectl wait --for=condition=Succeeded --timeout=120s pod/reaper-dummy
+          kubectl logs pod/reaper-dummy
