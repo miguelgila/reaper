@@ -172,6 +172,17 @@ Tests cover:
 
 All tests use isolated temporary directories to avoid state pollution.
 
+### Process output (stdout/stderr)
+
+- `start` inherits the parent's stdio, so the child process prints directly to your terminal (stdout/stderr are not captured or stored).
+- To capture logs yourself, redirect when invoking `start`, e.g.:
+
+```bash
+reaper-runtime start my-app --bundle /tmp/my-bundle > /tmp/my-app.out 2> /tmp/my-app.err
+```
+
+There is no log file managed by the runtime today; use shell redirection or a wrapper if you need persistence.
+
 ### CLI Commands
 
 Commands implemented:
