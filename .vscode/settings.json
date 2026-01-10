@@ -1,0 +1,25 @@
+{
+  "editor.codeLens": true,
+  "rust-analyzer.checkOnSave.command": "clippy",
+  "rust-analyzer.cargo.loadOutDirsFromCheck": true,
+  "rust-analyzer.cargo.runBuildScripts": true,
+  "rust-analyzer.checkOnSave": true,
+  "rust-analyzer.inlayHints.typeHints.enable": true,
+  "rust-analyzer.inlayHints.parameterHints.enable": true,
+  "[rust]": {
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+  "editor.formatOnSave": true,
+  "editor.rulers": [
+    100
+  ],
+  "files.exclude": {
+    "**/target": true,
+    "**/.git": true
+  },
+  "search.exclude": {
+    "**/target": true,
+    "**/.git": true
+  }
+}

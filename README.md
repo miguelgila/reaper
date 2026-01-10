@@ -1,0 +1,121 @@
+# Reaper
+
+A Rust project.
+
+## Quick start
+
+Build and run locally:
+
+```bash
+cargo build --release
+cargo run
+```
+
+Run tests:
+
+```bash
+cargo test
+```
+
+## Development setup
+
+Prerequisites:
+
+- Rust toolchain (we pin `stable` via `rust-toolchain.toml`)
+- Docker (optional, for Linux-like CI runs on macOS)
+
+Clone and build:
+
+```bash
+git clone https://github.com/miguelgi/reaper
+cd reaper
+cargo build
+```
+
+### Toolchain
+
+The repository includes `rust-toolchain.toml` to pin the toolchain and enable `rustfmt` and `clippy` components.
+
+### Git hooks
+
+We provide a repository git hooks directory and an install script to enable them locally. The pre-commit hook runs `cargo fmt --all` and stages formatting changes.
+
+Enable hooks locally:
+
+```bash
+chmod +x .githooks/pre-commit
+./scripts/install-hooks.sh
+```
+
+If you prefer the hook to fail instead of auto-staging, edit `.githooks/pre-commit` to use `cargo fmt --all -- --check` and exit non-zero on mismatch.
+
+### Formatting & linting
+
+Use the toolchain components:
+
+```bash
+cargo fmt --all
+cargo clippy --all-targets --all-features
+```
+
+CI runs formatting and clippy checks; push will fail if they don't pass.
+
+## Docker (Linux development / CI parity)
+
+We include a `Dockerfile` and helper scripts to run tests and coverage inside a Linux container (useful on macOS):
+
+Build and run tests in Docker:
+
+```bash
+chmod +x scripts/docker-test.sh
+./scripts/docker-test.sh
+```
+
+Run coverage using tarpaulin inside Docker:
+
+```bash
+chmod +x scripts/docker-coverage.sh
+./scripts/docker-coverage.sh
+```
+
+Note: `docker-coverage.sh` adds `--cap-add=SYS_PTRACE` and `--security-opt seccomp=unconfined` required by `cargo-tarpaulin`.
+
+## VS Code
+
+Recommended extensions (workspace recommends them automatically):
+
+- `rust-analyzer` — main Rust language support
+- `CodeLLDB` (vadimcn.vscode-lldb) — debug adapter for Rust
+- `Test Explorer UI` — unified test UI
+
+Workspace settings enable CodeLens and configure rust-analyzer to run clippy on save; a `launch.json` is provided for debugging tests and binaries.
+
+## CI
+
+GitHub Actions are configured to run the following workflows:
+
+- `Tests` — runs `cargo test` and doc tests
+- `Build` — builds across OS/rust matrix, checks formatting, runs clippy, and builds release
+- `Coverage` — runs `cargo-tarpaulin` and uploads to Codecov
+
+- `Security` — CI also runs `cargo-audit` to scan the dependency tree for known advisories and yanked crates.
+
+## Coverage
+
+Local coverage (Linux) with tarpaulin:
+
+```bash
+cargo install cargo-tarpaulin
+cargo tarpaulin --out Xml --timeout 600
+```
+
+On macOS run the included Docker coverage script instead.
+
+## Contributing
+
+- Run `cargo fmt` and `cargo clippy` before opening PRs.
+- Install git hooks to auto-format on commit.
+
+## License
+
+MIT

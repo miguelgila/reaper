@@ -1,0 +1,81 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Tests (all)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "test",
+          "--no-run"
+        ]
+      },
+      "program": "${cargo:program}",
+      "args": [
+        "--nocapture"
+      ],
+      "cwd": "${workspaceFolder}",
+      "sourceLanguages": [
+        "rust"
+      ]
+    },
+    {
+      "name": "Debug Test (single) — replace <TEST_NAME>",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "test",
+          "--no-run"
+        ]
+      },
+      "program": "${cargo:program}",
+      "args": [
+        "--nocapture",
+        "<TEST_NAME>"
+      ],
+      "cwd": "${workspaceFolder}",
+      "sourceLanguages": [
+        "rust"
+      ]
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug reaper",
+      "cargo": {
+        "args": [
+          "build",
+          "--bin=reaper",
+          "--package=reaper"
+        ],
+        "filter": {
+          "name": "reaper",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug package tests (reaper)",
+      "cargo": {
+        "args": [
+          "test",
+          "--no-run",
+          "--bin=reaper",
+          "--package=reaper"
+        ],
+        "filter": {
+          "name": "reaper",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

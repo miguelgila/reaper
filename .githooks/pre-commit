@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run rustfmt and stage any changes so commits include formatted code.
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+cd "$ROOT_DIR" || exit 0
+
+if command -v cargo >/dev/null 2>&1; then
+  echo "Running cargo fmt --all..."
+  cargo fmt --all
+
+  # If formatting produced changes, stage them so they're included in the commit.
+  if ! git diff --quiet; then
+    git add -A
+    echo "Applied rustfmt and staged changes. Continue commit."
+  fi
+else
+  echo "cargo not found in PATH; skipping rustfmt."
+fi
+
+exit 0
