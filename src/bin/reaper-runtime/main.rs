@@ -154,7 +154,7 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                 // Set supplementary groups first
                 if !user.additional_gids.is_empty() {
                     let gids: Vec<nix::libc::gid_t> = user.additional_gids.clone();
-                    let ret = nix::libc::setgroups(gids.len() as i32, gids.as_ptr());
+                    let ret = nix::libc::setgroups(gids.len() as nix::libc::size_t, gids.as_ptr());
                     if ret != 0 {
                         return Err(std::io::Error::last_os_error());
                     }
@@ -180,7 +180,7 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
 
                 // Set umask if specified
                 if let Some(umask_value) = user.umask {
-                    nix::libc::umask(umask_value as u16);
+                    nix::libc::umask(umask_value as nix::libc::mode_t);
                 }
 
                 Ok(())
