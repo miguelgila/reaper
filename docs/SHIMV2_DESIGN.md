@@ -361,6 +361,14 @@ tracing-subscriber = "0.3"
 - End-to-end container lifecycle
 - Test with actual OCI bundles
 
+### Shim Integration Tests
+
+- **tests/integration_shim.rs**: 7 tests validating shim binary and bundle creation
+  - Binary existence and basic execution validation
+  - Valid bundle creation with various user configurations
+  - Invalid bundle detection (missing/malformed config.json)
+- Validates config.json parsing and bundle structure
+
 ### Kubernetes Tests
 
 - Deploy to minikube/kind
