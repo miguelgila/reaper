@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# Unified script to configure containerd with the Reaper shim v2 runtime
+# Works for minikube, kind, and regular Kubernetes nodes
+#
+# Usage:
+#   ./configure-containerd.sh                          # Local system
+#   ./configure-containerd.sh minikube                 # Inside minikube
+#   ./configure-containerd.sh kind <node-container>    # Inside kind node
+
+set -euo pipefail
+
+RUNTIME_TYPE="io.containerd.reaper.v2"
+RUNTIME_NAME="reaper-v2"
+SHIM_BINARY="containerd-shim-reaper-v2"
+SHIM_PATH="/usr/local/bin/${SHIM_BINARY}"
+
+configure_containerd() {
+    local target="${1:-local}"
+    local node_id="${2:-}"
+
+    echo "📝 Configuring containerd for $target..."
+
+    # The working configuration:
+    # - Use default containerd config as base
+    # - Add reaper-v2 runtime WITHOUT options section
+    # - This avoids the cgroup path bug in containerd-shim library
+
+    if [ "$target" = "minikube" ]; then
+        minikube ssh -- "sudo bash -c '
+            # Generate default config as base
+            containerd config default > /tmp/containerd-config-new.toml
+
+            # Add reaper-v2 runtime before runc section
+            # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
+            sed -i \"/\\[plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.runc\\]/i\\      [plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.reaper-v2]\\n        runtime_type = \\\"io.containerd.reaper.v2\\\"\\n        sandbox_mode = \\\"podsandbox\\\"\\n\" /tmp/containerd-config-new.toml
+
+            # Replace config
+            mv /tmp/containerd-config-new.toml /etc/containerd/config.toml
+
+            # Restart containerd
+            systemctl restart containerd
+        '"
+        echo "✅ Containerd configured in minikube"
+
+    elif [ "$target" = "kind" ]; then
+        if [ -z "$node_id" ]; then
+            echo "Error: kind requires node container ID" >&2
+            exit 1
+        fi
+
+        docker exec "$node_id" bash -c "
+            # Generate default config as base
+            containerd config default > /tmp/containerd-config-new.toml
+
+            # Add reaper-v2 runtime before runc section
+            # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
+            sed -i '/\\[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runc\\]/i\\      [plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.reaper-v2]\\n        runtime_type = \"io.containerd.reaper.v2\"\\n        sandbox_mode = \"podsandbox\"\\n' /tmp/containerd-config-new.toml
+
+            # Replace config
+            mv /tmp/containerd-config-new.toml /etc/containerd/config.toml
+
+            # Restart containerd
+            pkill -HUP containerd || systemctl restart containerd
+        "
+        echo "✅ Containerd configured in kind node $node_id"
+
+    else
+        # Local system configuration
+        echo "Generating containerd config..."
+        sudo bash -c "
+            containerd config default > /tmp/containerd-config-new.toml
+            # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
+            sed -i '/\\[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runc\\]/i\\      [plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.reaper-v2]\\n        runtime_type = \"io.containerd.reaper.v2\"\\n        sandbox_mode = \"podsandbox\"\\n' /tmp/containerd-config-new.toml
+            mv /tmp/containerd-config-new.toml /etc/containerd/config.toml
+            systemctl restart containerd
+        "
+        echo "✅ Containerd configured locally"
+    fi
+}
+
+verify_config() {
+    local target="${1:-local}"
+    local node_id="${2:-}"
+
+    echo "🔍 Verifying containerd configuration..."
+
+    if [ "$target" = "minikube" ]; then
+        minikube ssh -- "sudo grep -A 3 'reaper-v2' /etc/containerd/config.toml" || {
+            echo "❌ Reaper runtime not found in config"
+            return 1
+        }
+    elif [ "$target" = "kind" ]; then
+        docker exec "$node_id" grep -A 3 'reaper-v2' /etc/containerd/config.toml || {
+            echo "❌ Reaper runtime not found in config"
+            return 1
+        }
+    else
+        sudo grep -A 3 'reaper-v2' /etc/containerd/config.toml || {
+            echo "❌ Reaper runtime not found in config"
+            return 1
+        }
+    fi
+
+    echo "✅ Containerd configuration verified"
+}
+
+# Main execution
+case "${1:-local}" in
+    minikube)
+        configure_containerd minikube
+        verify_config minikube
+        ;;
+    kind)
+        configure_containerd kind "${2:-}"
+        verify_config kind "${2:-}"
+        ;;
+    local|*)
+        configure_containerd local
+        verify_config local
+        ;;
+esac
