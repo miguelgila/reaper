@@ -50,12 +50,13 @@ echo "Copy runtime binary into minikube node..."
 minikube cp "$RUNTIME_BIN_PATH" "/usr/local/bin/$RUNTIME_BIN"
 minikube ssh -- "sudo chmod +x /usr/local/bin/$RUNTIME_BIN"
 
-echo "Enabling shim debug logging..."
+echo "Enabling shim and runtime debug logging..."
 minikube ssh -- "sudo bash -c '
     mkdir -p /etc/systemd/system/containerd.service.d
     cat > /etc/systemd/system/containerd.service.d/reaper-shim-logging.conf <<EOF
 [Service]
 Environment=\"REAPER_SHIM_LOG=/var/log/reaper-shim.log\"
+Environment=\"REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log\"
 EOF
     systemctl daemon-reload
 '"
@@ -67,6 +68,7 @@ echo "Verifying containerd config..."
 minikube ssh -- "sudo cat /etc/containerd/config.toml | grep -A 5 'reaper-v2'"
 
 echo "Shim logs will be written to /var/log/reaper-shim.log"
+echo "Runtime logs will be written to /var/log/reaper-runtime.log"
 
 echo "Creating RuntimeClass 'reaper-v2' and example pod..."
 kubectl apply -f kubernetes/runtimeclass.yaml

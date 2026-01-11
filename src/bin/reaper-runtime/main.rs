@@ -5,6 +5,7 @@ use std::fs;
 use std::os::unix::process::CommandExt; // For pre_exec
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 mod state;
@@ -97,20 +98,36 @@ struct OciConfig {
 }
 
 fn read_oci_config(bundle: &Path) -> Result<OciConfig> {
+    info!("read_oci_config() called - bundle={}", bundle.display());
     let path = bundle.join("config.json");
     let data = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
     let cfg: OciConfig = serde_json::from_slice(&data).context("parsing config.json")?;
+    info!(
+        "read_oci_config() succeeded - found {} process args",
+        cfg.process
+            .as_ref()
+            .and_then(|p| p.args.as_ref())
+            .map(|a| a.len())
+            .unwrap_or(0)
+    );
     Ok(cfg)
 }
 
 fn do_create(id: &str, bundle: &Path) -> Result<()> {
+    info!(
+        "do_create() called - id={}, bundle={}",
+        id,
+        bundle.display()
+    );
     let state = ContainerState::new(id.to_string(), bundle.to_path_buf());
     save_state(&state)?;
+    info!("do_create() succeeded - state saved for container={}", id);
     println!("{}", serde_json::to_string_pretty(&state)?);
     Ok(())
 }
 
 fn do_start(id: &str, bundle: &Path) -> Result<()> {
+    info!("do_start() called - id={}, bundle={}", id, bundle.display());
     let cfg = read_oci_config(bundle)?;
     let proc = cfg
         .process
@@ -121,10 +138,22 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
     }
     let program = &args[0];
     let argv = &args[1..];
+    info!(
+        "do_start() - program={}, args={:?}, cwd={:?}",
+        program, argv, proc.cwd
+    );
 
     // Handle user/group ID switching before exec
     // This must be done in the child process, not the parent
     let user_config = proc.user;
+    if let Some(ref user) = user_config {
+        info!(
+            "do_start() - user config: uid={}, gid={}, additional_gids={:?}, umask={:?}",
+            user.uid, user.gid, user.additional_gids, user.umask
+        );
+    } else {
+        info!("do_start() - no user config, will run as current user");
+    }
 
     // We need to use a pre_exec hook to set uid/gid before the child process runs
     // This is safer than trying to do it in the parent
@@ -194,13 +223,16 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
             });
         }
 
+        info!("do_start() - spawning process...");
         let child = cmd.spawn().context("failed to spawn process")?;
         let pid = child.id() as i32;
+        info!("do_start() - process spawned successfully, pid={}", pid);
         let mut state = load_state(id)?;
         state.status = "running".into();
         state.pid = Some(pid);
         save_state(&state)?;
         save_pid(id, pid)?;
+        info!("do_start() succeeded - container={}, pid={}", id, pid);
 
         println!("started pid={}", pid);
         Ok(())
@@ -208,44 +240,100 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
 }
 
 fn do_state(id: &str) -> Result<()> {
+    info!("do_state() called - id={}", id);
     let state = load_state(id)?;
+    info!(
+        "do_state() succeeded - id={}, status={}, pid={:?}",
+        id, state.status, state.pid
+    );
     println!("{}", serde_json::to_string_pretty(&state)?);
     Ok(())
 }
 
 fn do_kill(id: &str, signal: i32) -> Result<()> {
+    info!("do_kill() called - id={}, signal={}", id, signal);
     let pid = load_pid(id)?;
+    info!("do_kill() - sending signal {} to pid {}", signal, pid);
     // Use nix to send signal
     let sig = nix::sys::signal::Signal::try_from(signal).context("invalid signal")?;
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), sig)
         .context("failed to send signal")?;
+    info!(
+        "do_kill() succeeded - id={}, signal={}, pid={}",
+        id, signal, pid
+    );
     Ok(())
 }
 
 fn do_delete(id: &str) -> Result<()> {
+    info!("do_delete() called - id={}", id);
     delete_state(id)?;
+    info!("do_delete() succeeded - id={}", id);
     println!("deleted {}", id);
     Ok(())
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .try_init()
-        .ok();
+    // Setup tracing similar to shim: use REAPER_RUNTIME_LOG env var
+    // If not set, use null writer to prevent stdout pollution
+    if let Ok(log_path) = std::env::var("REAPER_RUNTIME_LOG") {
+        // If REAPER_RUNTIME_LOG is set, log to that file
+        if let Ok(log_file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+                )
+                .with_ansi(false) // No color codes in log files
+                .with_writer(std::sync::Mutex::new(log_file))
+                .init();
+
+            info!("===== Reaper Runtime Starting =====");
+            info!("Log file: {}", log_path);
+        } else {
+            // Failed to open log file - use null writer to discard logs safely
+            let null_writer = std::io::sink();
+            tracing_subscriber::fmt()
+                .with_writer(std::sync::Mutex::new(null_writer))
+                .with_ansi(false)
+                .init();
+        }
+    } else {
+        // REAPER_RUNTIME_LOG not set - use null writer to discard all logs safely
+        let null_writer = std::io::sink();
+        tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(null_writer))
+            .with_ansi(false)
+            .init();
+    }
 
     let cli = Cli::parse();
+    info!(
+        "CLI parsed: bundle={:?}, root={:?}, command={:?}",
+        cli.bundle, cli.root, cli.command
+    );
 
     // Default bundle to current directory if not specified
     let bundle = cli.bundle.as_deref().unwrap_or_else(|| Path::new("."));
 
-    match cli.command {
-        Commands::Create { id } => do_create(&id, bundle),
-        Commands::Start { id } => do_start(&id, bundle),
-        Commands::State { id } => do_state(&id),
-        Commands::Kill { id, signal } => do_kill(&id, signal),
-        Commands::Delete { id, .. } => do_delete(&id),
+    let result = match cli.command {
+        Commands::Create { ref id } => do_create(id, bundle),
+        Commands::Start { ref id } => do_start(id, bundle),
+        Commands::State { ref id } => do_state(id),
+        Commands::Kill { ref id, signal } => do_kill(id, signal),
+        Commands::Delete { ref id, .. } => do_delete(id),
+    };
+
+    if let Err(ref e) = result {
+        tracing::error!("Command failed: {:?}", e);
+    } else {
+        info!("Command completed successfully");
     }
+
+    result
 }
 
 #[cfg(test)]

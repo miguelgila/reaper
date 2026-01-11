@@ -174,7 +174,9 @@ The system requires **BOTH** binaries to be deployed:
 
 ### Logging Configuration
 
-**IMPORTANT**: The shim does NOT log to stdout/stderr by default. Containerd communicates with shims via stdout/stderr using the TTRPC binary protocol, so any text output would corrupt the communication.
+**IMPORTANT**: Both binaries do NOT log to stdout/stderr by default. Containerd communicates with shims via stdout/stderr using the TTRPC binary protocol, and the runtime prints JSON output, so any log text would corrupt the communication.
+
+#### Shim Logging
 
 To enable shim logging:
 ```bash
@@ -185,8 +187,40 @@ When `REAPER_SHIM_LOG` is set, the shim will:
 - Write logs to the specified file
 - Disable ANSI color codes (plain text only)
 - Append to the file (not overwrite)
+- Log all lifecycle events, task operations, and TTRPC calls
 
 Without `REAPER_SHIM_LOG`, the shim runs silently.
+
+#### Runtime Logging
+
+To enable runtime logging:
+```bash
+export REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log
+```
+
+When `REAPER_RUNTIME_LOG` is set, the runtime will:
+- Write logs to the specified file
+- Disable ANSI color codes (plain text only)
+- Append to the file (not overwrite)
+- Log all OCI runtime commands (create, start, state, kill, delete)
+- Log process spawning, user/group configuration, and state management
+
+Without `REAPER_RUNTIME_LOG`, the runtime runs silently (only JSON output to stdout).
+
+#### Systemd Configuration
+
+For production deployments, set both environment variables via systemd drop-in file:
+
+```bash
+sudo mkdir -p /etc/systemd/system/containerd.service.d
+sudo tee /etc/systemd/system/containerd.service.d/reaper-shim-logging.conf <<EOF
+[Service]
+Environment="REAPER_SHIM_LOG=/var/log/reaper-shim.log"
+Environment="REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log"
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart containerd
+```
 
 ### Containerd Configuration
 
