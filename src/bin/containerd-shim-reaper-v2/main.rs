@@ -77,6 +77,7 @@ impl Shim for ReaperShim {
     }
 
     async fn create_task_service(&self, _publisher: RemotePublisher) -> Self::T {
+        info!("create_task_service() called - creating ReaperTask");
         ReaperTask {
             runtime_path: self.runtime_path.clone(),
         }
