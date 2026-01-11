@@ -21,12 +21,26 @@ struct ReaperShim {
 impl Shim for ReaperShim {
     type T = ReaperTask;
 
-    async fn new(_runtime_id: &str, _args: &Flags, _config: &mut Config) -> Self {
+    async fn new(runtime_id: &str, args: &Flags, _config: &mut Config) -> Self {
         // Look for reaper-runtime in PATH or default location
         let runtime_path = std::env::var("REAPER_RUNTIME_PATH")
             .unwrap_or_else(|_| "/usr/local/bin/reaper-runtime".to_string());
 
-        info!("Using reaper-runtime at: {}", runtime_path);
+        info!(
+            "ReaperShim::new() called - runtime_id={}, runtime_path={}",
+            runtime_id, runtime_path
+        );
+        info!(
+            "Flags: namespace={:?}, address={:?}, publish_binary={:?}",
+            args.namespace, args.address, args.publish_binary
+        );
+
+        // Verify runtime binary exists
+        if let Err(e) = std::fs::metadata(&runtime_path) {
+            tracing::error!("Runtime binary not found at {}: {}", runtime_path, e);
+        } else {
+            info!("Runtime binary verified at: {}", runtime_path);
+        }
 
         ReaperShim {
             exit: Arc::new(ExitSignal::default()),
@@ -35,17 +49,31 @@ impl Shim for ReaperShim {
     }
 
     async fn start_shim(&mut self, opts: StartOpts) -> Result<String, Error> {
+        info!(
+            "start_shim() called with opts: id={}, namespace={:?}",
+            opts.id, opts.namespace
+        );
         let grouping = opts.id.clone();
-        let address = spawn(opts, &grouping, Vec::new()).await?;
+        info!("Calling spawn() with grouping={}", grouping);
+
+        let address = spawn(opts, &grouping, Vec::new()).await.map_err(|e| {
+            tracing::error!("spawn() failed: {:?}", e);
+            e
+        })?;
+
+        info!("spawn() succeeded, address={}", address);
         Ok(address)
     }
 
     async fn delete_shim(&mut self) -> Result<DeleteResponse, Error> {
+        info!("delete_shim() called - shim is shutting down");
         Ok(DeleteResponse::new())
     }
 
     async fn wait(&mut self) {
+        info!("wait() called - blocking until exit signal");
         self.exit.wait().await;
+        info!("wait() unblocked - exit signal received");
     }
 
     async fn create_task_service(&self, _publisher: RemotePublisher) -> Self::T {
@@ -67,7 +95,10 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::CreateTaskRequest,
     ) -> TtrpcResult<api::CreateTaskResponse> {
-        info!("create called for container: {}", req.id);
+        info!(
+            "create() called - container_id={}, bundle={}",
+            req.id, req.bundle
+        );
 
         // Call reaper-runtime create <container-id> --bundle <bundle-path>
         let output = Command::new(&self.runtime_path)
@@ -96,6 +127,7 @@ impl Task for ReaperTask {
 
         let mut resp = api::CreateTaskResponse::new();
         resp.set_pid(0); // PID will be set on start
+        info!("create() succeeded - container_id={}", req.id);
         Ok(resp)
     }
 
@@ -104,7 +136,7 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::StartRequest,
     ) -> TtrpcResult<api::StartResponse> {
-        info!("start called for container: {}", req.id);
+        info!("start() called - container_id={}", req.id);
 
         // Call reaper-runtime start <container-id>
         let output = Command::new(&self.runtime_path)
@@ -156,6 +188,7 @@ impl Task for ReaperTask {
 
         let mut resp = api::StartResponse::new();
         resp.set_pid(pid);
+        info!("start() succeeded - container_id={}, pid={}", req.id, pid);
         Ok(resp)
     }
 
@@ -164,7 +197,7 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::DeleteRequest,
     ) -> TtrpcResult<api::DeleteResponse> {
-        info!("delete called for container: {}", req.id);
+        info!("delete() called - container_id={}", req.id);
 
         // Call reaper-runtime delete <container-id>
         let output = Command::new(&self.runtime_path)
@@ -188,13 +221,14 @@ impl Task for ReaperTask {
         let mut resp = api::DeleteResponse::new();
         resp.set_pid(0);
         resp.set_exit_status(0);
+        info!("delete() succeeded - container_id={}", req.id);
         Ok(resp)
     }
 
     async fn kill(&self, _ctx: &TtrpcContext, req: api::KillRequest) -> TtrpcResult<api::Empty> {
         info!(
-            "kill called for container: {} signal: {}",
-            req.id, req.signal
+            "kill() called - container_id={}, signal={}, all={}",
+            req.id, req.signal, req.all
         );
 
         // Call reaper-runtime kill <container-id> <signal>
@@ -221,6 +255,10 @@ impl Task for ReaperTask {
             )));
         }
 
+        info!(
+            "kill() succeeded - container_id={}, signal={}",
+            req.id, req.signal
+        );
         Ok(api::Empty::new())
     }
 
@@ -229,7 +267,10 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::WaitRequest,
     ) -> TtrpcResult<api::WaitResponse> {
-        info!("wait called for container: {}", req.id);
+        info!(
+            "wait() task called - container_id={}, exec_id={:?}",
+            req.id, req.exec_id
+        );
 
         // Poll reaper-runtime state until container stops
         loop {
@@ -261,6 +302,7 @@ impl Task for ReaperTask {
 
             let status = state["status"].as_str().unwrap_or("");
             if status == "stopped" {
+                info!("wait() - container stopped, container_id={}", req.id);
                 break;
             }
 
@@ -270,6 +312,7 @@ impl Task for ReaperTask {
 
         let mut resp = api::WaitResponse::new();
         resp.set_exit_status(0);
+        info!("wait() task completed - container_id={}", req.id);
         Ok(resp)
     }
 
@@ -278,7 +321,10 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::StateRequest,
     ) -> TtrpcResult<api::StateResponse> {
-        info!("state called for command: {}", req.id);
+        info!(
+            "state() called - container_id={}, exec_id={:?}",
+            req.id, req.exec_id
+        );
 
         // Query runtime for actual state
         let output = Command::new(&self.runtime_path)
@@ -324,6 +370,10 @@ impl Task for ReaperTask {
             _ => ::protobuf::EnumOrUnknown::new(api::Status::UNKNOWN),
         };
 
+        info!(
+            "state() succeeded - container_id={}, status={:?}, pid={}",
+            req.id, status_str, resp.pid
+        );
         Ok(resp)
     }
 
@@ -332,7 +382,7 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::PidsRequest,
     ) -> TtrpcResult<api::PidsResponse> {
-        info!("pids called for command: {}", req.id);
+        info!("pids() called - container_id={}", req.id);
 
         // Query runtime for state to get PID
         let output = Command::new(&self.runtime_path)
@@ -361,6 +411,11 @@ impl Task for ReaperTask {
             }
         }
 
+        info!(
+            "pids() succeeded - container_id={}, count={}",
+            req.id,
+            resp.processes.len()
+        );
         Ok(resp)
     }
 
@@ -369,11 +424,8 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::ExecProcessRequest,
     ) -> TtrpcResult<api::Empty> {
-        info!(
-            "exec called for command: {} with spec: {:?}",
-            req.id,
-            req.spec.as_ref().map(|s| &s.type_url)
-        );
+        info!("exec() called - container_id={}, exec_id={}, stdin={}, stdout={}, stderr={}, terminal={}",
+            req.id, req.exec_id, req.stdin.is_empty(), req.stdout.is_empty(), req.stderr.is_empty(), req.terminal);
 
         // For now, we don't support exec since each container runs independently
         // In the future, this could spawn additional processes via runtime
@@ -388,7 +440,7 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::StatsRequest,
     ) -> TtrpcResult<api::StatsResponse> {
-        info!("stats called for command: {}", req.id);
+        info!("stats() called - container_id={}", req.id);
 
         // For now, return basic stats - in a real implementation we'd collect actual metrics
         let resp = api::StatsResponse::new();
@@ -404,7 +456,7 @@ impl Task for ReaperTask {
         req: api::ResizePtyRequest,
     ) -> TtrpcResult<api::Empty> {
         info!(
-            "resize_pty called for command: {} to {}x{}",
+            "resize_pty() called - container_id={}, width={}, height={}",
             req.id, req.width, req.height
         );
 
@@ -420,6 +472,8 @@ impl Task for ReaperTask {
 async fn main() {
     // Setup tracing to log to a file instead of stdout/stderr
     // Containerd communicates with shims via stdout/stderr, so we can't pollute those streams
+
+    // ALWAYS initialize tracing to prevent info! from defaulting to stdout/stderr
     if let Ok(log_path) = std::env::var("REAPER_SHIM_LOG") {
         // If REAPER_SHIM_LOG is set, log to that file
         if let Ok(log_file) = std::fs::OpenOptions::new()
@@ -434,10 +488,28 @@ async fn main() {
                 .with_ansi(false) // No color codes in log files
                 .with_writer(std::sync::Mutex::new(log_file))
                 .init();
-        }
-    }
-    // If REAPER_SHIM_LOG is not set, don't initialize logging
-    // This prevents pollution of stdout/stderr used for TTRPC communication
 
+            info!("===== Reaper Shim v2 Starting =====");
+            info!("Log file: {}", log_path);
+        } else {
+            // Failed to open log file - use null writer to discard logs safely
+            let null_writer = std::io::sink();
+            tracing_subscriber::fmt()
+                .with_writer(std::sync::Mutex::new(null_writer))
+                .with_ansi(false)
+                .init();
+        }
+    } else {
+        // REAPER_SHIM_LOG not set - use null writer to discard all logs safely
+        // This ensures info! calls never go to stdout/stderr
+        let null_writer = std::io::sink();
+        tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(null_writer))
+            .with_ansi(false)
+            .init();
+    }
+
+    info!("Calling containerd_shim::run()...");
     run::<ReaperShim>("io.containerd.reaper.v2", None).await;
+    info!("containerd_shim::run() completed normally");
 }
