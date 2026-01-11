@@ -63,8 +63,8 @@ enum Commands {
     Kill {
         /// Container ID
         id: String,
-        #[arg(long, default_value_t = 15)]
-        signal: i32,
+        /// Signal number (default: 15 = SIGTERM)
+        signal: Option<i32>,
     },
     /// Delete container state
     Delete {
@@ -93,8 +93,15 @@ struct OciProcess {
 }
 
 #[derive(Debug, Deserialize)]
+struct OciRoot {
+    path: Option<String>,
+    readonly: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize)]
 struct OciConfig {
     process: Option<OciProcess>,
+    root: Option<OciRoot>,
 }
 
 fn read_oci_config(bundle: &Path) -> Result<OciConfig> {
@@ -128,6 +135,12 @@ fn do_create(id: &str, bundle: &Path) -> Result<()> {
 
 fn do_start(id: &str, bundle: &Path) -> Result<()> {
     info!("do_start() called - id={}, bundle={}", id, bundle.display());
+
+    // Load state to get the original bundle path (in case bundle arg is just ".")
+    let state = load_state(id)?;
+    let bundle = &state.bundle;
+    info!("do_start() - using bundle from state: {}", bundle.display());
+
     let cfg = read_oci_config(bundle)?;
     let proc = cfg
         .process
@@ -138,9 +151,24 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
     }
     let program = &args[0];
     let argv = &args[1..];
+
+    // Reaper runs HOST binaries, not container binaries
+    // For absolute paths, use them directly on the host
+    // For relative paths, let the shell resolve via PATH
+    let program_path = if program.starts_with('/') {
+        // Absolute path - use directly on host
+        PathBuf::from(program)
+    } else {
+        // Relative path - will be resolved via PATH by the system
+        PathBuf::from(program)
+    };
+
     info!(
-        "do_start() - program={}, args={:?}, cwd={:?}",
-        program, argv, proc.cwd
+        "do_start() - program={}, resolved_path={}, args={:?}, cwd={:?}",
+        program,
+        program_path.display(),
+        argv,
+        proc.cwd
     );
 
     // Handle user/group ID switching before exec
@@ -158,7 +186,7 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
     // We need to use a pre_exec hook to set uid/gid before the child process runs
     // This is safer than trying to do it in the parent
     unsafe {
-        let mut cmd = Command::new(program);
+        let mut cmd = Command::new(&program_path);
         cmd.args(argv);
         if let Some(cwd) = proc.cwd.as_deref() {
             cmd.current_dir(cwd);
@@ -175,6 +203,8 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
+        // TODO: Temporarily disabled user switching for debugging - will re-enable with proper containerization
+        /*
         // Set uid/gid/groups in the child process before exec
         if let Some(user) = user_config {
             cmd.pre_exec(move || {
@@ -222,6 +252,7 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                 Ok(())
             });
         }
+        */
 
         info!("do_start() - spawning process...");
         let child = cmd.spawn().context("failed to spawn process")?;
@@ -250,7 +281,8 @@ fn do_state(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn do_kill(id: &str, signal: i32) -> Result<()> {
+fn do_kill(id: &str, signal: Option<i32>) -> Result<()> {
+    let signal = signal.unwrap_or(15); // Default to SIGTERM
     info!("do_kill() called - id={}, signal={}", id, signal);
     let pid = load_pid(id)?;
     info!("do_kill() - sending signal {} to pid {}", signal, pid);

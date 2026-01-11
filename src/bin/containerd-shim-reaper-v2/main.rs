@@ -6,7 +6,9 @@ use containerd_shim::{
 use containerd_shim_protos::{
     api, api::DeleteResponse, shim_async::Task, ttrpc::r#async::TtrpcContext,
 };
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tokio::process::Command;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -31,8 +33,8 @@ impl Shim for ReaperShim {
             runtime_id, runtime_path
         );
         info!(
-            "Flags: namespace={:?}, address={:?}, publish_binary={:?}",
-            args.namespace, args.address, args.publish_binary
+            "Flags: namespace={:?}, address={:?}, publish_binary={:?}, socket={:?}",
+            args.namespace, args.address, args.publish_binary, args.socket
         );
 
         // Verify runtime binary exists
@@ -50,13 +52,20 @@ impl Shim for ReaperShim {
 
     async fn start_shim(&mut self, opts: StartOpts) -> Result<String, Error> {
         info!(
-            "start_shim() called with opts: id={}, namespace={:?}",
-            opts.id, opts.namespace
+            "start_shim() called with opts: id={}, namespace={:?}, ttrpc_address={}",
+            opts.id, opts.namespace, opts.ttrpc_address
         );
         let grouping = opts.id.clone();
-        info!("Calling spawn() with grouping={}", grouping);
+        let ttrpc_address = opts.ttrpc_address.clone();
+        info!(
+            "Calling spawn() with grouping={}, passing TTRPC_ADDRESS={}",
+            grouping, ttrpc_address
+        );
 
-        let address = spawn(opts, &grouping, Vec::new()).await.map_err(|e| {
+        // Pass TTRPC_ADDRESS to child process - this is REQUIRED for bootstrap to work!
+        let vars: Vec<(&str, &str)> = vec![("TTRPC_ADDRESS", ttrpc_address.as_str())];
+
+        let address = spawn(opts, &grouping, vars).await.map_err(|e| {
             tracing::error!("spawn() failed: {:?}", e);
             e
         })?;
@@ -80,6 +89,7 @@ impl Shim for ReaperShim {
         info!("create_task_service() called - creating ReaperTask");
         ReaperTask {
             runtime_path: self.runtime_path.clone(),
+            sandbox_state: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -87,6 +97,65 @@ impl Shim for ReaperShim {
 #[derive(Clone)]
 struct ReaperTask {
     runtime_path: String,
+    // Track which containers are sandboxes (pause containers) vs real workloads
+    // Key: container_id, Value: (is_sandbox, fake_pid)
+    sandbox_state: Arc<Mutex<HashMap<String, (bool, u32)>>>,
+}
+
+// Helper function to detect if a container is a sandbox/pause container
+fn is_sandbox_container(bundle: &str) -> bool {
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct OciConfig {
+        #[serde(default)]
+        process: Option<OciProcess>,
+        #[serde(default)]
+        annotations: Option<std::collections::HashMap<String, String>>,
+    }
+
+    #[derive(Deserialize)]
+    struct OciProcess {
+        #[serde(default)]
+        args: Vec<String>,
+    }
+
+    let config_path = Path::new(bundle).join("config.json");
+    let config_data = match std::fs::read_to_string(&config_path) {
+        Ok(data) => data,
+        Err(e) => {
+            tracing::warn!("Failed to read config.json: {}", e);
+            return false;
+        }
+    };
+
+    let config: OciConfig = match serde_json::from_str(&config_data) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Failed to parse config.json: {}", e);
+            return false;
+        }
+    };
+
+    // Check for pause container indicators:
+    // 1. Command is "/pause" or contains "pause"
+    // 2. Annotation indicates it's a sandbox
+    if let Some(process) = config.process {
+        if let Some(cmd) = process.args.first() {
+            if cmd.contains("pause") {
+                return true;
+            }
+        }
+    }
+
+    if let Some(annotations) = config.annotations {
+        // CRI annotation for sandbox containers
+        if annotations.get("io.kubernetes.cri.container-type") == Some(&"sandbox".to_string()) {
+            return true;
+        }
+    }
+
+    false
 }
 
 #[async_trait::async_trait]
@@ -99,6 +168,36 @@ impl Task for ReaperTask {
         info!(
             "create() called - container_id={}, bundle={}",
             req.id, req.bundle
+        );
+
+        // Detect if this is a sandbox/pause container
+        let is_sandbox = is_sandbox_container(&req.bundle);
+
+        if is_sandbox {
+            info!("create() - detected SANDBOX container, faking creation");
+            // Track this as a sandbox with fake PID
+            let mut state = self.sandbox_state.lock().unwrap();
+            state.insert(req.id.clone(), (true, 1));
+
+            info!("create() succeeded - container_id={} (sandbox)", req.id);
+            return Ok(api::CreateTaskResponse {
+                pid: 1,
+                ..Default::default()
+            });
+        }
+
+        // Real workload container - call reaper-runtime
+        info!("create() - detected WORKLOAD container, calling reaper-runtime");
+
+        // Track this as a real workload
+        {
+            let mut state = self.sandbox_state.lock().unwrap();
+            state.insert(req.id.clone(), (false, 0));
+        }
+
+        info!(
+            "create() - about to execute: {} create {} --bundle {}",
+            self.runtime_path, req.id, req.bundle
         );
 
         // Call reaper-runtime create <container-id> --bundle <bundle-path>
@@ -116,6 +215,13 @@ impl Task for ReaperTask {
                     format!("Failed to execute reaper-runtime create: {}", e),
                 ))
             })?;
+
+        info!(
+            "create() - command completed, status={}, stdout_len={}, stderr_len={}",
+            output.status,
+            output.stdout.len(),
+            output.stderr.len()
+        );
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -138,6 +244,26 @@ impl Task for ReaperTask {
         req: api::StartRequest,
     ) -> TtrpcResult<api::StartResponse> {
         info!("start() called - container_id={}", req.id);
+
+        // Check if this is a sandbox container
+        let is_sandbox = {
+            let state = self.sandbox_state.lock().unwrap();
+            state
+                .get(&req.id)
+                .map(|(is_sand, _)| *is_sand)
+                .unwrap_or(false)
+        };
+
+        if is_sandbox {
+            info!("start() - SANDBOX container, returning fake PID");
+            return Ok(api::StartResponse {
+                pid: 1,
+                ..Default::default()
+            });
+        }
+
+        // Real workload - call reaper-runtime
+        info!("start() - WORKLOAD container, calling reaper-runtime");
 
         // Call reaper-runtime start <container-id>
         let output = Command::new(&self.runtime_path)
@@ -200,6 +326,30 @@ impl Task for ReaperTask {
     ) -> TtrpcResult<api::DeleteResponse> {
         info!("delete() called - container_id={}", req.id);
 
+        // Check if this is a sandbox container
+        let is_sandbox = {
+            let mut state = self.sandbox_state.lock().unwrap();
+            let result = state
+                .get(&req.id)
+                .map(|(is_sand, _)| *is_sand)
+                .unwrap_or(false);
+            // Remove from state
+            state.remove(&req.id);
+            result
+        };
+
+        if is_sandbox {
+            info!("delete() - SANDBOX container, cleaning up fake state");
+            return Ok(api::DeleteResponse {
+                pid: 1,
+                exit_status: 0,
+                ..Default::default()
+            });
+        }
+
+        // Real workload - call reaper-runtime
+        info!("delete() - WORKLOAD container, calling reaper-runtime");
+
         // Call reaper-runtime delete <container-id>
         let output = Command::new(&self.runtime_path)
             .arg("delete")
@@ -231,6 +381,23 @@ impl Task for ReaperTask {
             "kill() called - container_id={}, signal={}, all={}",
             req.id, req.signal, req.all
         );
+
+        // Check if this is a sandbox container
+        let is_sandbox = {
+            let state = self.sandbox_state.lock().unwrap();
+            state
+                .get(&req.id)
+                .map(|(is_sand, _)| *is_sand)
+                .unwrap_or(false)
+        };
+
+        if is_sandbox {
+            info!("kill() - SANDBOX container, ignoring signal");
+            return Ok(api::Empty::new());
+        }
+
+        // Real workload - call reaper-runtime
+        info!("kill() - WORKLOAD container, calling reaper-runtime");
 
         // Call reaper-runtime kill <container-id> <signal>
         let output = Command::new(&self.runtime_path)
@@ -273,7 +440,25 @@ impl Task for ReaperTask {
             req.id, req.exec_id
         );
 
-        // Poll reaper-runtime state until container stops
+        // Check if this is a sandbox container
+        let is_sandbox = {
+            let state = self.sandbox_state.lock().unwrap();
+            state
+                .get(&req.id)
+                .map(|(is_sand, _)| *is_sand)
+                .unwrap_or(false)
+        };
+
+        if is_sandbox {
+            info!("wait() - SANDBOX container, returning immediately with exit status 0");
+            let mut resp = api::WaitResponse::new();
+            resp.set_exit_status(0);
+            return Ok(resp);
+        }
+
+        // Real workload - poll reaper-runtime state until container stops
+        info!("wait() - WORKLOAD container, polling reaper-runtime");
+
         loop {
             let output = Command::new(&self.runtime_path)
                 .arg("state")
@@ -326,6 +511,29 @@ impl Task for ReaperTask {
             "state() called - container_id={}, exec_id={:?}",
             req.id, req.exec_id
         );
+
+        // Check if this is a sandbox container
+        let is_sandbox = {
+            let state = self.sandbox_state.lock().unwrap();
+            state
+                .get(&req.id)
+                .map(|(is_sand, _)| *is_sand)
+                .unwrap_or(false)
+        };
+
+        if is_sandbox {
+            info!("state() - SANDBOX container, returning fake state");
+            return Ok(api::StateResponse {
+                id: req.id,
+                bundle: String::new(),
+                pid: 1,
+                status: ::protobuf::EnumOrUnknown::new(api::Status::RUNNING),
+                ..Default::default()
+            });
+        }
+
+        // Real workload - query reaper-runtime
+        info!("state() - WORKLOAD container, querying reaper-runtime");
 
         // Query runtime for actual state
         let output = Command::new(&self.runtime_path)
@@ -467,6 +675,86 @@ impl Task for ReaperTask {
             "ResizePty not supported for non-interactive containers".to_string(),
         )))
     }
+
+    async fn connect(
+        &self,
+        _ctx: &TtrpcContext,
+        req: api::ConnectRequest,
+    ) -> TtrpcResult<api::ConnectResponse> {
+        info!("connect() called - container_id={}", req.id);
+
+        // Check if this is a sandbox container
+        let is_sandbox = {
+            let state = self.sandbox_state.lock().unwrap();
+            state
+                .get(&req.id)
+                .map(|(is_sand, _)| *is_sand)
+                .unwrap_or(false)
+        };
+
+        if is_sandbox {
+            info!("connect() - SANDBOX container, returning fake PID");
+            let mut resp = api::ConnectResponse::new();
+            resp.set_task_pid(1); // Fake PID for sandbox
+            resp.set_shim_pid(std::process::id());
+            return Ok(resp);
+        }
+
+        // Real workload - get PID from reaper-runtime
+        info!("connect() - WORKLOAD container, querying reaper-runtime");
+
+        let state_output = Command::new(&self.runtime_path)
+            .arg("state")
+            .arg(&req.id)
+            .output()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to execute reaper-runtime state: {}", e);
+                ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::INTERNAL,
+                    format!("Failed to execute reaper-runtime state: {}", e),
+                ))
+            })?;
+
+        let state: serde_json::Value =
+            serde_json::from_slice(&state_output.stdout).map_err(|e| {
+                tracing::error!("Failed to parse state output: {}", e);
+                ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::INTERNAL,
+                    format!("Failed to parse state output: {}", e),
+                ))
+            })?;
+
+        let pid = state["pid"].as_u64().unwrap_or(0) as u32;
+        let mut resp = api::ConnectResponse::new();
+        resp.set_task_pid(pid);
+        // shim_pid is the current process pid
+        resp.set_shim_pid(std::process::id());
+
+        info!(
+            "connect() succeeded - container_id={}, task_pid={}, shim_pid={}",
+            req.id,
+            pid,
+            std::process::id()
+        );
+        Ok(resp)
+    }
+
+    async fn shutdown(
+        &self,
+        _ctx: &TtrpcContext,
+        req: api::ShutdownRequest,
+    ) -> TtrpcResult<api::Empty> {
+        info!(
+            "shutdown() called - container_id={}, now={}",
+            req.id, req.now
+        );
+
+        // For now, we acknowledge the shutdown request
+        // The shim will exit when containerd disconnects
+        info!("shutdown() succeeded - container_id={}", req.id);
+        Ok(api::Empty::new())
+    }
 }
 
 #[tokio::main]
@@ -484,7 +772,8 @@ async fn main() {
         {
             tracing_subscriber::fmt()
                 .with_env_filter(
-                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+                    EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| EnvFilter::new("info,containerd_shim=debug")),
                 )
                 .with_ansi(false) // No color codes in log files
                 .with_writer(std::sync::Mutex::new(log_file))
@@ -511,6 +800,26 @@ async fn main() {
     }
 
     info!("Calling containerd_shim::run()...");
-    run::<ReaperShim>("io.containerd.reaper.v2", None).await;
+
+    // Log environment to help debug why server might not start
+    let args: Vec<String> = std::env::args().collect();
+    info!("Process args: {:?}", args);
+    info!("Working directory: {:?}", std::env::current_dir());
+
+    // Check if address file exists (used by child process)
+    if let Ok(address_content) = std::fs::read_to_string("address") {
+        info!("Found address file with content: {}", address_content);
+    } else {
+        info!("No address file found in working directory");
+    }
+
+    // Create Config with no_setup_logger=true since we already set up tracing
+    // Also set no_reaper=true to prevent the shim library from setting up SIGCHLD handler
+    // which interferes with our Command::output() calls
+    let mut config = Config::default();
+    config.no_setup_logger = true;
+    config.no_reaper = true;
+
+    run::<ReaperShim>("io.containerd.reaper.v2", Some(config)).await;
     info!("containerd_shim::run() completed normally");
 }
