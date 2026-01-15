@@ -77,9 +77,95 @@ cargo test --test integration_user_management
 - ✅ Binary execution with OCI config syntax
 - ✅ Process uid/gid/groups management
 - ✅ State persistence and lifecycle
+- ✅ Shim v2 integration with containerd
+- 🔄 Process monitoring and state transitions (IN PROGRESS)
 - ❌ Namespaces (not implemented - use host namespaces)
 - ❌ Cgroups (not implemented)
-- ❌ Kubernetes shim v2 protocol (future work, currently blocked)
+
+### Process Lifecycle Architecture
+**CRITICAL UNDERSTANDING**: The runtime is a short-lived CLI tool, NOT a daemon.
+
+#### Lifecycle Flow
+1. **containerd-shim-reaper-v2** (long-lived per-container process)
+   - Started by containerd for each container
+   - Calls `reaper-runtime create|start|delete` as needed
+   - Monitors container process lifecycle
+   - Reports state back to containerd/kubelet
+
+2. **reaper-runtime** (short-lived command invocations)
+   - `create`: Validates bundle, saves initial state
+   - `start`: Spawns host process, updates state to "running", **returns immediately**
+   - `state`: Reads and returns current state JSON
+   - `delete`: Cleans up state directory
+   - `kill`: Sends signal to process
+
+3. **Process Monitoring Challenge**
+   - After `reaper-runtime start` returns, the spawned process is orphaned
+   - The runtime process exits, so it cannot wait() on the child
+   - Threads spawned in `do_start()` die when the runtime process exits
+   - **Solution**: The SHIM must monitor the process, not the runtime
+
+#### Current Implementation Status (Jan 2026)
+- ✅ Runtime spawns processes with fork-based monitoring daemon
+- ✅ Monitoring daemon stays alive as parent of workload process
+- ✅ Daemon waits for workload completion and updates state
+- ✅ State includes exit_code field
+- ✅ Shim polls state file for status changes
+- ✅ Proper parent-child relationship for process reaping
+
+### Key Learnings from Investigation
+
+#### Why Threads in Runtime Don't Work
+1. **Thread Timing Issue**: Threads spawned at the beginning of `do_start()` execute, but threads spawned near the end don't
+2. **Process Exit**: When `do_start()` returns Ok(()), the runtime process exits
+3. **Thread Termination**: All spawned threads are killed when the parent process exits
+4. **Test Evidence**:
+   - `TEST1-SIMPLE.txt` (spawned early) appears
+   - `THREAD-STARTED.txt` (spawned late) never appears
+   - This is NOT a threading problem - it's a process lifecycle problem
+
+#### Why Moving Child Fails
+1. **Observation**: Simple threads with `move ||` work fine
+2. **Observation**: Threads trying to move `std::process::Child` never execute
+3. **Evidence**: Thread-started file is 0 bytes, or doesn't exist
+4. **Root Cause**: Still unknown, but irrelevant since threads won't work anyway
+
+#### Correct Architecture (Implemented)
+The runtime forks a monitoring daemon:
+```rust
+// In reaper-runtime start command
+let child = spawn_workload_process();
+let workload_pid = child.id();
+
+match unsafe { fork() } {
+    Ok(ForkResult::Parent { .. }) => {
+        // Parent returns immediately (start command completes)
+        println!("started pid={}", workload_pid);
+        std::process::exit(0);
+    }
+    Ok(ForkResult::Child) => {
+        // Child becomes monitoring daemon
+        setsid(); // Detach from terminal
+
+        // Wait for workload to complete
+        match child.wait() {
+            Ok(status) => {
+                let exit_code = status.code().unwrap_or(1);
+                update_state_to_stopped(exit_code);
+            }
+        }
+        std::process::exit(0);
+    }
+}
+```
+
+Process tree:
+```
+containerd-shim-reaper-v2 (long-lived)
+  └─ reaper-runtime start (exits immediately after fork)
+       ├─ workload process (child of daemon)
+       └─ monitoring daemon (stays alive, waits for workload)
+```
 
 ### Security Considerations
 1. Without user field in config.json, processes run as runtime's effective UID

@@ -9,6 +9,8 @@ pub struct ContainerState {
     pub bundle: PathBuf,
     pub status: String, // created | running | stopped
     pub pid: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
 }
 
 impl ContainerState {
@@ -18,6 +20,7 @@ impl ContainerState {
             bundle,
             status: "created".into(),
             pid: None,
+            exit_code: None,
         }
     }
 }
@@ -152,6 +155,7 @@ mod tests {
                 bundle: PathBuf::from("/bundle/path"),
                 status: "running".to_string(),
                 pid: Some(1234),
+                exit_code: None,
             };
 
             // Save state

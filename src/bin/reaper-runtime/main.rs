@@ -2,7 +2,6 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use std::fs;
-use std::os::unix::process::CommandExt; // For pre_exec
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tracing::info;
@@ -149,18 +148,16 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
     if args.is_empty() {
         bail!("process.args must contain at least one element (program)");
     }
-    let program = &args[0];
-    let argv = &args[1..];
+    let program = args[0].clone();
+    let argv: Vec<String> = args[1..].to_vec();
 
     // Reaper runs HOST binaries, not container binaries
     // For absolute paths, use them directly on the host
     // For relative paths, let the shell resolve via PATH
     let program_path = if program.starts_with('/') {
-        // Absolute path - use directly on host
-        PathBuf::from(program)
+        PathBuf::from(&program)
     } else {
-        // Relative path - will be resolved via PATH by the system
-        PathBuf::from(program)
+        PathBuf::from(&program)
     };
 
     info!(
@@ -172,7 +169,6 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
     );
 
     // Handle user/group ID switching before exec
-    // This must be done in the child process, not the parent
     let user_config = proc.user;
     if let Some(ref user) = user_config {
         info!(
@@ -183,90 +179,134 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
         info!("do_start() - no user config, will run as current user");
     }
 
-    // We need to use a pre_exec hook to set uid/gid before the child process runs
-    // This is safer than trying to do it in the parent
-    unsafe {
-        let mut cmd = Command::new(&program_path);
-        cmd.args(argv);
-        if let Some(cwd) = proc.cwd.as_deref() {
-            cmd.current_dir(cwd);
-        }
-        // Pass env as key=value
-        if let Some(envs) = proc.env.as_ref() {
-            for kv in envs {
-                if let Some((k, v)) = kv.split_once('=') {
-                    cmd.env(k, v);
+    // Clone data needed for the forked child
+    let container_id = id.to_string();
+    let cwd = proc.cwd.clone();
+    let env_vars = proc.env.clone();
+
+    use nix::unistd::{fork, ForkResult};
+
+    // CRITICAL: Fork FIRST, then spawn the workload in the forked child.
+    // This ensures the monitoring daemon is the actual parent of the workload,
+    // allowing it to properly call wait() and reap the child.
+    //
+    // Previous bug: We were spawning the workload first, then forking.
+    // After fork(), the std::process::Child handle is invalid in the forked child
+    // because it was created by the parent process.
+
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child: daemon_pid }) => {
+            // Parent process (original reaper-runtime start command)
+            // We don't know the workload PID yet - the daemon will report it
+            // For now, just report the daemon PID and let the daemon update state
+            info!(
+                "do_start() - forked monitoring daemon (pid={}), parent returning",
+                daemon_pid
+            );
+
+            // Wait briefly for daemon to spawn workload and update state
+            // This is a simple synchronization mechanism
+            std::thread::sleep(std::time::Duration::from_millis(100));
+
+            // Read the PID from state (daemon should have updated it)
+            if let Ok(state) = load_state(&container_id) {
+                if let Some(pid) = state.pid {
+                    println!("started pid={}", pid);
+                } else {
+                    // Fallback: report daemon PID if workload PID not yet available
+                    println!("started pid={}", daemon_pid);
                 }
+            } else {
+                println!("started pid={}", daemon_pid);
             }
+
+            Ok(())
         }
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+        Ok(ForkResult::Child) => {
+            // Child process (monitoring daemon)
+            // This process will spawn and monitor the workload
 
-        // TODO: Temporarily disabled user switching for debugging - will re-enable with proper containerization
-        /*
-        // Set uid/gid/groups in the child process before exec
-        if let Some(user) = user_config {
-            cmd.pre_exec(move || {
-                use nix::unistd::{setgid, setuid, Gid, Uid};
+            // Detach from parent session to become a proper daemon
+            if let Err(e) = nix::unistd::setsid() {
+                eprintln!("Monitor daemon: setsid failed: {}", e);
+            }
 
-                // Set supplementary groups first
-                if !user.additional_gids.is_empty() {
-                    let gids: Vec<nix::libc::gid_t> = user.additional_gids.clone();
-                    // setgroups signature differs by platform:
-                    // - Linux: setgroups(size_t, *const gid_t)
-                    // - macOS/BSD: setgroups(c_int, *const gid_t)
-                    #[cfg(target_os = "linux")]
-                    let ret = nix::libc::setgroups(gids.len(), gids.as_ptr());
-                    #[cfg(not(target_os = "linux"))]
-                    let ret = nix::libc::setgroups(gids.len() as nix::libc::c_int, gids.as_ptr());
-
-                    if ret != 0 {
-                        return Err(std::io::Error::last_os_error());
+            // Now spawn the workload - we are its parent!
+            let mut cmd = Command::new(&program_path);
+            cmd.args(&argv);
+            if let Some(cwd) = cwd.as_deref() {
+                cmd.current_dir(cwd);
+            }
+            if let Some(envs) = env_vars.as_ref() {
+                for kv in envs {
+                    if let Some((k, v)) = kv.split_once('=') {
+                        cmd.env(k, v);
                     }
                 }
+            }
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit());
 
-                // Set GID (must be done before UID for privilege dropping)
-                let gid = Gid::from_raw(user.gid);
-                setgid(gid).map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        format!("setgid failed: {}", e),
-                    )
-                })?;
+            match cmd.spawn() {
+                Ok(mut child) => {
+                    let workload_pid = child.id() as i32;
 
-                // Set UID (this drops privileges if running as root)
-                let uid = Uid::from_raw(user.uid);
-                setuid(uid).map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        format!("setuid failed: {}", e),
-                    )
-                })?;
+                    // Update state to running with the actual workload PID
+                    if let Ok(mut state) = load_state(&container_id) {
+                        state.status = "running".into();
+                        state.pid = Some(workload_pid);
+                        let _ = save_state(&state);
+                        let _ = save_pid(&container_id, workload_pid);
+                    }
 
-                // Set umask if specified
-                if let Some(umask_value) = user.umask {
-                    nix::libc::umask(umask_value as nix::libc::mode_t);
+                    // IMPORTANT: Give containerd/kubelet time to observe the "running" state
+                    // before the container potentially exits. For very fast commands (like echo),
+                    // the process may complete before containerd has registered the start,
+                    // causing the pod to get stuck in "Running" state forever.
+                    // This delay ensures the state machine transitions properly:
+                    // created -> running -> stopped
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+
+                    // Wait for the workload process to exit
+                    // We are the parent, so this will work correctly!
+                    match child.wait() {
+                        Ok(exit_status) => {
+                            let exit_code = exit_status.code().unwrap_or(1);
+
+                            // Update state to stopped with exit code
+                            if let Ok(mut state) = load_state(&container_id) {
+                                state.status = "stopped".into();
+                                state.exit_code = Some(exit_code);
+                                let _ = save_state(&state);
+                            }
+                        }
+                        Err(_e) => {
+                            // wait() failed - mark as stopped with error
+                            if let Ok(mut state) = load_state(&container_id) {
+                                state.status = "stopped".into();
+                                state.exit_code = Some(1);
+                                let _ = save_state(&state);
+                            }
+                        }
+                    }
                 }
+                Err(_e) => {
+                    // Failed to spawn workload
+                    if let Ok(mut state) = load_state(&container_id) {
+                        state.status = "stopped".into();
+                        state.exit_code = Some(1);
+                        let _ = save_state(&state);
+                    }
+                }
+            }
 
-                Ok(())
-            });
+            // Daemon exits after workload completes
+            std::process::exit(0);
         }
-        */
-
-        info!("do_start() - spawning process...");
-        let child = cmd.spawn().context("failed to spawn process")?;
-        let pid = child.id() as i32;
-        info!("do_start() - process spawned successfully, pid={}", pid);
-        let mut state = load_state(id)?;
-        state.status = "running".into();
-        state.pid = Some(pid);
-        save_state(&state)?;
-        save_pid(id, pid)?;
-        info!("do_start() succeeded - container={}, pid={}", id, pid);
-
-        println!("started pid={}", pid);
-        Ok(())
+        Err(e) => {
+            bail!("Failed to fork monitoring daemon: {}", e);
+        }
     }
 }
 
@@ -288,12 +328,25 @@ fn do_kill(id: &str, signal: Option<i32>) -> Result<()> {
     info!("do_kill() - sending signal {} to pid {}", signal, pid);
     // Use nix to send signal
     let sig = nix::sys::signal::Signal::try_from(signal).context("invalid signal")?;
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), sig)
-        .context("failed to send signal")?;
-    info!(
-        "do_kill() succeeded - id={}, signal={}, pid={}",
-        id, signal, pid
-    );
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), sig) {
+        Ok(()) => {
+            info!(
+                "do_kill() succeeded - id={}, signal={}, pid={}",
+                id, signal, pid
+            );
+        }
+        Err(nix::errno::Errno::ESRCH) => {
+            // Process doesn't exist - this is expected if the container already exited
+            // Return success since the goal (container not running) is achieved
+            info!(
+                "do_kill() - process {} already exited (ESRCH), treating as success",
+                pid
+            );
+        }
+        Err(e) => {
+            bail!("failed to send signal: {}", e);
+        }
+    }
     Ok(())
 }
 

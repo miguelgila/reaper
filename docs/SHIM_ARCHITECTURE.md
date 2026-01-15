@@ -5,34 +5,48 @@
 Reaper implements a **3-tier OCI runtime architecture**:
 
 ```
-containerd → containerd-shim-reaper-v2 → reaper-runtime
+containerd → containerd-shim-reaper-v2 → reaper-runtime → monitoring daemon → workload
 ```
 
 This follows the standard OCI runtime shim pattern where:
 1. **containerd** (container manager) calls the shim
 2. **shim** (process lifecycle manager) calls the OCI runtime binary
-3. **runtime** (container executor) manages actual container lifecycle
+3. **runtime** (container executor) forks a monitoring daemon
+4. **monitoring daemon** spawns and monitors the workload
 
 ## Binary Components
 
 ### 1. containerd-shim-reaper-v2
 - **Location**: `/usr/local/bin/containerd-shim-reaper-v2`
 - **Purpose**: TTRPC-based shim that implements containerd's Shim v2 protocol
+- **Lifetime**: Long-lived (one per container)
 - **Responsibilities**:
   - Handle TTRPC requests from containerd
   - Translate containerd API calls to OCI runtime commands
-  - Manage communication between containerd and reaper-runtime
+  - Poll state file for status changes
+  - Publish TaskExit events when containers stop
   - Report container state back to containerd
 
 ### 2. reaper-runtime
 - **Location**: `/usr/local/bin/reaper-runtime`
-- **Purpose**: OCI-compliant runtime that executes containers
+- **Purpose**: OCI-compliant runtime CLI
+- **Lifetime**: Short-lived (exits after each command)
 - **Responsibilities**:
   - Parse OCI bundle's `config.json`
-  - Execute container processes
+  - Fork monitoring daemon (on `start`)
   - Manage container state (`created`, `running`, `stopped`)
   - Handle signals and process lifecycle
   - Persist state to `/run/reaper/<container-id>/`
+
+### 3. Monitoring Daemon
+- **Location**: Forked by reaper-runtime
+- **Purpose**: Monitor workload process lifecycle
+- **Lifetime**: Lives until workload completes
+- **Responsibilities**:
+  - Spawn the workload process (becomes its parent)
+  - Call `wait()` to capture exit code
+  - Update state file when workload exits
+  - Exit cleanly (no lingering processes)
 
 ## Architecture Flow
 
@@ -47,20 +61,38 @@ reaper-runtime create <id> --bundle <path>
 /run/reaper/<id>/state.json (status: created)
 ```
 
-### Container Start
+### Container Start (Fork-First Architecture)
 ```
 containerd (TTRPC StartRequest)
   ↓
 containerd-shim-reaper-v2 (Task::start)
   ↓ executes
 reaper-runtime start <id>
-  ↓ spawns process, updates state
-/run/reaper/<id>/state.json (status: running, pid: 1234)
-  ↓ queries for PID
-reaper-runtime state <id>
-  ↓ returns
-{id, bundle, pid, status}
+  ↓ FORK FIRST (CRITICAL!)
+       ├─ Parent process (CLI): waits 100ms, then exits
+       └─ Child (monitoring daemon):
+            ↓ setsid() - detach from terminal
+            ↓ spawn workload
+            echo "hello" (PID 1234)
+            ↓ update state to "running"
+            ↓ sleep 500ms (let containerd observe running state)
+            ↓ child.wait() - blocks until workload exits
+            ↓ update state to "stopped" with exit_code
+            ↓ exit
 ```
+
+**Process Tree During Execution:**
+```
+containerd-shim-reaper-v2 (PID 100, long-lived)
+  └─ [calls reaper-runtime start]
+
+After fork:
+init (PID 1)
+  └─ monitoring daemon (PID 201, session leader)
+       └─ workload process (PID 1234, child of daemon)
+```
+
+**Key Point:** The monitoring daemon spawns the workload, making itself the workload's parent. This allows it to call `wait()` and capture the real exit code.
 
 ### Container State Query
 ```
@@ -74,7 +106,8 @@ reaper-runtime state <id>
   "id": "container-123",
   "bundle": "/var/lib/containerd/.../bundle",
   "pid": 1234,
-  "status": "running"
+  "status": "stopped",
+  "exit_code": 0
 }
 ```
 
@@ -85,8 +118,7 @@ containerd (TTRPC KillRequest)
 containerd-shim-reaper-v2 (Task::kill)
   ↓ executes
 reaper-runtime kill <id> <signal>
-  ↓ sends signal to PID
-kill(pid, SIGTERM)
+  ↓ sends signal (or returns OK if ESRCH - process already dead)
 ```
 
 ### Container Delete
@@ -100,120 +132,220 @@ reaper-runtime delete <id>
 rm -rf /run/reaper/<id>/
 ```
 
+## Fork-First Architecture (CRITICAL)
+
+### The Problem
+
+Container runtimes face a fundamental challenge:
+1. OCI spec requires runtime CLI to exit immediately after `start`
+2. Someone needs to `wait()` on the workload to get exit code
+3. Only a process's **parent** can call `wait()` on it
+
+### Previous Bug (FIXED January 2026)
+
+We originally implemented: spawn workload first, then fork.
+
+```rust
+// WRONG - DO NOT DO THIS
+let child = Command::new(program).spawn()?;  // Spawn first
+match unsafe { fork() }? {
+    ForkResult::Child => {
+        child.wait();  // FAILS! child handle invalid after fork
+    }
+}
+```
+
+**Why it failed:** After `fork()`, the `std::process::Child` handle was invalid in the forked child because it was created by the parent process. The internal file descriptors and state don't transfer correctly across fork.
+
+### Correct Implementation: Fork FIRST
+
+```rust
+// CORRECT - Fork first, then spawn in daemon
+match unsafe { fork() }? {
+    ForkResult::Parent { child: daemon_pid } => {
+        // CLI process
+        sleep(100ms);  // Let daemon start
+        println!("started pid={}", workload_pid);  // Read from state
+        exit(0);  // Exit immediately
+    }
+    ForkResult::Child => {
+        // Monitoring daemon
+        setsid()?;  // Become session leader, detach from terminal
+
+        // NOW spawn - we will be the parent!
+        let child = Command::new(program).spawn()?;
+        update_state("running", child.id());
+
+        sleep(500ms);  // Let containerd observe "running" state
+
+        let status = child.wait()?;  // THIS WORKS! We're the parent!
+        update_state("stopped", status.code());
+
+        exit(0);
+    }
+}
+```
+
+### Why Fork-First Works
+
+1. **Daemon is the parent of workload**
+   - Daemon spawns workload → daemon is parent
+   - `wait()` only works on children → daemon can wait ✅
+
+2. **Proper zombie reaping**
+   - When workload exits, it becomes zombie
+   - Daemon (parent) calls `wait()` → zombie reaped ✅
+
+3. **Real exit codes captured**
+   - `wait()` returns actual `ExitStatus`
+   - Written to state file
+   - Shim reads and reports to containerd
+
+4. **Clean process lifecycle**
+   - Daemon exits after updating state
+   - No orphan processes
+   - No zombie processes
+
+### Timing Considerations
+
+**500ms delay is critical for fast processes:**
+
+Without delay:
+```
+1. Container starts at T=0
+2. Echo completes at T=1ms
+3. State becomes "stopped"
+4. containerd's wait() sees "stopped" immediately
+5. But containerd never saw "running" state!
+6. State machine confused → pod stuck in "Running"
+```
+
+With 500ms delay:
+```
+1. Container starts at T=0
+2. State becomes "running" at T=1ms
+3. Daemon sleeps for 500ms
+4. containerd observes "running" state
+5. Echo completes (already done, wait() returns)
+6. State becomes "stopped" at T=501ms
+7. containerd sees proper transition → pod becomes "Completed"
+```
+
+## TaskExit Event Publishing
+
+When the shim's `wait()` detects that a container has stopped, it publishes a `TaskExit` event:
+
+```rust
+let event = TaskExit {
+    container_id: container_id.to_string(),
+    id: container_id.to_string(),
+    pid,
+    exit_status: exit_code,
+    exited_at: timestamp,  // REQUIRED!
+    ..Default::default()
+};
+
+self.publisher.publish(
+    Context::default(),
+    "/tasks/exit",
+    &self.namespace,
+    Box::new(event),
+).await?;
+```
+
+**Critical:** The `exited_at` timestamp must be set! Without it, containerd may not properly handle the exit.
+
+## Kill Handling (ESRCH)
+
+When containerd receives a TaskExit event, it often tries to `kill()` the container as part of cleanup. For already-exited processes, this returns `ESRCH` (no such process).
+
+**Previous bug:** We returned an error on ESRCH, causing containerd to fail exit handling.
+
+**Fix:** Treat ESRCH as success (the goal is achieved - process is not running).
+
+```rust
+match nix::sys::signal::kill(pid, sig) {
+    Ok(()) => { /* Success */ }
+    Err(nix::errno::Errno::ESRCH) => {
+        // Process already dead - goal achieved!
+        info!("Process {} already exited (ESRCH), treating as success", pid);
+    }
+    Err(e) => bail!("failed to send signal: {}", e),
+}
+```
+
 ## Implementation Details
 
-### Shim Implementation (main.rs)
-
-#### ReaperShim Struct
+### ReaperShim Struct
 ```rust
 #[derive(Clone)]
 struct ReaperShim {
     exit: Arc<ExitSignal>,
-    runtime_path: String,  // Path to reaper-runtime binary
+    runtime_path: String,
+    namespace: String,  // For event publishing
 }
 ```
 
-The shim discovers the runtime binary via:
-1. `REAPER_RUNTIME_PATH` environment variable (if set)
-2. Default path: `/usr/local/bin/reaper-runtime`
-
-#### ReaperTask Struct
+### ReaperTask Struct
 ```rust
 #[derive(Clone)]
 struct ReaperTask {
-    runtime_path: String,  // Inherited from ReaperShim
+    runtime_path: String,
+    sandbox_state: Arc<Mutex<HashMap<String, (bool, u32)>>>,
+    publisher: Arc<RemotePublisher>,  // For TaskExit events
+    namespace: String,
 }
 ```
 
-Each task operation invokes the runtime binary:
-
-```rust
-// Example: create operation
-Command::new(&self.runtime_path)
-    .arg("create")
-    .arg(&req.id)
-    .arg("--bundle")
-    .arg(&req.bundle)
-    .output()
-    .await
+### State File Format
+```json
+{
+  "id": "abc123...",
+  "bundle": "/run/containerd/io.containerd.runtime.v2.task/k8s.io/abc123...",
+  "status": "stopped",
+  "pid": 12345,
+  "exit_code": 0
+}
 ```
 
-### Runtime CLI (reaper-runtime)
+### Sandbox Container Handling
 
-OCI runtime commands:
-- `create <id> --bundle <path>` - Create container from bundle
-- `start <id>` - Start the container process
-- `state <id>` - Query container state (JSON output)
-- `kill <id> <signal>` - Send signal to container
-- `delete <id>` - Remove container and cleanup
+Kubernetes uses "pause" containers for pod networking. These are detected and handled specially:
 
-### State Management
+```rust
+fn is_sandbox_container(bundle: &str) -> bool {
+    // Check image name, command, or args for "pause"
+}
+```
 
-The shim does **NOT** maintain in-memory state. All state queries are delegated to the runtime, which persists state in `/run/reaper/<container-id>/state.json`.
-
-This design ensures:
-- State survives shim restarts
-- Single source of truth (runtime owns state)
-- Simplified shim implementation (stateless bridge)
+Sandboxes return fake responses immediately (PID 1, exit code 0) without spawning real processes.
 
 ## Deployment Requirements
 
 ### Both Binaries Required
 
-The system requires **BOTH** binaries to be deployed:
-
 1. **containerd-shim-reaper-v2** at `/usr/local/bin/`
-   - Discovered by containerd via `runtime_type = "io.containerd.reaper.v2"`
-   - Must be executable
-   - Logs to file only if `REAPER_SHIM_LOG` env var is set (prevents stdout/stderr pollution)
+   - Named exactly `containerd-shim-reaper-v2` (containerd naming convention)
+   - Discoverable via `runtime_type = "io.containerd.reaper.v2"`
 
 2. **reaper-runtime** at `/usr/local/bin/`
-   - Invoked by shim for all container operations
-   - Must be executable
-   - Must be in shim's PATH or at default location
+   - Invoked by shim for OCI operations
+   - Configurable via `REAPER_RUNTIME_PATH` env var
 
 ### Logging Configuration
 
-**IMPORTANT**: Both binaries do NOT log to stdout/stderr by default. Containerd communicates with shims via stdout/stderr using the TTRPC binary protocol, and the runtime prints JSON output, so any log text would corrupt the communication.
+Both binaries stay silent by default (required for TTRPC protocol).
 
-#### Shim Logging
-
-To enable shim logging:
+Enable logging:
 ```bash
 export REAPER_SHIM_LOG=/var/log/reaper-shim.log
-```
-
-When `REAPER_SHIM_LOG` is set, the shim will:
-- Write logs to the specified file
-- Disable ANSI color codes (plain text only)
-- Append to the file (not overwrite)
-- Log all lifecycle events, task operations, and TTRPC calls
-
-Without `REAPER_SHIM_LOG`, the shim runs silently.
-
-#### Runtime Logging
-
-To enable runtime logging:
-```bash
 export REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log
 ```
 
-When `REAPER_RUNTIME_LOG` is set, the runtime will:
-- Write logs to the specified file
-- Disable ANSI color codes (plain text only)
-- Append to the file (not overwrite)
-- Log all OCI runtime commands (create, start, state, kill, delete)
-- Log process spawning, user/group configuration, and state management
-
-Without `REAPER_RUNTIME_LOG`, the runtime runs silently (only JSON output to stdout).
-
-#### Systemd Configuration
-
-For production deployments, set both environment variables via systemd drop-in file:
-
+For systemd:
 ```bash
 sudo mkdir -p /etc/systemd/system/containerd.service.d
-sudo tee /etc/systemd/system/containerd.service.d/reaper-shim-logging.conf <<EOF
+sudo tee /etc/systemd/system/containerd.service.d/reaper-logging.conf <<EOF
 [Service]
 Environment="REAPER_SHIM_LOG=/var/log/reaper-shim.log"
 Environment="REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log"
@@ -228,7 +360,6 @@ sudo systemctl restart containerd
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
   runtime_type = "io.containerd.reaper.v2"
   sandbox_mode = "podsandbox"
-  # NO options section - causes cgroup errors
 ```
 
 ### Kubernetes RuntimeClass
@@ -241,78 +372,75 @@ metadata:
 handler: reaper-v2
 ```
 
+### Example Pod
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-example
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never  # Important for one-shot tasks!
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/echo", "Hello from Reaper!"]
+```
+
+## Testing
+
+### Deploy to Minikube
+```bash
+./scripts/minikube-setup-runtime.sh
+```
+
+### Verify Pod Completion
+```bash
+kubectl get pod reaper-example
+# Expected: Completed (0 restarts)
+```
+
+### Check State File
+```bash
+minikube ssh -- 'sudo cat /run/reaper/<container-id>/state.json'
+```
+
+### View Logs
+```bash
+minikube ssh -- 'tail -50 /var/log/reaper-shim.log'
+minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
+```
+
 ## Troubleshooting
 
-### Logs Show ANSI Color Codes / "Invalid Argument" Error
-**Cause**: Shim was logging to stdout/stderr, polluting TTRPC communication
-**Fix**: Shim now only logs when `REAPER_SHIM_LOG` env var is set. Set it to a file path for debugging:
-```bash
-export REAPER_SHIM_LOG=/var/log/reaper-shim.log
-```
+### Pod Stuck in "Running"
+**Possible causes:**
+1. Timing issue - process completed before containerd saw "running"
+2. TaskExit event missing timestamp
+3. kill() returning error for dead process
 
-### "Env(NotPresent)" Error
-**Cause**: Shim was trying to execute directly instead of calling runtime binary
-**Fix**: Refactored shim to invoke reaper-runtime for all operations
+**Solution:** All fixed in January 2026 - ensure you have latest code.
 
-### "runtime binary not found"
-**Cause**: reaper-runtime not deployed or not in PATH
-**Fix**: Ensure both binaries are deployed and executable
+### Zombie Processes
+**Cause:** Monitoring daemon not properly reaping workload
+**Solution:** Fork-first architecture ensures daemon is parent of workload
 
-### Cgroup Errors
-**Cause**: `options` section in containerd config
-**Fix**: Remove options section from containerd runtime config
+### "Process already exited (ESRCH)"
+**Status:** This is now handled gracefully and logged as success
 
-### TTRPC Socket Creation Failure
-**Cause**: Shim not properly implementing protocol or logging to stdout
-**Fix**: Use `containerd_shim::asynchronous::run()` and disable stdout logging
-
-### Local Testing
-```bash
-# Build both binaries
-cargo build --bin reaper-runtime --bin containerd-shim-reaper-v2
-
-# Test runtime CLI directly
-./target/debug/reaper-runtime --help
-./target/debug/reaper-runtime create test1 --bundle /path/to/bundle
-./target/debug/reaper-runtime state test1
-./target/debug/reaper-runtime start test1
-./target/debug/reaper-runtime kill test1 15
-./target/debug/reaper-runtime delete test1
-```
-
-### Minikube Testing
-```bash
-# Deploy both binaries and configure containerd
-./scripts/minikube-setup-runtime.sh
-
-# Create test pod
-kubectl apply -f kubernetes/pod-example.yaml
-kubectl logs reaper-example
-```
-
-### Kind Testing
-```bash
-# Deploy and run integration test
-./scripts/kind-integration.sh
-```
-
-## Future Enhancements
-
-### Planned Features
-- [ ] Namespace support (user, PID, mount, network)
-- [ ] Cgroup support (resource limits)
-- [ ] Multi-process exec support
-- [ ] TTY and stdin/stdout handling
-- [ ] Checkpoint/restore support
-
-### Out of Scope (Current Milestone)
-- Full containerization (namespaces/cgroups)
-- Interactive terminals (resize_pty)
-- Advanced exec functionality
-- Resource statistics beyond basic placeholder
+### No Logs
+**Cause:** Logging env vars not set
+**Solution:** Set `REAPER_SHIM_LOG` and `REAPER_RUNTIME_LOG`
 
 ## References
 
 - [OCI Runtime Specification](https://github.com/opencontainers/runtime-spec)
 - [Containerd Shim v2 Protocol](https://github.com/containerd/containerd/tree/main/runtime/v2)
 - [TTRPC Protocol](https://github.com/containerd/ttrpc)
+
+---
+
+**Document Version:** 2.0
+**Last Updated:** January 2026
+**Status:** Core Implementation Complete

@@ -17,6 +17,7 @@ use tracing_subscriber::EnvFilter;
 struct ReaperShim {
     exit: Arc<ExitSignal>,
     runtime_path: String,
+    namespace: String,
 }
 
 #[async_trait::async_trait]
@@ -47,6 +48,7 @@ impl Shim for ReaperShim {
         ReaperShim {
             exit: Arc::new(ExitSignal::default()),
             runtime_path,
+            namespace: args.namespace.clone(),
         }
     }
 
@@ -85,11 +87,13 @@ impl Shim for ReaperShim {
         info!("wait() unblocked - exit signal received");
     }
 
-    async fn create_task_service(&self, _publisher: RemotePublisher) -> Self::T {
+    async fn create_task_service(&self, publisher: RemotePublisher) -> Self::T {
         info!("create_task_service() called - creating ReaperTask");
         ReaperTask {
             runtime_path: self.runtime_path.clone(),
             sandbox_state: Arc::new(Mutex::new(HashMap::new())),
+            publisher: Arc::new(publisher),
+            namespace: self.namespace.clone(),
         }
     }
 }
@@ -100,6 +104,10 @@ struct ReaperTask {
     // Track which containers are sandboxes (pause containers) vs real workloads
     // Key: container_id, Value: (is_sandbox, fake_pid)
     sandbox_state: Arc<Mutex<HashMap<String, (bool, u32)>>>,
+    // Publisher for sending task lifecycle events to containerd
+    publisher: Arc<RemotePublisher>,
+    // Namespace for events
+    namespace: String,
 }
 
 // Helper function to detect if a container is a sandbox/pause container
@@ -156,6 +164,82 @@ fn is_sandbox_container(bundle: &str) -> bool {
     }
 
     false
+}
+
+impl ReaperTask {
+    /// Publish a TaskExit event to containerd
+    async fn publish_exit_event(&self, container_id: &str, pid: u32, exit_code: u32) {
+        use containerd_shim_protos::events::task::TaskExit;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let mut timestamp = ::protobuf::well_known_types::timestamp::Timestamp::new();
+        timestamp.seconds = now.as_secs() as i64;
+        timestamp.nanos = now.subsec_nanos() as i32;
+
+        let event = TaskExit {
+            container_id: container_id.to_string(),
+            id: container_id.to_string(),
+            pid,
+            exit_status: exit_code,
+            exited_at: ::protobuf::MessageField::some(timestamp),
+            ..Default::default()
+        };
+
+        info!(
+            "Publishing TaskExit event: container_id={}, pid={}, exit_code={}",
+            container_id, pid, exit_code
+        );
+
+        if let Err(e) = self
+            .publisher
+            .publish(
+                ::containerd_shim::Context::default(),
+                "/tasks/exit",
+                &self.namespace,
+                Box::new(event),
+            )
+            .await
+        {
+            tracing::error!("Failed to publish TaskExit event: {:?}", e);
+        }
+    }
+
+    /// Update container state file directly (for when we detect exit via waitpid)
+    async fn update_container_state(
+        &self,
+        container_id: &str,
+        status: &str,
+        exit_code: Option<i32>,
+    ) {
+        use std::fs;
+        use std::path::PathBuf;
+
+        // Read current state
+        let state_root =
+            std::env::var("REAPER_RUNTIME_ROOT").unwrap_or_else(|_| "/run/reaper".to_string());
+        let state_file = PathBuf::from(&state_root)
+            .join(container_id)
+            .join("state.json");
+
+        if let Ok(content) = fs::read_to_string(&state_file) {
+            if let Ok(mut state) = serde_json::from_str::<serde_json::Value>(&content) {
+                state["status"] = serde_json::json!(status);
+                if let Some(code) = exit_code {
+                    state["exit_code"] = serde_json::json!(code);
+                }
+
+                if let Ok(updated) = serde_json::to_string_pretty(&state) {
+                    let _ = fs::write(&state_file, updated);
+                    info!(
+                        "Updated state for {}: status={}, exit_code={:?}",
+                        container_id, status, exit_code
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -453,52 +537,72 @@ impl Task for ReaperTask {
             info!("wait() - SANDBOX container, returning immediately with exit status 0");
             let mut resp = api::WaitResponse::new();
             resp.set_exit_status(0);
+            // Set exited_at timestamp
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let mut timestamp = ::protobuf::well_known_types::timestamp::Timestamp::new();
+            timestamp.seconds = now.as_secs() as i64;
+            timestamp.nanos = now.subsec_nanos() as i32;
+            resp.exited_at = ::protobuf::MessageField::some(timestamp);
             return Ok(resp);
         }
 
-        // Real workload - poll reaper-runtime state until container stops
-        info!("wait() - WORKLOAD container, polling reaper-runtime");
+        // Real workload - poll state until monitoring daemon marks it stopped
+        info!("wait() - WORKLOAD container, polling runtime state for completion");
 
-        loop {
-            let output = Command::new(&self.runtime_path)
+        // Poll the runtime state until the container stops
+        // The monitoring daemon forked by reaper-runtime will update the state when the process exits
+        let container_id = req.id.clone();
+        let runtime_path = self.runtime_path.clone();
+
+        // Return both exit_code and pid
+        let (exit_code, pid) = tokio::task::spawn_blocking(move || loop {
+            let output = std::process::Command::new(&runtime_path)
                 .arg("state")
-                .arg(&req.id)
-                .output()
-                .await
-                .map_err(|e| {
-                    tracing::error!("Failed to execute reaper-runtime state: {}", e);
-                    ttrpc::Error::RpcStatus(ttrpc::get_status(
-                        ttrpc::Code::INTERNAL,
-                        format!("Failed to execute reaper-runtime state: {}", e),
-                    ))
-                })?;
+                .arg(&container_id)
+                .output();
 
-            if !output.status.success() {
-                // Container might be deleted, return
-                break;
+            if let Ok(output) = output {
+                if output.status.success() {
+                    if let Ok(state) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                        if state["status"].as_str() == Some("stopped") {
+                            let code = state["exit_code"].as_i64().unwrap_or(0) as i32;
+                            let pid = state["pid"].as_u64().unwrap_or(0) as u32;
+                            info!(
+                                "wait() - container {} stopped with exit_code={}, pid={}",
+                                container_id, code, pid
+                            );
+                            return (code, pid);
+                        }
+                    }
+                }
             }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        })
+        .await
+        .unwrap_or((1, 0));
 
-            let state: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|e| {
-                tracing::error!("Failed to parse state output: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to parse state output: {}", e),
-                ))
-            })?;
-
-            let status = state["status"].as_str().unwrap_or("");
-            if status == "stopped" {
-                info!("wait() - container stopped, container_id={}", req.id);
-                break;
-            }
-
-            // Wait a bit before polling again
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        }
+        // Publish TaskExit event to notify containerd
+        self.publish_exit_event(&req.id, pid, exit_code as u32)
+            .await;
 
         let mut resp = api::WaitResponse::new();
-        resp.set_exit_status(0);
-        info!("wait() task completed - container_id={}", req.id);
+        resp.set_exit_status(exit_code as u32);
+
+        // Set exited_at timestamp - required for containerd to recognize the exit
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let mut timestamp = ::protobuf::well_known_types::timestamp::Timestamp::new();
+        timestamp.seconds = now.as_secs() as i64;
+        timestamp.nanos = now.subsec_nanos() as i32;
+        resp.exited_at = ::protobuf::MessageField::some(timestamp);
+
+        info!(
+            "wait() task completed - container_id={}, exit_code={}",
+            req.id, exit_code
+        );
         Ok(resp)
     }
 
@@ -578,6 +682,18 @@ impl Task for ReaperTask {
             "stopped" => ::protobuf::EnumOrUnknown::new(api::Status::STOPPED),
             _ => ::protobuf::EnumOrUnknown::new(api::Status::UNKNOWN),
         };
+
+        // If stopped, include exit status and exited_at timestamp
+        if status_str == "stopped" {
+            resp.exit_status = state["exit_code"].as_u64().unwrap_or(0) as u32;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let mut timestamp = ::protobuf::well_known_types::timestamp::Timestamp::new();
+            timestamp.seconds = now.as_secs() as i64;
+            timestamp.nanos = now.subsec_nanos() as i32;
+            resp.exited_at = ::protobuf::MessageField::some(timestamp);
+        }
 
         info!(
             "state() succeeded - container_id={}, status={:?}, pid={}",

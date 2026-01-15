@@ -11,6 +11,7 @@ metadata:
   name: reaper-example
 spec:
   runtimeClassName: reaper-v2
+  restartPolicy: Never  # Don't restart after completion - this is a one-shot task
   containers:
     - name: test
       image: busybox
