@@ -20,9 +20,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin
-
       - name: Cache cargo registry
         uses: actions/cache@v3
         with:
@@ -39,7 +36,10 @@ jobs:
         uses: actions/cache@v3
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin
 
       - name: Generate coverage (fail under 75%)
         run: cargo tarpaulin --out Xml --timeout 600 --fail-under 75

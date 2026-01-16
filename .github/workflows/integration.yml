@@ -6,8 +6,13 @@ on:
   pull_request:
     branches: [main, develop]
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
-  kind-integration:
+  build:
+    name: Build and Cache
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -15,10 +20,49 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binaries
+        run: cargo build --release --verbose
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: release-binaries
+          path: target/release/
+
+  kind-integration:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
       - name: Install kubectl
         uses: azure/setup-kubectl@v3
         with:
           version: "v1.30.0"
+
+      - name: Download release binaries
+        uses: actions/download-artifact@v3
+        with:
+          name: release-binaries
+          path: target/release/
 
       - name: Create Kind cluster
         run: |
@@ -26,11 +70,6 @@ jobs:
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
           kind create cluster --name reaper-ci
-
-      - name: Build both binaries
-        run: |
-          cargo build --release --bin reaper-runtime
-          cargo build --release --bin containerd-shim-reaper-v2
 
       - name: Copy binaries into kind node and configure containerd
         run: |
