@@ -87,6 +87,20 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Generate coverage (fail under 75%)
+        run: cargo tarpaulin --out Xml --timeout 600 --fail-under 75
+
+      - name: Upload coverage to Codecov (fail on error)
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./cobertura.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
+          verbose: true
+
   clippy:
     name: Clippy
     needs: build
