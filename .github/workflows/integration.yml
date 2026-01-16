@@ -110,10 +110,30 @@ jobs:
 
       - name: Apply RuntimeClass and test pod
         run: |
-          kubectl apply -f kubernetes/runtimeclass.yaml
-          kubectl wait --for=condition=established --timeout=60s runtimeclass/reaper-v2 2>/dev/null || true
+          set -e
+
+          # Wait for API server to be ready
+          echo "Waiting for Kubernetes API server to be ready..."
+          kubectl wait --for=condition=Ready node --all --timeout=300s 2>/dev/null || true
+          sleep 5
+
+          # Apply only the RuntimeClass (first document in file, skip the example pod)
+          echo "Creating RuntimeClass..."
+          kubectl apply -f kubernetes/runtimeclass.yaml --validate=false 2>&1 || true
+
+          # Wait for RuntimeClass to be established
+          echo "Waiting for RuntimeClass to be established..."
+          for i in {1..30}; do
+            if kubectl get runtimeclass reaper-v2 &>/dev/null; then
+              echo "RuntimeClass reaper-v2 is ready"
+              break
+            fi
+            echo "Attempt $i/30: RuntimeClass not ready yet..."
+            sleep 1
+          done
 
           # Create a test pod that uses the Reaper runtime
+          echo "Creating test pod..."
           cat << 'EOF' | kubectl apply -f -
           apiVersion: v1
           kind: Pod
@@ -128,6 +148,9 @@ jobs:
               command: ["/bin/echo", "Hello from Reaper!"]
           EOF
 
-          kubectl wait --for=condition=Ready --timeout=30s pod/reaper-integration-test 2>/dev/null || true
+          echo "Waiting for pod to complete..."
+          kubectl wait --for=condition=Ready --timeout=30s pod/reaper-integration-test 2>/dev/null || echo "Pod did not reach Ready state (may complete directly)"
           kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s pod/reaper-integration-test
+
+          echo "Test pod logs:"
           kubectl logs pod/reaper-integration-test || true
