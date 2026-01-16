@@ -28,7 +28,7 @@ Reaper is a minimal OCI-compatible container runtime written in Rust. It focuses
 
 ## Critical Architecture Understanding
 
-### Process Lifecycle (IMPORTANT!)
+### Process Lifecycle (Fork-First Architecture)
 
 #### The Three-Layer Model
 ```
@@ -37,8 +37,8 @@ Kubernetes/Containerd
 containerd-shim-reaper-v2 (LONG-LIVED, one per container)
         ↓ (exec: create/start/state/delete)
 reaper-runtime (SHORT-LIVED, exits after each command)
-        ↓ (spawn)
-Host Process (echo, sh, etc.)
+        ↓ (fork FIRST!)
+monitoring daemon → spawns workload → wait() → update state
 ```
 
 #### Lifecycle Timeline
@@ -49,54 +49,56 @@ Host Process (echo, sh, etc.)
    - Runtime exits with status=created
    - Shim returns to containerd
 
-2. **Container Start**
+2. **Container Start** (CRITICAL FLOW - Fork-First!)
    - Containerd calls shim's `start()`
    - Shim calls `reaper-runtime start <id>`
-   - Runtime spawns host process (e.g., /bin/echo)
-   - Runtime updates state to "running" with PID
-   - **Runtime exits immediately** (process continues as orphan)
-   - Shim returns to containerd
+   - Runtime **forks FIRST** (creates monitoring daemon)
+   - Parent (CLI) waits 100ms then exits immediately
+   - Child (daemon) calls `setsid()` to detach
+   - Daemon **spawns workload** (now daemon is workload's parent!)
+   - Daemon updates state to "running" with PID
+   - Daemon sleeps 500ms (allows containerd to observe "running" state)
+   - Daemon calls `child.wait()` (blocks until workload exits)
+   - Daemon updates state to "stopped" with exit code
+   - Daemon exits
 
-3. **Container Wait** (THE PROBLEM WE'RE SOLVING)
+3. **Container Wait** (SOLVED!)
    - Containerd calls shim's `wait()`
-   - Shim must detect when process exits and report exit code
-   - Options:
-     - Poll state file (current, inefficient)
-     - Use waitpid() on PID (proposed, efficient)
+   - Shim polls state file via `reaper-runtime state`
+   - When state becomes "stopped", shim publishes TaskExit event
+   - Shim returns exit code to containerd with `exited_at` timestamp
 
-#### Why Threads in Runtime Don't Work
-**CRITICAL**: The runtime is NOT a daemon. It's a CLI command that exits.
+#### Why Fork-First Works
+**CRITICAL**: The daemon must be the PARENT of the workload to call `wait()`.
 
-1. When `reaper-runtime start` runs:
-   - Spawns host process (e.g., echo)
-   - Updates state to "running"
-   - Returns from main()
-   - **Process terminates**
+Previous bug (FIXED January 2026):
+- We were spawning workload first, then forking
+- After `fork()`, the `std::process::Child` handle was invalid in the forked child
+- The handle was created by the parent process and didn't transfer correctly
 
-2. Any threads spawned in runtime:
-   - Are children of the runtime process
-   - Die when runtime process exits
-   - Never complete their work
-
-3. Evidence from testing:
-   - Threads spawned early in function sometimes write files
-   - Threads spawned late never execute
-   - Moving `std::process::Child` into threads fails mysteriously
-   - Root cause: Process exits before threads run
+Solution:
+1. Fork FIRST (creates monitoring daemon)
+2. Daemon spawns workload (daemon becomes parent)
+3. Daemon can now `wait()` on workload (parent-child relationship)
+4. Real exit codes captured, zombies properly reaped
 
 ### Current Implementation Status (Jan 2026)
 
-#### ✅ Working
+#### ✅ Working (Core Complete!)
 - Process spawning with OCI config
-- Fork-based monitoring daemon (runtime forks to stay as parent)
+- Fork-first monitoring daemon architecture
 - Proper parent-child relationship for process waiting
 - State persistence with exit codes (JSON files)
 - User/group ID management (uid, gid, additional_gids, umask)
-- Shim v2 protocol complete
+- Shim v2 protocol complete (all Task methods)
 - Sandbox faking (pause containers)
-- Process reaping via waitpid in monitoring daemon
+- Process reaping via `child.wait()` in monitoring daemon
 - State transitions: created → running → stopped
 - Exit code reporting to Kubernetes
+- **Pods correctly show "Completed" status** (validated!)
+- TaskExit event publishing with timestamps
+- Kill handling (ESRCH for already-dead processes)
+- Timing delay for fast processes (500ms)
 
 #### ❌ Not Implemented (By Design)
 - Namespaces (intentionally - use host namespaces)
@@ -162,42 +164,46 @@ Kubernetes pods showed status="Running" forever, even though the process (e.g., 
 5. Shim polled state, saw "running" forever
 6. Containerd reported "Running" to Kubernetes
 
-### Solution Implemented: Fork-Based Monitoring Daemon
-**The runtime forks a monitoring daemon that stays as the parent of the workload.**
+### Solution Implemented: Fork-First Monitoring Daemon
+**The runtime forks FIRST, then the daemon spawns the workload (making daemon the parent).**
 
 ```rust
-// In reaper-runtime start command
-let child = spawn_workload();
-let workload_pid = child.id();
-
+// In reaper-runtime start command - FORK FIRST!
 match unsafe { fork() } {
-    Ok(ForkResult::Parent { .. }) => {
-        // Original runtime process exits immediately
-        println!("started pid={}", workload_pid);
+    Ok(ForkResult::Parent { child: daemon_pid }) => {
+        // Original runtime process (CLI)
+        std::thread::sleep(Duration::from_millis(100)); // Let daemon start
+        // Read PID from state (daemon will have updated it)
+        println!("started pid={}", workload_pid_from_state);
         std::process::exit(0);
     }
     Ok(ForkResult::Child) => {
-        // Forked child becomes monitoring daemon
+        // Monitoring daemon
         setsid(); // Detach from terminal
 
-        // Wait for workload (we're the parent!)
-        match child.wait() {
-            Ok(status) => {
-                update_state_to_stopped(status.code());
-            }
-        }
+        // NOW spawn workload - WE are the parent!
+        let child = Command::new(program).spawn()?;
+        update_state("running", child.id());
+
+        // CRITICAL: Give containerd time to observe "running" state
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Wait for workload (we're the parent, so this works!)
+        let exit_status = child.wait()?;
+        update_state("stopped", exit_status.code());
         std::process::exit(0);
     }
 }
 ```
 
 **Key Benefits:**
-1. Monitoring daemon is parent of workload → can waitpid()
-2. Proper zombie reaping (parent waits on child)
+1. Monitoring daemon spawns workload → daemon IS the parent
+2. `child.wait()` works correctly (parent-child relationship)
 3. Real exit codes captured
-4. Daemon updates state file when workload exits
-5. Shim polls state file (simple, reliable)
-6. No orphan processes
+4. Proper zombie reaping
+5. Daemon updates state file when workload exits
+6. Shim polls state file and publishes TaskExit event
+7. No orphan or zombie processes
 
 ## Development Workflow
 
@@ -266,33 +272,74 @@ minikube ssh -- 'cat /var/log/reaper-runtime.log'
 - `anyhow`: Error handling
 - `serde`: State serialization
 
-## Next Steps / Active Issues
+## Bug Fixes (January 2026)
 
-### Current Investigation
-**Why is process monitoring failing?**
+All core issues have been resolved. Here's what was fixed:
 
-1. ✅ Confirmed: Runtime exits immediately after start
-2. ✅ Confirmed: Threads in runtime don't complete
-3. ✅ Confirmed: Processes become zombies
-4. 🔄 Testing: Shim-based waitpid implementation
-5. ❓ Unknown: Why aren't shim logs showing wait() calls?
+### 1. Fork Order Bug
+**Problem:** `std::process::Child` handle invalid after fork
+**Fix:** Fork FIRST, then spawn workload in the forked child
+**File:** `src/bin/reaper-runtime/main.rs:198-311`
 
-### Debugging Commands
+### 2. Fast Process Timing
+**Problem:** Fast commands (echo) completed before containerd observed "running" state
+**Fix:** Added 500ms delay after setting "running" state, before calling `wait()`
+**File:** `src/bin/reaper-runtime/main.rs:264-270`
+
+### 3. Kill ESRCH Error
+**Problem:** containerd's `kill()` failed with ESRCH for already-dead processes
+**Fix:** Treat ESRCH as success (process not running = goal achieved)
+**File:** `src/bin/reaper-runtime/main.rs:347-365`
+
+### 4. TaskExit Event Publishing
+**Problem:** containerd wasn't recognizing container exits
+**Fix:** Publish TaskExit event with proper `exited_at` timestamp
+**File:** `src/bin/containerd-shim-reaper-v2/main.rs:162-199`
+
+### 5. Response Timestamps
+**Problem:** Missing `exited_at` timestamps in WaitResponse and StateResponse
+**Fix:** Include timestamp in all responses for stopped containers
+**File:** `src/bin/containerd-shim-reaper-v2/main.rs:545-552, 615-625`
+
+## Debugging Commands
+
 ```bash
-# Check if shim is calling wait()
-minikube ssh -- 'grep "wait()" /var/log/reaper-shim.log'
-
 # Check container state
 minikube ssh -- 'cat /run/reaper/$(ls /run/reaper | head -1)/state.json'
 
-# Check for zombies
+# Check for zombies (should be none!)
 minikube ssh -- 'ps aux | grep defunct'
+
+# View shim logs
+minikube ssh -- 'tail -50 /var/log/reaper-shim.log'
+
+# View runtime logs
+minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 
 # List running shim processes
 minikube ssh -- 'ps aux | grep containerd-shim-reaper'
 ```
 
+## Next Steps (Future Enhancements)
+
+### Short Term
+- Re-enable user/group switching (currently disabled for debugging)
+- Add comprehensive error handling
+- Reduce startup delay if possible (optimize timing)
+- Clean up debug logging
+
+### Medium Term
+- Implement exec support (exec into running containers)
+- Add resource monitoring (stats)
+- Enhanced signal handling
+
+### Long Term
+- Optional namespace support
+- Optional cgroup integration
+- Production deployment guides
+
 ## Related Documentation
 - OCI Runtime Spec: https://github.com/opencontainers/runtime-spec
 - Containerd Shim v2: https://github.com/containerd/containerd/tree/main/runtime/v2
+- Kubernetes RuntimeClass: https://kubernetes.io/docs/concepts/containers/runtime-class/
 - Focus on `config.json` process section and user fields
