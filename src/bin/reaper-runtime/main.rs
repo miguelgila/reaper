@@ -91,16 +91,10 @@ struct OciProcess {
     user: Option<OciUser>,
 }
 
-#[derive(Debug, Deserialize)]
-struct OciRoot {
-    path: Option<String>,
-    readonly: Option<bool>,
-}
-
 #[derive(Debug, serde::Deserialize)]
 struct OciConfig {
     process: Option<OciProcess>,
-    root: Option<OciRoot>,
+    // Note: We only need the process section; root and other fields are ignored
 }
 
 fn read_oci_config(bundle: &Path) -> Result<OciConfig> {
@@ -152,13 +146,8 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
     let argv: Vec<String> = args[1..].to_vec();
 
     // Reaper runs HOST binaries, not container binaries
-    // For absolute paths, use them directly on the host
-    // For relative paths, let the shell resolve via PATH
-    let program_path = if program.starts_with('/') {
-        PathBuf::from(&program)
-    } else {
-        PathBuf::from(&program)
-    };
+    // Both absolute and relative paths are used directly - the shell/OS resolves them
+    let program_path = PathBuf::from(&program);
 
     info!(
         "do_start() - program={}, resolved_path={}, args={:?}, cwd={:?}",

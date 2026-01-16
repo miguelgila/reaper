@@ -205,41 +205,6 @@ impl ReaperTask {
             tracing::error!("Failed to publish TaskExit event: {:?}", e);
         }
     }
-
-    /// Update container state file directly (for when we detect exit via waitpid)
-    async fn update_container_state(
-        &self,
-        container_id: &str,
-        status: &str,
-        exit_code: Option<i32>,
-    ) {
-        use std::fs;
-        use std::path::PathBuf;
-
-        // Read current state
-        let state_root =
-            std::env::var("REAPER_RUNTIME_ROOT").unwrap_or_else(|_| "/run/reaper".to_string());
-        let state_file = PathBuf::from(&state_root)
-            .join(container_id)
-            .join("state.json");
-
-        if let Ok(content) = fs::read_to_string(&state_file) {
-            if let Ok(mut state) = serde_json::from_str::<serde_json::Value>(&content) {
-                state["status"] = serde_json::json!(status);
-                if let Some(code) = exit_code {
-                    state["exit_code"] = serde_json::json!(code);
-                }
-
-                if let Ok(updated) = serde_json::to_string_pretty(&state) {
-                    let _ = fs::write(&state_file, updated);
-                    info!(
-                        "Updated state for {}: status={}, exit_code={:?}",
-                        container_id, status, exit_code
-                    );
-                }
-            }
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -932,9 +897,11 @@ async fn main() {
     // Create Config with no_setup_logger=true since we already set up tracing
     // Also set no_reaper=true to prevent the shim library from setting up SIGCHLD handler
     // which interferes with our Command::output() calls
-    let mut config = Config::default();
-    config.no_setup_logger = true;
-    config.no_reaper = true;
+    let config = Config {
+        no_setup_logger: true,
+        no_reaper: true,
+        ..Default::default()
+    };
 
     run::<ReaperShim>("io.containerd.reaper.v2", Some(config)).await;
     info!("containerd_shim::run() completed normally");
