@@ -73,23 +73,38 @@ jobs:
 
       - name: Copy binaries into kind node and configure containerd
         run: |
+          set -e
           NODE_ID=$(docker ps --filter "name=reaper-ci-control-plane" --format '{{.ID}}')
+          echo "Found node ID: $NODE_ID"
+
+          if [ -z "$NODE_ID" ]; then
+            echo "ERROR: Could not find kind control-plane node"
+            docker ps
+            exit 1
+          fi
 
           # Copy both binaries
+          echo "Copying reaper-runtime..."
           docker cp target/release/reaper-runtime "$NODE_ID":/usr/local/bin/reaper-runtime
+
+          echo "Copying containerd-shim-reaper-v2..."
           docker cp target/release/containerd-shim-reaper-v2 "$NODE_ID":/usr/local/bin/containerd-shim-reaper-v2
 
           # Make them executable
+          echo "Making binaries executable..."
           docker exec "$NODE_ID" chmod +x /usr/local/bin/reaper-runtime /usr/local/bin/containerd-shim-reaper-v2
 
           # Configure containerd to use reaper runtime
-          docker exec "$NODE_ID" mkdir -p /etc/containerd/certs.d
+          echo "Creating containerd config directory..."
+          docker exec "$NODE_ID" mkdir -p /etc/containerd/config.d
 
           # Write config file
-          CONFIG_CONTENT='[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]'$'\n''  runtime_type = "io.containerd.reaper.v2"'$'\n''  sandbox_mode = "podsandbox"'
-          docker exec "$NODE_ID" bash -c "echo '$CONFIG_CONTENT' > /etc/containerd/config.d/reaper.toml"
+          echo "Writing containerd runtime configuration..."
+          CONFIG_CONTENT='[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]\n  runtime_type = "io.containerd.reaper.v2"\n  sandbox_mode = "podsandbox"'
+          docker exec "$NODE_ID" bash -c "echo -e '$CONFIG_CONTENT' > /etc/containerd/config.d/reaper.toml"
 
           # Restart containerd to load the new config
+          echo "Restarting containerd..."
           docker exec "$NODE_ID" bash -c "pkill -HUP containerd || true"
           sleep 2
 
