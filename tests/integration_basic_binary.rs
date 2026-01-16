@@ -88,6 +88,8 @@ fn test_run_echo_hello_world() {
     assert!(pid > 0, "PID should be positive, got {}", pid);
 
     // Query state to verify container state
+    // Note: echo is very fast, so the container may already be "stopped" by the time we check
+    // We'll poll for a bit to see if it's still running, but accept either "running" or "stopped"
     let state_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
         .arg("state")
@@ -107,12 +109,22 @@ fn test_run_echo_hello_world() {
         serde_json::from_str(&state_json).expect("Failed to parse state JSON");
 
     assert_eq!(state["id"], "test-echo", "Container ID mismatch");
-    assert_eq!(
-        state["status"], "running",
-        "Container status should be running, got: {}",
-        state["status"]
+
+    // Container status should be either "running" or "stopped" (echo is fast)
+    let status = state["status"].as_str().expect("status should be a string");
+    assert!(
+        status == "running" || status == "stopped",
+        "Container status should be 'running' or 'stopped', got: {}",
+        status
     );
+
     assert_eq!(state["pid"], pid, "PID in state should match start output");
+
+    // If stopped, verify exit code is 0
+    if status == "stopped" {
+        let exit_code = state["exit_code"].as_i64();
+        assert_eq!(exit_code, Some(0), "echo should exit with code 0");
+    }
 
     // Delete container (cleanup)
     let delete_output = Command::new(reaper_bin)

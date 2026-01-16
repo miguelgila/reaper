@@ -25,20 +25,55 @@ jobs:
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
-          kind create cluster --name reaper-ci --config kind-config.yaml
+          kind create cluster --name reaper-ci
 
-      - name: Build runtime
-        run: cargo build --release --bin reaper-runtime
+      - name: Build both binaries
+        run: |
+          cargo build --release --bin reaper-runtime
+          cargo build --release --bin containerd-shim-reaper-v2
 
-      - name: Copy runtime into node and restart containerd
+      - name: Copy binaries into kind node and configure containerd
         run: |
           NODE_ID=$(docker ps --filter "name=reaper-ci-control-plane" --format '{{.ID}}')
+
+          # Copy both binaries
           docker cp target/release/reaper-runtime "$NODE_ID":/usr/local/bin/reaper-runtime
-          docker exec "$NODE_ID" bash -lc "pkill -HUP containerd || true"
+          docker cp target/release/containerd-shim-reaper-v2 "$NODE_ID":/usr/local/bin/containerd-shim-reaper-v2
+
+          # Make them executable
+          docker exec "$NODE_ID" chmod +x /usr/local/bin/reaper-runtime /usr/local/bin/containerd-shim-reaper-v2
+
+          # Configure containerd to use reaper runtime
+          docker exec "$NODE_ID" mkdir -p /etc/containerd/certs.d
+
+          # Write config file
+          CONFIG_CONTENT='[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]'$'\n''  runtime_type = "io.containerd.reaper.v2"'$'\n''  sandbox_mode = "podsandbox"'
+          docker exec "$NODE_ID" bash -c "echo '$CONFIG_CONTENT' > /etc/containerd/config.d/reaper.toml"
+
+          # Restart containerd to load the new config
+          docker exec "$NODE_ID" bash -c "pkill -HUP containerd || true"
+          sleep 2
 
       - name: Apply RuntimeClass and test pod
         run: |
-          kubectl apply -f k8s/runtimeclass.yaml
-          kubectl apply -f k8s/pod-reaper.yaml
-          kubectl wait --for=condition=Succeeded --timeout=120s pod/reaper-dummy
-          kubectl logs pod/reaper-dummy
+          kubectl apply -f kubernetes/runtimeclass.yaml
+          kubectl wait --for=condition=established --timeout=60s runtimeclass/reaper-v2 2>/dev/null || true
+
+          # Create a test pod that uses the Reaper runtime
+          cat << 'EOF' | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: reaper-integration-test
+          spec:
+            runtimeClassName: reaper-v2
+            restartPolicy: Never
+            containers:
+            - name: test
+              image: busybox
+              command: ["/bin/echo", "Hello from Reaper!"]
+          EOF
+
+          kubectl wait --for=condition=Ready --timeout=30s pod/reaper-integration-test 2>/dev/null || true
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s pod/reaper-integration-test
+          kubectl logs pod/reaper-integration-test || true
