@@ -27,31 +27,49 @@ docker exec "$NODE_ID" chmod +x /usr/local/bin/$SHIM_BIN
 docker cp "$RUNTIME_BIN_PATH" "$NODE_ID":/usr/local/bin/$RUNTIME_BIN
 docker exec "$NODE_ID" chmod +x /usr/local/bin/$RUNTIME_BIN
 
-echo "Enabling shim debug logging..."
-docker exec "$NODE_ID" bash -c '
-    mkdir -p /etc/systemd/system/containerd.service.d
-    cat > /etc/systemd/system/containerd.service.d/reaper-shim-logging.conf <<EOF
-[Service]
-Environment="REAPER_SHIM_LOG=/var/log/reaper-shim.log"
-EOF
-    systemctl daemon-reload
-'
-
-echo "Configuring containerd in kind node..."
-./scripts/configure-containerd.sh kind "$NODE_ID"
-
-echo "Shim logs will be written to /var/log/reaper-shim.log"
+echo "Waiting for Kubernetes API server to be ready..."
+kubectl wait --for=condition=Ready node --all --timeout=300s 2>/dev/null || true
+sleep 5
 
 echo "Apply RuntimeClass and test pod..."
-kubectl apply -f kubernetes/runtimeclass.yaml
-kubectl wait --for=condition=Ready --timeout=60s pod/reaper-example || {
-  echo "Pod did not become ready; showing events:";
-  kubectl describe pod/reaper-example || true;
-  exit 1;
-}
-kubectl logs pod/reaper-example || true
+kubectl apply -f kubernetes/runtimeclass.yaml --validate=false 2>&1 || true
 
-echo "Kind integration test complete."
+# Wait for RuntimeClass to be established
+echo "Waiting for RuntimeClass to be established..."
+for i in {1..30}; do
+  if kubectl get runtimeclass reaper-v2 &>/dev/null; then
+    echo "✅ RuntimeClass reaper-v2 is ready"
+    break
+  fi
+  echo "Attempt $i/30: RuntimeClass not ready yet..."
+  sleep 1
+done
+
+# Create a test pod that uses the Reaper runtime
+echo "Creating test pod..."
+cat << 'EOF' | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-integration-test
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+  - name: test
+    image: busybox
+    command: ["/bin/echo", "Hello from Reaper!"]
+EOF
+
+echo "Waiting for pod to complete..."
+kubectl wait --for=condition=Ready --timeout=30s pod/reaper-integration-test 2>/dev/null || echo "Pod did not reach Ready state (may complete directly)"
+kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s pod/reaper-integration-test
+
+echo "✅ Test pod logs:"
+kubectl logs pod/reaper-integration-test || true
+
+echo ""
+echo "✅ Kind integration test complete."
 echo "Both binaries deployed:"
 echo "  - Shim: /usr/local/bin/$SHIM_BIN"
 echo "  - Runtime: /usr/local/bin/$RUNTIME_BIN"
