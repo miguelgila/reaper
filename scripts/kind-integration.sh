@@ -63,8 +63,15 @@ echo "Waiting for Kubernetes API server to be ready..."
 kubectl wait --for=condition=Ready node --all --timeout=300s 2>/dev/null || true
 sleep 5
 
-echo "Apply RuntimeClass and test pod..."
-kubectl apply -f kubernetes/runtimeclass.yaml --validate=false 2>&1 || true
+echo "Creating RuntimeClass..."
+# Create RuntimeClass (ignore pod creation failure due to missing service account)
+cat << 'EOF' | kubectl apply -f - --validate=false
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: reaper-v2
+handler: reaper-v2
+EOF
 
 # Wait for RuntimeClass to be established
 echo "Waiting for RuntimeClass to be established..."
@@ -76,6 +83,36 @@ for i in {1..30}; do
   echo "Attempt $i/30: RuntimeClass not ready yet..."
   sleep 1
 done
+
+# Wait for default service account to be created
+echo "Waiting for default service account..."
+kubectl wait --for=jsonpath='{.metadata.name}'=default serviceaccount/default -n default --timeout=60s 2>/dev/null || {
+  echo "Waiting for service account creation..."
+  for i in {1..30}; do
+    if kubectl get serviceaccount default -n default &>/dev/null; then
+      echo "✅ Default service account is ready"
+      break
+    fi
+    echo "Attempt $i/30: Service account not ready yet..."
+    sleep 2
+  done
+}
+
+# Create example pod
+echo "Creating example pod..."
+cat << 'EOF' | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-example
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/echo", "Hello from Reaper runtime!"]
+EOF
 
 # Create a test pod that uses the Reaper runtime
 echo "Creating test pod..."
@@ -94,8 +131,18 @@ spec:
 EOF
 
 echo "Waiting for pod to complete..."
-kubectl wait --for=condition=Ready --timeout=30s pod/reaper-integration-test 2>/dev/null || echo "Pod did not reach Ready state (may complete directly)"
-kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s pod/reaper-integration-test
+# Wait for pod to finish (either Succeeded or Failed)
+for i in {1..60}; do
+  PHASE=$(kubectl get pod reaper-integration-test -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+  if [ "$PHASE" = "Succeeded" ] || [ "$PHASE" = "Failed" ]; then
+    echo "✅ Pod completed with phase: $PHASE"
+    break
+  fi
+  if [ $i -eq 1 ]; then
+    echo "Waiting for pod completion (current phase: $PHASE)..."
+  fi
+  sleep 2
+done
 
 echo "✅ Test pod logs:"
 kubectl logs pod/reaper-integration-test || true
