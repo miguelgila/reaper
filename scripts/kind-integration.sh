@@ -15,19 +15,49 @@ fi
 echo "Creating kind cluster..."
 kind create cluster --name "$CLUSTER_NAME" --config kind-config.yaml
 
-echo "Building shim and runtime binaries for Linux..."
-# Build for x86_64 Linux (required for kind cluster)
-# Note: This requires the x86_64-unknown-linux-gnu target to be installed
-cargo build --release --target x86_64-unknown-linux-gnu --bin "$SHIM_BIN" --bin "$RUNTIME_BIN"
-SHIM_BIN_PATH="$(pwd)/target/x86_64-unknown-linux-gnu/release/$SHIM_BIN"
-RUNTIME_BIN_PATH="$(pwd)/target/x86_64-unknown-linux-gnu/release/$RUNTIME_BIN"
+echo "Detecting kind node architecture..."
+NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
+NODE_ARCH=$(docker exec "$NODE_ID" uname -m)
+echo "Node arch: $NODE_ARCH"
+
+echo "Building static (musl) Linux binaries inside Docker..."
+# Build statically linked musl binaries to avoid glibc mismatch.
+case "$NODE_ARCH" in
+  aarch64)
+    TARGET_TRIPLE="aarch64-unknown-linux-musl"
+    MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
+    ;;
+  x86_64)
+    TARGET_TRIPLE="x86_64-unknown-linux-musl"
+    MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
+    ;;
+  *)
+    echo "Unsupported node arch: $NODE_ARCH" >&2
+    exit 1
+    ;;
+esac
+
+# Build both binaries in one docker run
+docker run --rm \
+  -v "$(pwd)":/work \
+  -w /work \
+  "$MUSL_IMAGE" \
+  cargo build --release --bin "$SHIM_BIN" --bin "$RUNTIME_BIN" --target "$TARGET_TRIPLE"
+
+SHIM_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$SHIM_BIN"
+RUNTIME_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$RUNTIME_BIN"
 
 echo "Copy binaries into kind node..."
-NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
 docker cp "$SHIM_BIN_PATH" "$NODE_ID":/usr/local/bin/$SHIM_BIN
 docker exec "$NODE_ID" chmod +x /usr/local/bin/$SHIM_BIN
 docker cp "$RUNTIME_BIN_PATH" "$NODE_ID":/usr/local/bin/$RUNTIME_BIN
 docker exec "$NODE_ID" chmod +x /usr/local/bin/$RUNTIME_BIN
+
+echo "Configuring containerd to use reaper-v2 shim runtime..."
+./scripts/configure-containerd.sh kind "$NODE_ID"
+
+echo "Verifying containerd config..."
+docker exec "$NODE_ID" grep -A 3 'reaper-v2' /etc/containerd/config.toml
 
 echo "Waiting for Kubernetes API server to be ready..."
 kubectl wait --for=condition=Ready node --all --timeout=300s 2>/dev/null || true

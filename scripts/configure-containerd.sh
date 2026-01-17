@@ -31,8 +31,15 @@ configure_containerd() {
             containerd config default > /tmp/containerd-config-new.toml
 
             # Add reaper-v2 runtime before runc section
+            # Try both old and new plugin paths for compatibility
             # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
-            sed -i \"/\\[plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.runc\\]/i\\      [plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.reaper-v2]\\n        runtime_type = \\\"io.containerd.reaper.v2\\\"\\n        sandbox_mode = \\\"podsandbox\\\"\\n\" /tmp/containerd-config-new.toml
+            if grep -q \"plugins.\\047io.containerd.cri.v1.runtime\\047.containerd.runtimes.runc\" /tmp/containerd-config-new.toml; then
+                # New path (containerd 2.x)
+                sed -i \"/\\[plugins.\\047io.containerd.cri.v1.runtime\\047.containerd.runtimes.runc\\]/i\\        [plugins.\\047io.containerd.cri.v1.runtime\\047.containerd.runtimes.reaper-v2]\\n          runtime_type = \\047io.containerd.reaper.v2\\047\\n          sandbox_mode = \\047podsandbox\\047\\n\" /tmp/containerd-config-new.toml
+            else
+                # Old path (containerd 1.x)
+                sed -i \"/\\[plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.runc\\]/i\\      [plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.reaper-v2]\\n        runtime_type = \\\"io.containerd.reaper.v2\\\"\\n        sandbox_mode = \\\"podsandbox\\\"\\n\" /tmp/containerd-config-new.toml
+            fi
 
             # Replace config
             mv /tmp/containerd-config-new.toml /etc/containerd/config.toml
@@ -53,8 +60,15 @@ configure_containerd() {
             containerd config default > /tmp/containerd-config-new.toml
 
             # Add reaper-v2 runtime before runc section
+            # Try both old and new plugin paths for compatibility
             # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
-            sed -i '/\\[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runc\\]/i\\      [plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.reaper-v2]\\n        runtime_type = \"io.containerd.reaper.v2\"\\n        sandbox_mode = \"podsandbox\"\\n' /tmp/containerd-config-new.toml
+            if grep -q \"plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc\" /tmp/containerd-config-new.toml; then
+                # New path (containerd 2.x / kind)
+                sed -i \"/\\[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc\\]/i\\        [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.reaper-v2]\\n          runtime_type = 'io.containerd.reaper.v2'\\n          sandbox_mode = 'podsandbox'\\n\" /tmp/containerd-config-new.toml
+            else
+                # Old path (containerd 1.x / minikube)
+                sed -i '/\\[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runc\\]/i\\      [plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.reaper-v2]\\n        runtime_type = \"io.containerd.reaper.v2\"\\n        sandbox_mode = \"podsandbox\"\\n' /tmp/containerd-config-new.toml
+            fi
 
             # Replace config
             mv /tmp/containerd-config-new.toml /etc/containerd/config.toml
