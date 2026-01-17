@@ -15,10 +15,12 @@ fi
 echo "Creating kind cluster..."
 kind create cluster --name "$CLUSTER_NAME" --config kind-config.yaml
 
-echo "Building shim and runtime binaries..."
-cargo build --release --bin "$SHIM_BIN" --bin "$RUNTIME_BIN"
-SHIM_BIN_PATH="$(pwd)/target/release/$SHIM_BIN"
-RUNTIME_BIN_PATH="$(pwd)/target/release/$RUNTIME_BIN"
+echo "Building shim and runtime binaries for Linux..."
+# Build for x86_64 Linux (required for kind cluster)
+# Note: This requires the x86_64-unknown-linux-gnu target to be installed
+cargo build --release --target x86_64-unknown-linux-gnu --bin "$SHIM_BIN" --bin "$RUNTIME_BIN"
+SHIM_BIN_PATH="$(pwd)/target/x86_64-unknown-linux-gnu/release/$SHIM_BIN"
+RUNTIME_BIN_PATH="$(pwd)/target/x86_64-unknown-linux-gnu/release/$RUNTIME_BIN"
 
 echo "Copy binaries into kind node..."
 NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
