@@ -5,15 +5,11 @@ CLUSTER_NAME="reaper-ci"
 SHIM_BIN="containerd-shim-reaper-v2"
 RUNTIME_BIN="reaper-runtime"
 
-# Check if binaries are already available (e.g., from CI pipeline)
-if [ -f "target/release/$SHIM_BIN" ] && [ -f "target/release/$RUNTIME_BIN" ]; then
-  echo "✅ Using pre-built binaries from target/release/"
-  SHIM_BIN_PATH="$(pwd)/target/release/$SHIM_BIN"
-  RUNTIME_BIN_PATH="$(pwd)/target/release/$RUNTIME_BIN"
-  PRE_BUILT=true
-else
-  PRE_BUILT=false
-fi
+# IMPORTANT: We must build static musl binaries for kind, even if pre-built binaries exist
+# Pre-built binaries from CI are dynamically linked against the runner's glibc and won't
+# work in the kind node which may have a different glibc version
+echo "⚠️  NOTE: Kind integration always builds static musl binaries for compatibility"
+PRE_BUILT=false
 
 # Run Rust integration tests first to validate binaries
 echo ""
@@ -41,43 +37,38 @@ else
   kind create cluster --name "$CLUSTER_NAME"
 fi
 
-# Only build if binaries weren't pre-built
-if [ "$PRE_BUILT" = false ]; then
-  echo "Detecting kind node architecture..."
-  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
-  NODE_ARCH=$(docker exec "$NODE_ID" uname -m)
-  echo "Node arch: $NODE_ARCH"
+echo "Detecting kind node architecture..."
+NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
+NODE_ARCH=$(docker exec "$NODE_ID" uname -m)
+echo "Node arch: $NODE_ARCH"
 
-  echo "Building static (musl) Linux binaries inside Docker..."
-  # Build statically linked musl binaries to avoid glibc mismatch.
-  case "$NODE_ARCH" in
-    aarch64)
-      TARGET_TRIPLE="aarch64-unknown-linux-musl"
-      MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
-      ;;
-    x86_64)
-      TARGET_TRIPLE="x86_64-unknown-linux-musl"
-      MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
-      ;;
-    *)
-      echo "Unsupported node arch: $NODE_ARCH" >&2
-      exit 1
-      ;;
-  esac
+echo "Building static (musl) Linux binaries inside Docker..."
+# Build statically linked musl binaries to avoid glibc mismatch between
+# the build environment and the kind node's container runtime
+case "$NODE_ARCH" in
+  aarch64)
+    TARGET_TRIPLE="aarch64-unknown-linux-musl"
+    MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
+    ;;
+  x86_64)
+    TARGET_TRIPLE="x86_64-unknown-linux-musl"
+    MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
+    ;;
+  *)
+    echo "Unsupported node arch: $NODE_ARCH" >&2
+    exit 1
+    ;;
+esac
 
-  # Build both binaries in one docker run
-  docker run --rm \
-    -v "$(pwd)":/work \
-    -w /work \
-    "$MUSL_IMAGE" \
-    cargo build --release --bin "$SHIM_BIN" --bin "$RUNTIME_BIN" --target "$TARGET_TRIPLE"
+# Build both binaries in one docker run
+docker run --rm \
+  -v "$(pwd)":/work \
+  -w /work \
+  "$MUSL_IMAGE" \
+  cargo build --release --bin "$SHIM_BIN" --bin "$RUNTIME_BIN" --target "$TARGET_TRIPLE"
 
-  SHIM_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$SHIM_BIN"
-  RUNTIME_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$RUNTIME_BIN"
-else
-  echo "Skipping build step - using pre-built binaries"
-  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
-fi
+SHIM_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$SHIM_BIN"
+RUNTIME_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$RUNTIME_BIN"
 
 echo "Copy binaries into kind node..."
 docker cp "$SHIM_BIN_PATH" "$NODE_ID":/usr/local/bin/$SHIM_BIN
@@ -92,12 +83,49 @@ echo "Verifying containerd config..."
 docker exec "$NODE_ID" grep -A 3 'reaper-v2' /etc/containerd/config.toml
 
 echo "Waiting for Kubernetes API server to be ready..."
-kubectl wait --for=condition=Ready node --all --timeout=300s 2>/dev/null || true
-sleep 5
+
+# Function to retry kubectl commands with exponential backoff
+retry_kubectl() {
+  local max_retries=5
+  local retry_count=0
+  local backoff=1
+  local cmd="$@"
+
+  while [ $retry_count -lt $max_retries ]; do
+    local output
+    local exit_code
+
+    output=$(eval "$cmd" 2>&1)
+    exit_code=$?
+
+    if [ $exit_code -eq 0 ]; then
+      echo "$output"
+      return 0
+    fi
+
+    # Log the error
+    echo "⚠️  kubectl command failed (attempt $((retry_count + 1))/$max_retries): $output" >&2
+
+    retry_count=$((retry_count + 1))
+    if [ $retry_count -lt $max_retries ]; then
+      echo "Retrying in ${backoff}s..." >&2
+      sleep $backoff
+      backoff=$((backoff * 2))
+    fi
+  done
+
+  echo "❌ kubectl command failed after $max_retries attempts" >&2
+  return 1
+}
+
+retry_kubectl "kubectl wait --for=condition=Ready node --all --timeout=300s" || {
+  echo "⚠️  Initial wait failed, giving API server more time..."
+  sleep 10
+}
 
 echo "Creating RuntimeClass..."
 # Create RuntimeClass (ignore pod creation failure due to missing service account)
-cat << 'EOF' | kubectl apply -f - --validate=false
+cat << 'EOF' | retry_kubectl "kubectl apply -f - --validate=false"
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
@@ -108,7 +136,7 @@ EOF
 # Wait for RuntimeClass to be established
 echo "Waiting for RuntimeClass to be established..."
 for i in {1..30}; do
-  if kubectl get runtimeclass reaper-v2 &>/dev/null; then
+  if retry_kubectl "kubectl get runtimeclass reaper-v2" &>/dev/null; then
     echo "✅ RuntimeClass reaper-v2 is ready"
     break
   fi
@@ -118,10 +146,10 @@ done
 
 # Wait for default service account to be created
 echo "Waiting for default service account..."
-kubectl wait --for=jsonpath='{.metadata.name}'=default serviceaccount/default -n default --timeout=60s 2>/dev/null || {
+retry_kubectl "kubectl wait --for=jsonpath='{.metadata.name}'=default serviceaccount/default -n default --timeout=60s" || {
   echo "Waiting for service account creation..."
   for i in {1..30}; do
-    if kubectl get serviceaccount default -n default &>/dev/null; then
+    if retry_kubectl "kubectl get serviceaccount default -n default" &>/dev/null; then
       echo "✅ Default service account is ready"
       break
     fi
@@ -132,7 +160,7 @@ kubectl wait --for=jsonpath='{.metadata.name}'=default serviceaccount/default -n
 
 # Create example pod
 echo "Creating example pod..."
-cat << 'EOF' | kubectl apply -f -
+cat << 'EOF' | retry_kubectl "kubectl apply -f -"
 apiVersion: v1
 kind: Pod
 metadata:
@@ -148,7 +176,7 @@ EOF
 
 # Create a test pod that uses the Reaper runtime
 echo "Creating test pod..."
-cat << 'EOF' | kubectl apply -f -
+cat << 'EOF' | retry_kubectl "kubectl apply -f -"
 apiVersion: v1
 kind: Pod
 metadata:
@@ -163,27 +191,52 @@ spec:
 EOF
 
 echo "Waiting for pod to complete..."
+
 # Wait for pod to finish (either Succeeded or Failed)
 FINAL_PHASE=""
 for i in {1..60}; do
-  PHASE=$(kubectl get pod reaper-integration-test -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+  echo "Polling attempt $i/60: Checking pod status..."
+
+  # Use retry logic for kubectl get
+  PHASE=$(retry_kubectl "kubectl get pod reaper-integration-test -o jsonpath='{.status.phase}'" || echo "")
+
+  if [ -z "$PHASE" ]; then
+    echo "⚠️  Could not retrieve pod phase, will retry..."
+  else
+    echo "Current pod phase: $PHASE"
+  fi
+
   if [ "$PHASE" = "Succeeded" ] || [ "$PHASE" = "Failed" ]; then
     FINAL_PHASE="$PHASE"
     echo "✅ Pod completed with phase: $PHASE"
     break
   fi
-  if [ $i -eq 1 ]; then
-    echo "Waiting for pod completion (current phase: $PHASE)..."
+
+  if [ "$PHASE" = "Pending" ] || [ "$PHASE" = "Running" ]; then
+    # Get more details about the pod status
+    echo "Pod is $PHASE, checking container statuses..."
+    retry_kubectl "kubectl get pod reaper-integration-test -o jsonpath='{.status.containerStatuses[*].state}'" || true
   fi
+
   sleep 2
 done
 
 echo "✅ Test pod logs:"
-kubectl logs pod/reaper-integration-test || true
+retry_kubectl "kubectl logs pod/reaper-integration-test" || {
+  echo "⚠️  Could not retrieve pod logs, getting pod description for debugging..."
+  retry_kubectl "kubectl describe pod reaper-integration-test" || true
+}
 
 # Verify test pod succeeded
 if [ "$FINAL_PHASE" != "Succeeded" ]; then
   echo "❌ Test pod did not succeed! Final phase: $FINAL_PHASE"
+  echo ""
+  echo "Debugging information:"
+  echo "===================="
+  retry_kubectl "kubectl get pod reaper-integration-test -o yaml" || true
+  echo ""
+  echo "Node containerd logs (last 50 lines):"
+  docker exec "$NODE_ID" tail -50 /var/log/containerd.log 2>/dev/null || echo "Could not retrieve containerd logs"
   exit 1
 fi
 
