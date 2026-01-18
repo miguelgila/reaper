@@ -48,7 +48,6 @@ jobs:
           path: target/release/
 
   kind-integration:
-    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -58,17 +57,10 @@ jobs:
         with:
           version: "v1.30.0"
 
-      - name: Download release binaries
-        uses: actions/download-artifact@v4
-        with:
-          name: release-binaries
-          path: target/release/
-
       - name: Run kind integration tests
         run: |
-          # Make binaries executable and prepare for integration test
-          chmod +x target/release/reaper-runtime target/release/containerd-shim-reaper-v2
           chmod +x scripts/kind-integration.sh
 
           # Run the shared integration test script
+          # Note: The script builds static musl binaries for kind node compatibility
           ./scripts/kind-integration.sh

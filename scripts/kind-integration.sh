@@ -5,15 +5,11 @@ CLUSTER_NAME="reaper-ci"
 SHIM_BIN="containerd-shim-reaper-v2"
 RUNTIME_BIN="reaper-runtime"
 
-# Check if binaries are already available (e.g., from CI pipeline)
-if [ -f "target/release/$SHIM_BIN" ] && [ -f "target/release/$RUNTIME_BIN" ]; then
-  echo "✅ Using pre-built binaries from target/release/"
-  SHIM_BIN_PATH="$(pwd)/target/release/$SHIM_BIN"
-  RUNTIME_BIN_PATH="$(pwd)/target/release/$RUNTIME_BIN"
-  PRE_BUILT=true
-else
-  PRE_BUILT=false
-fi
+# IMPORTANT: We must build static musl binaries for kind, even if pre-built binaries exist
+# Pre-built binaries from CI are dynamically linked against the runner's glibc and won't
+# work in the kind node which may have a different glibc version
+echo "⚠️  NOTE: Kind integration always builds static musl binaries for compatibility"
+PRE_BUILT=false
 
 # Run Rust integration tests first to validate binaries
 echo ""
@@ -41,43 +37,38 @@ else
   kind create cluster --name "$CLUSTER_NAME"
 fi
 
-# Only build if binaries weren't pre-built
-if [ "$PRE_BUILT" = false ]; then
-  echo "Detecting kind node architecture..."
-  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
-  NODE_ARCH=$(docker exec "$NODE_ID" uname -m)
-  echo "Node arch: $NODE_ARCH"
+echo "Detecting kind node architecture..."
+NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
+NODE_ARCH=$(docker exec "$NODE_ID" uname -m)
+echo "Node arch: $NODE_ARCH"
 
-  echo "Building static (musl) Linux binaries inside Docker..."
-  # Build statically linked musl binaries to avoid glibc mismatch.
-  case "$NODE_ARCH" in
-    aarch64)
-      TARGET_TRIPLE="aarch64-unknown-linux-musl"
-      MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
-      ;;
-    x86_64)
-      TARGET_TRIPLE="x86_64-unknown-linux-musl"
-      MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
-      ;;
-    *)
-      echo "Unsupported node arch: $NODE_ARCH" >&2
-      exit 1
-      ;;
-  esac
+echo "Building static (musl) Linux binaries inside Docker..."
+# Build statically linked musl binaries to avoid glibc mismatch between
+# the build environment and the kind node's container runtime
+case "$NODE_ARCH" in
+  aarch64)
+    TARGET_TRIPLE="aarch64-unknown-linux-musl"
+    MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
+    ;;
+  x86_64)
+    TARGET_TRIPLE="x86_64-unknown-linux-musl"
+    MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
+    ;;
+  *)
+    echo "Unsupported node arch: $NODE_ARCH" >&2
+    exit 1
+    ;;
+esac
 
-  # Build both binaries in one docker run
-  docker run --rm \
-    -v "$(pwd)":/work \
-    -w /work \
-    "$MUSL_IMAGE" \
-    cargo build --release --bin "$SHIM_BIN" --bin "$RUNTIME_BIN" --target "$TARGET_TRIPLE"
+# Build both binaries in one docker run
+docker run --rm \
+  -v "$(pwd)":/work \
+  -w /work \
+  "$MUSL_IMAGE" \
+  cargo build --release --bin "$SHIM_BIN" --bin "$RUNTIME_BIN" --target "$TARGET_TRIPLE"
 
-  SHIM_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$SHIM_BIN"
-  RUNTIME_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$RUNTIME_BIN"
-else
-  echo "Skipping build step - using pre-built binaries"
-  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
-fi
+SHIM_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$SHIM_BIN"
+RUNTIME_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$RUNTIME_BIN"
 
 echo "Copy binaries into kind node..."
 docker cp "$SHIM_BIN_PATH" "$NODE_ID":/usr/local/bin/$SHIM_BIN
