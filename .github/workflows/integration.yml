@@ -64,93 +64,11 @@ jobs:
           name: release-binaries
           path: target/release/
 
-      - name: Create Kind cluster
+      - name: Run kind integration tests
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-          kind create cluster --name reaper-ci
+          # Make binaries executable and prepare for integration test
+          chmod +x target/release/reaper-runtime target/release/containerd-shim-reaper-v2
+          chmod +x scripts/kind-integration.sh
 
-      - name: Copy binaries into kind node and configure containerd
-        run: |
-          set -e
-          NODE_ID=$(docker ps --filter "name=reaper-ci-control-plane" --format '{{.ID}}')
-          echo "Found node ID: $NODE_ID"
-
-          if [ -z "$NODE_ID" ]; then
-            echo "ERROR: Could not find kind control-plane node"
-            docker ps
-            exit 1
-          fi
-
-          # Copy both binaries
-          echo "Copying reaper-runtime..."
-          docker cp target/release/reaper-runtime "$NODE_ID":/usr/local/bin/reaper-runtime
-
-          echo "Copying containerd-shim-reaper-v2..."
-          docker cp target/release/containerd-shim-reaper-v2 "$NODE_ID":/usr/local/bin/containerd-shim-reaper-v2
-
-          # Make them executable
-          echo "Making binaries executable..."
-          docker exec "$NODE_ID" chmod +x /usr/local/bin/reaper-runtime /usr/local/bin/containerd-shim-reaper-v2
-
-          # Configure containerd to use reaper runtime
-          echo "Creating containerd config directory..."
-          docker exec "$NODE_ID" mkdir -p /etc/containerd/config.d
-
-          # Write config file
-          echo "Writing containerd runtime configuration..."
-          CONFIG_CONTENT='[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]\n  runtime_type = "io.containerd.reaper.v2"\n  sandbox_mode = "podsandbox"'
-          docker exec "$NODE_ID" bash -c "echo -e '$CONFIG_CONTENT' > /etc/containerd/config.d/reaper.toml"
-
-          # Restart containerd to load the new config
-          echo "Restarting containerd..."
-          docker exec "$NODE_ID" bash -c "pkill -HUP containerd || true"
-          sleep 2
-
-      - name: Apply RuntimeClass and test pod
-        run: |
-          set -e
-
-          # Wait for API server to be ready
-          echo "Waiting for Kubernetes API server to be ready..."
-          kubectl wait --for=condition=Ready node --all --timeout=300s 2>/dev/null || true
-          sleep 5
-
-          # Apply only the RuntimeClass (first document in file, skip the example pod)
-          echo "Creating RuntimeClass..."
-          kubectl apply -f kubernetes/runtimeclass.yaml --validate=false 2>&1 || true
-
-          # Wait for RuntimeClass to be established
-          echo "Waiting for RuntimeClass to be established..."
-          for i in {1..30}; do
-            if kubectl get runtimeclass reaper-v2 &>/dev/null; then
-              echo "RuntimeClass reaper-v2 is ready"
-              break
-            fi
-            echo "Attempt $i/30: RuntimeClass not ready yet..."
-            sleep 1
-          done
-
-          # Create a test pod that uses the Reaper runtime
-          echo "Creating test pod..."
-          cat << 'EOF' | kubectl apply -f -
-          apiVersion: v1
-          kind: Pod
-          metadata:
-            name: reaper-integration-test
-          spec:
-            runtimeClassName: reaper-v2
-            restartPolicy: Never
-            containers:
-            - name: test
-              image: busybox
-              command: ["/bin/echo", "Hello from Reaper!"]
-          EOF
-
-          echo "Waiting for pod to complete..."
-          kubectl wait --for=condition=Ready --timeout=30s pod/reaper-integration-test 2>/dev/null || echo "Pod did not reach Ready state (may complete directly)"
-          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s pod/reaper-integration-test
-
-          echo "Test pod logs:"
-          kubectl logs pod/reaper-integration-test || true
+          # Run the shared integration test script
+          ./scripts/kind-integration.sh

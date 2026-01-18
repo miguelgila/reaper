@@ -5,6 +5,27 @@ CLUSTER_NAME="reaper-ci"
 SHIM_BIN="containerd-shim-reaper-v2"
 RUNTIME_BIN="reaper-runtime"
 
+# Check if binaries are already available (e.g., from CI pipeline)
+if [ -f "target/release/$SHIM_BIN" ] && [ -f "target/release/$RUNTIME_BIN" ]; then
+  echo "✅ Using pre-built binaries from target/release/"
+  SHIM_BIN_PATH="$(pwd)/target/release/$SHIM_BIN"
+  RUNTIME_BIN_PATH="$(pwd)/target/release/$RUNTIME_BIN"
+  PRE_BUILT=true
+else
+  PRE_BUILT=false
+fi
+
+# Run Rust integration tests first to validate binaries
+echo ""
+echo "================================================"
+echo "Running Rust integration tests..."
+echo "================================================"
+cargo test --test integration_basic_binary
+cargo test --test integration_user_management
+cargo test --test integration_shim
+echo "✅ All Rust integration tests passed!"
+echo ""
+
 echo "Ensuring kind is installed..."
 if ! command -v kind >/dev/null 2>&1; then
   curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-$(uname | tr '[:upper:]' '[:lower:]')-amd64
@@ -13,39 +34,50 @@ if ! command -v kind >/dev/null 2>&1; then
 fi
 
 echo "Creating kind cluster..."
-kind create cluster --name "$CLUSTER_NAME" --config kind-config.yaml
+# Use kind-config.yaml if it exists, otherwise use defaults
+if [ -f "kind-config.yaml" ]; then
+  kind create cluster --name "$CLUSTER_NAME" --config kind-config.yaml
+else
+  kind create cluster --name "$CLUSTER_NAME"
+fi
 
-echo "Detecting kind node architecture..."
-NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
-NODE_ARCH=$(docker exec "$NODE_ID" uname -m)
-echo "Node arch: $NODE_ARCH"
+# Only build if binaries weren't pre-built
+if [ "$PRE_BUILT" = false ]; then
+  echo "Detecting kind node architecture..."
+  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
+  NODE_ARCH=$(docker exec "$NODE_ID" uname -m)
+  echo "Node arch: $NODE_ARCH"
 
-echo "Building static (musl) Linux binaries inside Docker..."
-# Build statically linked musl binaries to avoid glibc mismatch.
-case "$NODE_ARCH" in
-  aarch64)
-    TARGET_TRIPLE="aarch64-unknown-linux-musl"
-    MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
-    ;;
-  x86_64)
-    TARGET_TRIPLE="x86_64-unknown-linux-musl"
-    MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
-    ;;
-  *)
-    echo "Unsupported node arch: $NODE_ARCH" >&2
-    exit 1
-    ;;
-esac
+  echo "Building static (musl) Linux binaries inside Docker..."
+  # Build statically linked musl binaries to avoid glibc mismatch.
+  case "$NODE_ARCH" in
+    aarch64)
+      TARGET_TRIPLE="aarch64-unknown-linux-musl"
+      MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
+      ;;
+    x86_64)
+      TARGET_TRIPLE="x86_64-unknown-linux-musl"
+      MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
+      ;;
+    *)
+      echo "Unsupported node arch: $NODE_ARCH" >&2
+      exit 1
+      ;;
+  esac
 
-# Build both binaries in one docker run
-docker run --rm \
-  -v "$(pwd)":/work \
-  -w /work \
-  "$MUSL_IMAGE" \
-  cargo build --release --bin "$SHIM_BIN" --bin "$RUNTIME_BIN" --target "$TARGET_TRIPLE"
+  # Build both binaries in one docker run
+  docker run --rm \
+    -v "$(pwd)":/work \
+    -w /work \
+    "$MUSL_IMAGE" \
+    cargo build --release --bin "$SHIM_BIN" --bin "$RUNTIME_BIN" --target "$TARGET_TRIPLE"
 
-SHIM_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$SHIM_BIN"
-RUNTIME_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$RUNTIME_BIN"
+  SHIM_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$SHIM_BIN"
+  RUNTIME_BIN_PATH="$(pwd)/target/$TARGET_TRIPLE/release/$RUNTIME_BIN"
+else
+  echo "Skipping build step - using pre-built binaries"
+  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
+fi
 
 echo "Copy binaries into kind node..."
 docker cp "$SHIM_BIN_PATH" "$NODE_ID":/usr/local/bin/$SHIM_BIN
@@ -132,9 +164,11 @@ EOF
 
 echo "Waiting for pod to complete..."
 # Wait for pod to finish (either Succeeded or Failed)
+FINAL_PHASE=""
 for i in {1..60}; do
   PHASE=$(kubectl get pod reaper-integration-test -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
   if [ "$PHASE" = "Succeeded" ] || [ "$PHASE" = "Failed" ]; then
+    FINAL_PHASE="$PHASE"
     echo "✅ Pod completed with phase: $PHASE"
     break
   fi
@@ -147,8 +181,16 @@ done
 echo "✅ Test pod logs:"
 kubectl logs pod/reaper-integration-test || true
 
+# Verify test pod succeeded
+if [ "$FINAL_PHASE" != "Succeeded" ]; then
+  echo "❌ Test pod did not succeed! Final phase: $FINAL_PHASE"
+  exit 1
+fi
+
 echo ""
-echo "✅ Kind integration test complete."
+echo "================================================"
+echo "✅ Kind integration test complete!"
+echo "================================================"
 echo "Both binaries deployed:"
 echo "  - Shim: /usr/local/bin/$SHIM_BIN"
 echo "  - Runtime: /usr/local/bin/$RUNTIME_BIN"
