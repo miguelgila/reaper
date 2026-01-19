@@ -47,6 +47,15 @@ enum Commands {
     Create {
         /// Container ID
         id: String,
+        /// stdin FIFO path (from containerd)
+        #[arg(long, value_name = "PATH")]
+        stdin: Option<String>,
+        /// stdout FIFO path (from containerd)
+        #[arg(long, value_name = "PATH")]
+        stdout: Option<String>,
+        /// stderr FIFO path (from containerd)
+        #[arg(long, value_name = "PATH")]
+        stderr: Option<String>,
     },
     /// Start the container process
     Start {
@@ -113,13 +122,38 @@ fn read_oci_config(bundle: &Path) -> Result<OciConfig> {
     Ok(cfg)
 }
 
-fn do_create(id: &str, bundle: &Path) -> Result<()> {
+/// Open a log FIFO for writing. FIFOs are created by containerd and we open them for writing.
+/// Uses non-blocking open to avoid hanging if containerd isn't ready yet.
+fn open_log_file(path: &str) -> Result<std::fs::File> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .write(true)
+        .custom_flags(nix::libc::O_NONBLOCK) // Non-blocking to prevent hangs
+        .open(path)
+        .with_context(|| format!("Failed to open log FIFO at {}", path))
+}
+
+fn do_create(
+    id: &str,
+    bundle: &Path,
+    stdin: Option<String>,
+    stdout: Option<String>,
+    stderr: Option<String>,
+) -> Result<()> {
     info!(
-        "do_create() called - id={}, bundle={}",
+        "do_create() called - id={}, bundle={}, stdin={:?}, stdout={:?}, stderr={:?}",
         id,
-        bundle.display()
+        bundle.display(),
+        stdin,
+        stdout,
+        stderr
     );
-    let state = ContainerState::new(id.to_string(), bundle.to_path_buf());
+    let mut state = ContainerState::new(id.to_string(), bundle.to_path_buf());
+    state.stdin = stdin;
+    state.stdout = stdout;
+    state.stderr = stderr;
     save_state(&state)?;
     info!("do_create() succeeded - state saved for container={}", id);
     println!("{}", serde_json::to_string_pretty(&state)?);
@@ -233,9 +267,60 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                     }
                 }
             }
-            cmd.stdin(Stdio::null())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit());
+
+            // Reload state to get I/O paths that containerd provided
+            let io_state = load_state(&container_id).ok();
+
+            // Configure stdin
+            cmd.stdin(Stdio::null());
+
+            // Configure stdout: use FIFO if available, otherwise inherit
+            if let Some(ref state) = io_state {
+                if let Some(ref stdout_path) = state.stdout {
+                    if !stdout_path.is_empty() {
+                        match open_log_file(stdout_path) {
+                            Ok(file) => {
+                                cmd.stdout(Stdio::from(file));
+                                info!("do_start() - redirected stdout to FIFO: {}", stdout_path);
+                            }
+                            Err(e) => {
+                                info!("do_start() - failed to open stdout FIFO ({}), falling back to inherit: {}", stdout_path, e);
+                                cmd.stdout(Stdio::inherit());
+                            }
+                        }
+                    } else {
+                        cmd.stdout(Stdio::inherit());
+                    }
+                } else {
+                    cmd.stdout(Stdio::inherit());
+                }
+            } else {
+                cmd.stdout(Stdio::inherit());
+            }
+
+            // Configure stderr: use FIFO if available, otherwise inherit
+            if let Some(ref state) = io_state {
+                if let Some(ref stderr_path) = state.stderr {
+                    if !stderr_path.is_empty() {
+                        match open_log_file(stderr_path) {
+                            Ok(file) => {
+                                cmd.stderr(Stdio::from(file));
+                                info!("do_start() - redirected stderr to FIFO: {}", stderr_path);
+                            }
+                            Err(e) => {
+                                info!("do_start() - failed to open stderr FIFO ({}), falling back to inherit: {}", stderr_path, e);
+                                cmd.stderr(Stdio::inherit());
+                            }
+                        }
+                    } else {
+                        cmd.stderr(Stdio::inherit());
+                    }
+                } else {
+                    cmd.stderr(Stdio::inherit());
+                }
+            } else {
+                cmd.stderr(Stdio::inherit());
+            }
 
             match cmd.spawn() {
                 Ok(mut child) => {
@@ -394,7 +479,12 @@ fn main() -> Result<()> {
     let bundle = cli.bundle.as_deref().unwrap_or_else(|| Path::new("."));
 
     let result = match cli.command {
-        Commands::Create { ref id } => do_create(id, bundle),
+        Commands::Create {
+            ref id,
+            stdin,
+            stdout,
+            stderr,
+        } => do_create(id, bundle, stdin, stdout, stderr),
         Commands::Start { ref id } => do_start(id, bundle),
         Commands::State { ref id } => do_state(id),
         Commands::Kill { ref id, signal } => do_kill(id, signal),

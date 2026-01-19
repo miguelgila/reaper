@@ -8,6 +8,7 @@
 - Full OCI runtime implementation (create, start, state, kill, delete)
 - Containerd shim v2 protocol complete
 - Fork-based process monitoring with real exit codes
+- Container stdout/stderr capture via FIFOs (kubectl logs support)
 - Proper zombie process reaping
 - State persistence and lifecycle management
 - Kubernetes integration via RuntimeClass
@@ -179,6 +180,37 @@ match unsafe { fork() }? {
 3. **daemon**: Updates to `status="stopped", exit_code=<code>` when workload exits
 4. **delete**: Removes state file and directory
 
+## I/O Redirection and Logging
+
+### FIFO-Based Output Capture
+Reaper integrates with Kubernetes logging via FIFO redirection:
+
+**How It Works:**
+1. Containerd creates FIFOs (named pipes) for each container's I/O
+2. Containerd passes FIFO paths to the shim in `CreateTaskRequest`
+3. Shim stores I/O paths in the container state file
+4. When starting the container, the runtime opens the FIFOs
+5. Container output is written to the FIFOs (non-blocking opens)
+6. Containerd reads from the other end and stores container logs
+7. `kubectl logs <pod>` retrieves the stored logs
+
+**State File with I/O Paths:**
+```json
+{
+  "id": "container-abc123",
+  "bundle": "/run/containerd/...",
+  "status": "running",
+  "pid": 12345,
+  "stdout": "/run/containerd/io.containerd.runtime.v2.task/k8s.io/.../log",
+  "stderr": "/run/containerd/io.containerd.runtime.v2.task/k8s.io/.../err"
+}
+```
+
+**Graceful Degradation:**
+- If FIFO opens fail, the runtime falls back to inherited stdio
+- This allows local testing without containerd
+- Non-blocking opens prevent hanging if containerd isn't ready
+
 ## Building and Testing
 
 ### Build for Local Testing
@@ -243,6 +275,8 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 - [x] Kill handling for already-exited processes
 - [x] Pod status transitions to "Completed"
 - [x] restartPolicy: Never for one-shot tasks
+- [x] Container stdout/stderr capture via FIFOs
+- [x] kubectl logs integration
 
 ### 🔄 In Progress
 - [ ] Multi-container pods

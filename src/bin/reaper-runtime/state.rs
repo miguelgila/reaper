@@ -11,6 +11,12 @@ pub struct ContainerState {
     pub pid: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
 }
 
 impl ContainerState {
@@ -21,6 +27,9 @@ impl ContainerState {
             status: "created".into(),
             pid: None,
             exit_code: None,
+            stdin: None,
+            stdout: None,
+            stderr: None,
         }
     }
 }
@@ -156,6 +165,9 @@ mod tests {
                 status: "running".to_string(),
                 pid: Some(1234),
                 exit_code: None,
+                stdin: None,
+                stdout: None,
+                stderr: None,
             };
 
             // Save state

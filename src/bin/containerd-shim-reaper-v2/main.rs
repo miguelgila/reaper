@@ -245,25 +245,36 @@ impl Task for ReaperTask {
         }
 
         info!(
-            "create() - about to execute: {} create {} --bundle {}",
-            self.runtime_path, req.id, req.bundle
+            "create() - about to execute: {} create {} --bundle {} (stdin={}, stdout={}, stderr={})",
+            self.runtime_path, req.id, req.bundle, req.stdin, req.stdout, req.stderr
         );
 
         // Call reaper-runtime create <container-id> --bundle <bundle-path>
-        let output = Command::new(&self.runtime_path)
-            .arg("create")
+        // with optional I/O paths for Kubernetes logging
+        let mut cmd = Command::new(&self.runtime_path);
+        cmd.arg("create")
             .arg(&req.id)
             .arg("--bundle")
-            .arg(&req.bundle)
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime create: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to execute reaper-runtime create: {}", e),
-                ))
-            })?;
+            .arg(&req.bundle);
+
+        // Pass I/O paths if provided by containerd
+        if !req.stdin.is_empty() {
+            cmd.arg("--stdin").arg(&req.stdin);
+        }
+        if !req.stdout.is_empty() {
+            cmd.arg("--stdout").arg(&req.stdout);
+        }
+        if !req.stderr.is_empty() {
+            cmd.arg("--stderr").arg(&req.stderr);
+        }
+
+        let output = cmd.output().await.map_err(|e| {
+            tracing::error!("Failed to execute reaper-runtime create: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to execute reaper-runtime create: {}", e),
+            ))
+        })?;
 
         info!(
             "create() - command completed, status={}, stdout_len={}, stderr_len={}",

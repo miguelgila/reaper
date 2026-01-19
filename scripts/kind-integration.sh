@@ -13,7 +13,6 @@ PRE_BUILT=false
 
 # Run Rust integration tests first to validate binaries
 echo ""
-echo "================================================"
 echo "Running Rust integration tests..."
 echo "================================================"
 cargo test --test integration_basic_binary
@@ -30,11 +29,16 @@ if ! command -v kind >/dev/null 2>&1; then
 fi
 
 echo "Creating kind cluster..."
-# Use kind-config.yaml if it exists, otherwise use defaults
-if [ -f "kind-config.yaml" ]; then
-  kind create cluster --name "$CLUSTER_NAME" --config kind-config.yaml
+# Check if cluster already exists
+if kind get clusters 2>/dev/null | grep -q "^$CLUSTER_NAME\$"; then
+  echo "✅ Kind cluster '$CLUSTER_NAME' already exists, reusing..."
 else
-  kind create cluster --name "$CLUSTER_NAME"
+  # Use kind-config.yaml if it exists, otherwise use defaults
+  if [ -f "kind-config.yaml" ]; then
+    kind create cluster --name "$CLUSTER_NAME" --config kind-config.yaml
+  else
+    kind create cluster --name "$CLUSTER_NAME"
+  fi
 fi
 
 echo "Detecting kind node architecture..."

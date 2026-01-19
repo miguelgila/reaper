@@ -174,14 +174,17 @@ All tests use isolated temporary directories to avoid state pollution.
 
 ### Process output (stdout/stderr)
 
-- `start` inherits the parent's stdio, so the child process prints directly to your terminal (stdout/stderr are not captured or stored).
-- To capture logs yourself, redirect when invoking `start`, e.g.:
+Container stdout and stderr are captured via FIFOs provided by containerd:
+- Output is automatically captured when running in Kubernetes and available via `kubectl logs <pod>`
+- The runtime connects container processes to FIFOs (named pipes) provided by containerd in the CreateTask request
+- No manual redirection is needed in production environments
 
-```bash
-reaper-runtime start my-app --bundle /tmp/my-bundle > /tmp/my-app.out 2> /tmp/my-app.err
-```
-
-There is no log file managed by the runtime today; use shell redirection or a wrapper if you need persistence.
+For local testing or debugging:
+- Run reaper-runtime directly without containerd (inherits parent's stdio)
+- Or redirect at the shell level: `reaper-runtime start my-app --bundle /tmp/my-bundle > /tmp/my-app.out 2> /tmp/my-app.err`
+- To debug the runtime itself (not container output), use environment variables:
+  - `REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log` — Runtime internals
+  - `REAPER_SHIM_LOG=/var/log/reaper-shim.log` — Shim internals
 
 ### CLI Commands
 

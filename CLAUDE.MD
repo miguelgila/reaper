@@ -270,6 +270,7 @@ minikube ssh -- 'ps aux | grep containerd-shim-reaper'
 - [x] Kill handling for already-exited processes (ESRCH)
 - [x] Timing delay for fast processes (500ms)
 - [x] Pods correctly show "Completed" status
+- [x] Container stdout/stderr capture via FIFOs (kubectl logs integration)
 - [x] Integration tests (basic, user management, shim)
 - [x] CI/CD (test, build, coverage, security audit)
 
@@ -306,7 +307,8 @@ minikube ssh -- 'ps aux | grep containerd-shim-reaper'
   - Will re-enable after further validation
 - **500ms startup delay:** Required for containerd to observe "running" state
   - May be reducible with better synchronization
-- **Basic error handling:** Some edge cases not fully covered
+- **Non-blocking FIFO opens:** May fail if containerd isn't ready
+  - Falls back to inherited stdio if FIFO open fails (graceful degradation)
 
 ## Configuration & Deployment
 
