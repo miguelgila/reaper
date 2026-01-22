@@ -615,7 +615,7 @@ impl Task for ReaperTask {
         // Return both exit_code and pid with a timeout to prevent hanging during pod cleanup
         let (exit_code, pid) = tokio::task::spawn_blocking(move || {
             let start = std::time::Instant::now();
-            let timeout = std::time::Duration::from_secs(30); // 30 second timeout for polling
+            let timeout = std::time::Duration::from_secs(60); // 60 second timeout for polling (CI environments may be slower)
 
             loop {
                 // Check timeout
