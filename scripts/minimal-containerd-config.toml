@@ -1,0 +1,59 @@
+# Minimal containerd configuration for kind with reaper-v2 runtime
+# This is a trimmed-down config that avoids compatibility issues with kind
+# Generated based on containerd defaults, with only essential settings
+
+version = 3
+root = '/var/lib/containerd'
+state = '/run/containerd'
+
+[grpc]
+address = '/run/containerd/containerd.sock'
+uid = 0
+gid = 0
+max_recv_message_size = 16777216
+max_send_message_size = 16777216
+
+[debug]
+level = 'info'
+
+[plugins]
+[plugins.'io.containerd.cri.v1.images']
+snapshotter = 'overlayfs'
+
+[plugins.'io.containerd.cri.v1.images'.registry]
+config_path = '/etc/containerd/certs.d:/etc/docker/certs.d'
+
+[plugins.'io.containerd.cri.v1.runtime']
+enable_selinux = false
+max_container_log_line_size = 16384
+tolerate_missing_hugetlb_controller = true
+disable_hugetlb_controller = true
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd]
+default_runtime_name = 'runc'
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes]
+
+# Reaper v2 runtime - NO options section (triggers cgroup path bug)
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.reaper-v2]
+runtime_type = 'io.containerd.reaper.v2'
+sandbox_mode = 'podsandbox'
+
+# Runc runtime (default for non-reaper containers)
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+runtime_type = 'io.containerd.runc.v2'
+
+[plugins.'io.containerd.cri.v1.runtime'.cni]
+bin_dirs = ['/opt/cni/bin']
+conf_dir = '/etc/cni/net.d'
+
+[plugins.'io.containerd.grpc.v1.cri']
+disable_tcp_service = true
+
+[plugins.'io.containerd.snapshotter.v1.overlayfs']
+
+[timeouts]
+'io.containerd.timeout.shim.cleanup' = '5s'
+'io.containerd.timeout.shim.load' = '5s'
+'io.containerd.timeout.shim.shutdown' = '3s'
+'io.containerd.timeout.task.state' = '2s'

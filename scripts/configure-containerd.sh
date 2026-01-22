@@ -55,23 +55,67 @@ configure_containerd() {
             exit 1
         fi
 
+        # Get script directory to find minimal config
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
         docker exec "$node_id" bash -c "
-            # Generate default config as base
-            containerd config default > /tmp/containerd-config-new.toml
+            # Use minimal config template instead of full default
+            # This avoids compatibility issues that cause control plane instability
+            cat > /etc/containerd/config.toml <<'CONTAINERD_CONFIG'
+version = 3
+root = '/var/lib/containerd'
+state = '/run/containerd'
 
-            # Add reaper-v2 runtime before runc section
-            # Try both old and new plugin paths for compatibility
-            # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
-            if grep -q \"plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc\" /tmp/containerd-config-new.toml; then
-                # New path (containerd 2.x / kind)
-                sed -i \"/\\[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc\\]/i\\        [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.reaper-v2]\\n          runtime_type = 'io.containerd.reaper.v2'\\n          sandbox_mode = 'podsandbox'\\n\" /tmp/containerd-config-new.toml
-            else
-                # Old path (containerd 1.x / minikube)
-                sed -i '/\\[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runc\\]/i\\      [plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.reaper-v2]\\n        runtime_type = \"io.containerd.reaper.v2\"\\n        sandbox_mode = \"podsandbox\"\\n' /tmp/containerd-config-new.toml
-            fi
+[grpc]
+address = '/run/containerd/containerd.sock'
+uid = 0
+gid = 0
+max_recv_message_size = 16777216
+max_send_message_size = 16777216
 
-            # Replace config
-            mv /tmp/containerd-config-new.toml /etc/containerd/config.toml
+[debug]
+level = 'info'
+
+[plugins]
+[plugins.'io.containerd.cri.v1.images']
+snapshotter = 'overlayfs'
+
+[plugins.'io.containerd.cri.v1.images'.registry]
+config_path = '/etc/containerd/certs.d:/etc/docker/certs.d'
+
+[plugins.'io.containerd.cri.v1.runtime']
+enable_selinux = false
+max_container_log_line_size = 16384
+tolerate_missing_hugetlb_controller = true
+disable_hugetlb_controller = true
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd]
+default_runtime_name = 'runc'
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes]
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.reaper-v2]
+runtime_type = 'io.containerd.reaper.v2'
+sandbox_mode = 'podsandbox'
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+runtime_type = 'io.containerd.runc.v2'
+
+[plugins.'io.containerd.cri.v1.runtime'.cni]
+bin_dirs = ['/opt/cni/bin']
+conf_dir = '/etc/cni/net.d'
+
+[plugins.'io.containerd.grpc.v1.cri']
+disable_tcp_service = true
+
+[plugins.'io.containerd.snapshotter.v1.overlayfs']
+
+[timeouts]
+'io.containerd.timeout.shim.cleanup' = '5s'
+'io.containerd.timeout.shim.load' = '5s'
+'io.containerd.timeout.shim.shutdown' = '3s'
+'io.containerd.timeout.task.state' = '2s'
+CONTAINERD_CONFIG
 
             # Restart containerd
             pkill -HUP containerd || systemctl restart containerd
