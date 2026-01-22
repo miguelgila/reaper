@@ -68,7 +68,7 @@ configure_containerd() {
             # Add reaper-v2 runtime before runc section
             # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
             # Try modern plugin path first (v2 config format), fall back to v1 if needed
-            if grep -q 'plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runc' /tmp/containerd-config-new.toml; then
+            if grep -q 'plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc' /tmp/containerd-config-new.toml; then
                 # v2 format with io.containerd.grpc.v1.cri path
                 sed -i \"/\\[plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.runc\\]/i\\[plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.reaper-v2]\\n  runtime_type = \\\"io.containerd.reaper.v2\\\"\\n  sandbox_mode = \\\"podsandbox\\\"\\n\" /tmp/containerd-config-new.toml
             elif grep -q \"plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc\" /tmp/containerd-config-new.toml; then
@@ -76,6 +76,8 @@ configure_containerd() {
                 sed -i \"/\\[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc\\]/i\\[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.reaper-v2]\\nruntime_type = 'io.containerd.reaper.v2'\\nsandbox_mode = 'podsandbox'\\n\" /tmp/containerd-config-new.toml
             else
                 echo \"Error: Could not find runc runtime section in config\" >&2
+                echo \"Config contents:\" >&2
+                grep -E '\\[plugins' /tmp/containerd-config-new.toml >&2
                 exit 1
             fi
 
