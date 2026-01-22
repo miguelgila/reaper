@@ -227,9 +227,11 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                 daemon_pid
             );
 
-            // Wait briefly for daemon to spawn workload and update state
-            // This is a simple synchronization mechanism
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            // Wait for daemon to spawn workload and update state
+            // The daemon needs time to: setsid(), spawn workload, write state to disk
+            // With 100ms, there's a race condition where the daemon hasn't written state yet
+            // when the parent returns. Increased to 500ms to ensure state file exists.
+            std::thread::sleep(std::time::Duration::from_millis(500));
 
             // Read the PID from state (daemon should have updated it)
             if let Ok(state) = load_state(&container_id) {

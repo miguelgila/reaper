@@ -9,9 +9,28 @@ use containerd_shim_protos::{
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tokio::process::Command;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+/// Helper function to execute a command and properly reap the child process
+/// This is critical when forking happens inside the spawned process - we need to ensure
+/// the parent process is fully reaped even if it exits before the child is ready
+fn execute_and_reap_child(program: &str, args: Vec<&str>) -> std::io::Result<std::process::Output> {
+    let mut cmd = std::process::Command::new(program);
+    for arg in args {
+        cmd.arg(arg);
+    }
+
+    // Spawn and wait for the process
+    let output = cmd.output()?;
+
+    // Explicitly try to reap any orphaned child processes (grandchildren that have exited)
+    // This helps clean up zombies if the direct child exited but had children
+    use nix::sys::wait;
+    let _ = wait::waitpid(None, Some(wait::WaitPidFlag::WNOHANG));
+
+    Ok(output)
+}
 
 #[derive(Clone)]
 struct ReaperShim {
@@ -251,24 +270,42 @@ impl Task for ReaperTask {
 
         // Call reaper-runtime create <container-id> --bundle <bundle-path>
         // with optional I/O paths for Kubernetes logging
-        let mut cmd = Command::new(&self.runtime_path);
-        cmd.arg("create")
-            .arg(&req.id)
-            .arg("--bundle")
-            .arg(&req.bundle);
+        let runtime_path = self.runtime_path.clone();
+        let container_id = req.id.clone();
+        let bundle_path = req.bundle.clone();
+        let stdin_path = req.stdin.clone();
+        let stdout_path = req.stdout.clone();
+        let stderr_path = req.stderr.clone();
 
-        // Pass I/O paths if provided by containerd
-        if !req.stdin.is_empty() {
-            cmd.arg("--stdin").arg(&req.stdin);
-        }
-        if !req.stdout.is_empty() {
-            cmd.arg("--stdout").arg(&req.stdout);
-        }
-        if !req.stderr.is_empty() {
-            cmd.arg("--stderr").arg(&req.stderr);
-        }
+        let output = tokio::task::spawn_blocking(move || {
+            let mut cmd = std::process::Command::new(&runtime_path);
+            cmd.arg("create")
+                .arg(&container_id)
+                .arg("--bundle")
+                .arg(&bundle_path);
 
-        let output = cmd.output().await.map_err(|e| {
+            // Pass I/O paths if provided by containerd
+            if !stdin_path.is_empty() {
+                cmd.arg("--stdin").arg(&stdin_path);
+            }
+            if !stdout_path.is_empty() {
+                cmd.arg("--stdout").arg(&stdout_path);
+            }
+            if !stderr_path.is_empty() {
+                cmd.arg("--stderr").arg(&stderr_path);
+            }
+
+            cmd.output()
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to spawn reaper-runtime task: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to spawn reaper-runtime task: {}", e),
+            ))
+        })?
+        .map_err(|e| {
             tracing::error!("Failed to execute reaper-runtime create: {}", e);
             ttrpc::Error::RpcStatus(ttrpc::get_status(
                 ttrpc::Code::INTERNAL,
@@ -325,19 +362,28 @@ impl Task for ReaperTask {
         // Real workload - call reaper-runtime
         info!("start() - WORKLOAD container, calling reaper-runtime");
 
-        // Call reaper-runtime start <container-id>
-        let output = Command::new(&self.runtime_path)
-            .arg("start")
-            .arg(&req.id)
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime start: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to execute reaper-runtime start: {}", e),
-                ))
-            })?;
+        // Use blocking context with std::process::Command for better process control
+        // This avoids interference from tokio's async process management
+        let runtime_path = self.runtime_path.clone();
+        let container_id = req.id.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            execute_and_reap_child(&runtime_path, vec!["start", &container_id])
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to spawn reaper-runtime task: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to spawn reaper-runtime task: {}", e),
+            ))
+        })?
+        .map_err(|e| {
+            tracing::error!("Failed to execute reaper-runtime start: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to execute reaper-runtime start: {}", e),
+            ))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -349,18 +395,29 @@ impl Task for ReaperTask {
         }
 
         // Get the PID by calling reaper-runtime state
-        let state_output = Command::new(&self.runtime_path)
-            .arg("state")
-            .arg(&req.id)
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime state: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to execute reaper-runtime state: {}", e),
-                ))
-            })?;
+        let runtime_path_state = self.runtime_path.clone();
+        let container_id_state = req.id.clone();
+        let state_output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(&runtime_path_state)
+                .arg("state")
+                .arg(&container_id_state)
+                .output()
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to spawn reaper-runtime task: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to spawn reaper-runtime task: {}", e),
+            ))
+        })?
+        .map_err(|e| {
+            tracing::error!("Failed to execute reaper-runtime state: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to execute reaper-runtime state: {}", e),
+            ))
+        })?;
 
         let state: serde_json::Value =
             serde_json::from_slice(&state_output.stdout).map_err(|e| {
@@ -411,18 +468,29 @@ impl Task for ReaperTask {
         info!("delete() - WORKLOAD container, calling reaper-runtime");
 
         // Call reaper-runtime delete <container-id>
-        let output = Command::new(&self.runtime_path)
-            .arg("delete")
-            .arg(&req.id)
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime delete: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to execute reaper-runtime delete: {}", e),
-                ))
-            })?;
+        let runtime_path = self.runtime_path.clone();
+        let container_id = req.id.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(&runtime_path)
+                .arg("delete")
+                .arg(&container_id)
+                .output()
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to spawn reaper-runtime task: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to spawn reaper-runtime task: {}", e),
+            ))
+        })?
+        .map_err(|e| {
+            tracing::error!("Failed to execute reaper-runtime delete: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to execute reaper-runtime delete: {}", e),
+            ))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -460,19 +528,31 @@ impl Task for ReaperTask {
         info!("kill() - WORKLOAD container, calling reaper-runtime");
 
         // Call reaper-runtime kill <container-id> <signal>
-        let output = Command::new(&self.runtime_path)
-            .arg("kill")
-            .arg(&req.id)
-            .arg(req.signal.to_string())
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime kill: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to execute reaper-runtime kill: {}", e),
-                ))
-            })?;
+        let runtime_path = self.runtime_path.clone();
+        let container_id = req.id.clone();
+        let signal = req.signal;
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(&runtime_path)
+                .arg("kill")
+                .arg(&container_id)
+                .arg(signal.to_string())
+                .output()
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to spawn reaper-runtime task: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to spawn reaper-runtime task: {}", e),
+            ))
+        })?
+        .map_err(|e| {
+            tracing::error!("Failed to execute reaper-runtime kill: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to execute reaper-runtime kill: {}", e),
+            ))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -616,18 +696,29 @@ impl Task for ReaperTask {
         info!("state() - WORKLOAD container, querying reaper-runtime");
 
         // Query runtime for actual state
-        let output = Command::new(&self.runtime_path)
-            .arg("state")
-            .arg(&req.id)
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime state: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to execute reaper-runtime state: {}", e),
-                ))
-            })?;
+        let runtime_path = self.runtime_path.clone();
+        let container_id = req.id.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(&runtime_path)
+                .arg("state")
+                .arg(&container_id)
+                .output()
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to spawn reaper-runtime task: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to spawn reaper-runtime task: {}", e),
+            ))
+        })?
+        .map_err(|e| {
+            tracing::error!("Failed to execute reaper-runtime state: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to execute reaper-runtime state: {}", e),
+            ))
+        })?;
 
         if !output.status.success() {
             // If runtime returns error, container might not exist
@@ -686,18 +777,29 @@ impl Task for ReaperTask {
         info!("pids() called - container_id={}", req.id);
 
         // Query runtime for state to get PID
-        let output = Command::new(&self.runtime_path)
-            .arg("state")
-            .arg(&req.id)
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime state: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to execute reaper-runtime state: {}", e),
-                ))
-            })?;
+        let runtime_path = self.runtime_path.clone();
+        let container_id = req.id.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(&runtime_path)
+                .arg("state")
+                .arg(&container_id)
+                .output()
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to spawn reaper-runtime task: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to spawn reaper-runtime task: {}", e),
+            ))
+        })?
+        .map_err(|e| {
+            tracing::error!("Failed to execute reaper-runtime state: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to execute reaper-runtime state: {}", e),
+            ))
+        })?;
 
         let mut resp = api::PidsResponse::new();
 
@@ -795,18 +897,29 @@ impl Task for ReaperTask {
         // Real workload - get PID from reaper-runtime
         info!("connect() - WORKLOAD container, querying reaper-runtime");
 
-        let state_output = Command::new(&self.runtime_path)
-            .arg("state")
-            .arg(&req.id)
-            .output()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to execute reaper-runtime state: {}", e);
-                ttrpc::Error::RpcStatus(ttrpc::get_status(
-                    ttrpc::Code::INTERNAL,
-                    format!("Failed to execute reaper-runtime state: {}", e),
-                ))
-            })?;
+        let runtime_path = self.runtime_path.clone();
+        let container_id = req.id.clone();
+        let state_output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new(&runtime_path)
+                .arg("state")
+                .arg(&container_id)
+                .output()
+        })
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to spawn reaper-runtime task: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to spawn reaper-runtime task: {}", e),
+            ))
+        })?
+        .map_err(|e| {
+            tracing::error!("Failed to execute reaper-runtime state: {}", e);
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INTERNAL,
+                format!("Failed to execute reaper-runtime state: {}", e),
+            ))
+        })?;
 
         let state: serde_json::Value =
             serde_json::from_slice(&state_output.stdout).map_err(|e| {
@@ -906,11 +1019,12 @@ async fn main() {
     }
 
     // Create Config with no_setup_logger=true since we already set up tracing
-    // Also set no_reaper=true to prevent the shim library from setting up SIGCHLD handler
-    // which interferes with our Command::output() calls
+    // Keep no_reaper=true to avoid interfering with tokio's async process management
+    // (the containerd-shim reaper can interfere with tokio's Command spawning)
+    // Instead, we'll use std::process::Command in blocking contexts for better control.
     let config = Config {
         no_setup_logger: true,
-        no_reaper: true,
+        no_reaper: true, // Keep disabled to avoid tokio/signal handler conflicts
         ..Default::default()
     };
 
