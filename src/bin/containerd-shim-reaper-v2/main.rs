@@ -524,43 +524,57 @@ impl Task for ReaperTask {
             return Ok(api::Empty::new());
         }
 
-        // Real workload - call reaper-runtime
+        // Real workload - call reaper-runtime with timeout
         info!("kill() - WORKLOAD container, calling reaper-runtime");
 
         // Call reaper-runtime kill <container-id> <signal>
+        // Must complete quickly - kubelet has a short timeout for kill operations
         let runtime_path = self.runtime_path.clone();
         let container_id = req.id.clone();
+        let container_id_for_warning = container_id.clone();
         let signal = req.signal;
-        let output = tokio::task::spawn_blocking(move || {
+
+        // Use a 5-second timeout for kill operations (kubelet timeout is typically 2s per attempt)
+        let kill_future = tokio::task::spawn_blocking(move || {
             std::process::Command::new(&runtime_path)
                 .arg("kill")
                 .arg(&container_id)
                 .arg(signal.to_string())
                 .output()
-        })
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to spawn reaper-runtime task: {}", e);
-            ttrpc::Error::RpcStatus(ttrpc::get_status(
-                ttrpc::Code::INTERNAL,
-                format!("Failed to spawn reaper-runtime task: {}", e),
-            ))
-        })?
-        .map_err(|e| {
-            tracing::error!("Failed to execute reaper-runtime kill: {}", e);
-            ttrpc::Error::RpcStatus(ttrpc::get_status(
-                ttrpc::Code::INTERNAL,
-                format!("Failed to execute reaper-runtime kill: {}", e),
-            ))
-        })?;
+        });
+
+        let output =
+            match tokio::time::timeout(std::time::Duration::from_secs(5), kill_future).await {
+                Ok(result) => result
+                    .map_err(|e| {
+                        tracing::error!("Failed to spawn reaper-runtime task: {}", e);
+                        ttrpc::Error::RpcStatus(ttrpc::get_status(
+                            ttrpc::Code::INTERNAL,
+                            format!("Failed to spawn reaper-runtime task: {}", e),
+                        ))
+                    })?
+                    .map_err(|e| {
+                        tracing::error!("Failed to execute reaper-runtime kill: {}", e);
+                        ttrpc::Error::RpcStatus(ttrpc::get_status(
+                            ttrpc::Code::INTERNAL,
+                            format!("Failed to execute reaper-runtime kill: {}", e),
+                        ))
+                    })?,
+                Err(_) => {
+                    tracing::warn!(
+                        "kill() timeout after 5s for container {} - returning success anyway",
+                        container_id_for_warning
+                    );
+                    // Return success even if timeout - don't let kill operations block pod cleanup
+                    return Ok(api::Empty::new());
+                }
+            };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::error!("reaper-runtime kill failed: {}", stderr);
-            return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
-                ttrpc::Code::INTERNAL,
-                format!("reaper-runtime kill failed: {}", stderr),
-            )));
+            // For kill, we're lenient - process might already be dead (ESRCH)
+            // Just return success to avoid blocking pod cleanup
         }
 
         info!(
