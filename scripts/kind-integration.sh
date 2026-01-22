@@ -86,6 +86,10 @@ kubectl wait --for=condition=Ready node --all --timeout=300s
 echo "Sleeping 30s to ensure API server stability..."
 sleep 30
 
+echo "Enabling debug logging in kind node..."
+# Enable RUST_LOG for the shim so we can debug issues
+docker exec "$NODE_ID" bash -c "mkdir -p /tmp/reaper-logs"
+
 echo "Configuring containerd to use reaper-v2 shim runtime..."
 ./scripts/configure-containerd.sh kind "$NODE_ID"
 
@@ -246,10 +250,36 @@ if [ "$FINAL_PHASE" != "Succeeded" ]; then
   echo ""
   echo "Debugging information:"
   echo "===================="
+
+  # Get full pod YAML
+  echo "=== Pod YAML ==="
   retry_kubectl "kubectl get pod reaper-integration-test -o yaml" || true
   echo ""
-  echo "Node containerd logs (last 50 lines):"
-  docker exec "$NODE_ID" tail -50 /var/log/containerd.log 2>/dev/null || echo "Could not retrieve containerd logs"
+
+  # Get pod events
+  echo "=== Pod Events ==="
+  retry_kubectl "kubectl describe pod reaper-integration-test" | grep -A 50 "Events:" || true
+  echo ""
+
+  # Get containerd logs
+  echo "=== Containerd logs (last 100 lines) ==="
+  docker exec "$NODE_ID" tail -100 /var/log/containerd.log 2>/dev/null || echo "Could not retrieve containerd logs"
+  echo ""
+
+  # Get reaper state files
+  echo "=== Reaper state directory ==="
+  docker exec "$NODE_ID" find /run/reaper -type f 2>/dev/null | head -20 || echo "No reaper state files found"
+  echo ""
+
+  # Get systemd journal for containerd
+  echo "=== Systemd journal for containerd (last 50 lines) ==="
+  docker exec "$NODE_ID" journalctl -u containerd -n 50 --no-pager 2>/dev/null || echo "Could not retrieve journalctl"
+  echo ""
+
+  # Get kubelet logs
+  echo "=== Kubelet logs (last 50 lines) ==="
+  docker exec "$NODE_ID" journalctl -u kubelet -n 50 --no-pager 2>/dev/null || echo "Could not retrieve kubelet logs"
+
   exit 1
 fi
 
