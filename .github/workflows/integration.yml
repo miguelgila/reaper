@@ -64,3 +64,34 @@ jobs:
           # Run the shared integration test script
           # Note: The script builds static musl binaries for kind node compatibility
           ./scripts/kind-integration.sh
+
+      - name: Capture kind cluster logs on failure
+        if: always()
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/debug-logs
+
+          # Get kind cluster info
+          kind get clusters > /tmp/debug-logs/kind-clusters.txt 2>&1 || true
+
+          # Get kind node info
+          docker ps -a --filter "name=reaper-ci" > /tmp/debug-logs/docker-ps.txt 2>&1 || true
+
+          # Extract logs from kind node
+          NODE_ID=$(docker ps -q --filter "name=reaper-ci-control-plane" 2>/dev/null) || true
+          if [ -n "$NODE_ID" ]; then
+            echo "Capturing logs from node: $NODE_ID" > /tmp/debug-logs/node-info.txt
+            docker exec "$NODE_ID" journalctl -u containerd -n 200 --no-pager > /tmp/debug-logs/containerd-journal.log 2>&1 || true
+            docker exec "$NODE_ID" journalctl -u kubelet -n 200 --no-pager > /tmp/debug-logs/kubelet-journal.log 2>&1 || true
+            docker exec "$NODE_ID" tail -200 /var/log/containerd.log > /tmp/debug-logs/containerd-daemon.log 2>&1 || true
+            docker exec "$NODE_ID" find /run/reaper -type f -exec cat {} \; > /tmp/debug-logs/reaper-state-files.txt 2>&1 || true
+          fi
+
+      - name: Upload debug logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: kind-debug-logs
+          path: /tmp/debug-logs/
+          retention-days: 7
