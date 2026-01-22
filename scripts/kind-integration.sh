@@ -83,14 +83,17 @@ docker exec "$NODE_ID" chmod +x /usr/local/bin/$RUNTIME_BIN
 echo "Waiting for Kubernetes API server to be ready before enabling reaper..."
 kubectl wait --for=condition=Ready node --all --timeout=300s
 
+echo "Sleeping 30s to ensure API server stability..."
+sleep 30
+
 echo "Configuring containerd to use reaper-v2 shim runtime..."
 ./scripts/configure-containerd.sh kind "$NODE_ID"
 
 echo "Verifying containerd config..."
 docker exec "$NODE_ID" grep -A 3 'reaper-v2' /etc/containerd/config.toml
 
-echo "Bailing out for manual inspection (remove this line to continue)..."
-exit 0
+# echo "Bailing out for manual inspection (remove this line to continue)..."
+# exit 0
 
 echo "Waiting for Kubernetes API server to be ready..."
 
