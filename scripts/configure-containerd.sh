@@ -61,9 +61,11 @@ configure_containerd() {
             cp /etc/containerd/config.toml /tmp/containerd-config-new.toml
 
             # Remove any existing reaper-v2 sections to avoid TOML duplicate table errors
-            # This handles re-running the script without manual config cleanup
-            # Delete from reaper-v2 section header through to (but not including) the next section header
-            sed -i '/\[.*reaper-v2\]/,/^\[/{/^\[/!d;}' /tmp/containerd-config-new.toml
+            # Use a more precise pattern: delete reaper-v2 line and next 2 lines (runtime_type and sandbox_mode)
+            # This is safer than range deletions which can remove too much
+            if grep -q '\[.*reaper-v2\]' /tmp/containerd-config-new.toml; then
+                sed -i '/\[.*reaper-v2\]/,+2d' /tmp/containerd-config-new.toml
+            fi
 
             # Add reaper-v2 runtime before runc section
             # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
