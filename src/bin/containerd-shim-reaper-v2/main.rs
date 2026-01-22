@@ -712,12 +712,12 @@ impl Task for ReaperTask {
         };
 
         if is_sandbox {
-            info!("state() - SANDBOX container, returning stopped state for cleanup");
+            info!("state() - SANDBOX container, returning running state");
             return Ok(api::StateResponse {
                 id: req.id,
                 bundle: String::new(),
                 pid: 1,
-                status: ::protobuf::EnumOrUnknown::new(api::Status::STOPPED),
+                status: ::protobuf::EnumOrUnknown::new(api::Status::RUNNING),
                 ..Default::default()
             });
         }
