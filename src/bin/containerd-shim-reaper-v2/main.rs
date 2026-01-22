@@ -612,29 +612,45 @@ impl Task for ReaperTask {
         let container_id = req.id.clone();
         let runtime_path = self.runtime_path.clone();
 
-        // Return both exit_code and pid
-        let (exit_code, pid) = tokio::task::spawn_blocking(move || loop {
-            let output = std::process::Command::new(&runtime_path)
-                .arg("state")
-                .arg(&container_id)
-                .output();
+        // Return both exit_code and pid with a timeout to prevent hanging during pod cleanup
+        let (exit_code, pid) = tokio::task::spawn_blocking(move || {
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(30); // 30 second timeout for polling
 
-            if let Ok(output) = output {
-                if output.status.success() {
-                    if let Ok(state) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
-                        if state["status"].as_str() == Some("stopped") {
-                            let code = state["exit_code"].as_i64().unwrap_or(0) as i32;
-                            let pid = state["pid"].as_u64().unwrap_or(0) as u32;
-                            info!(
-                                "wait() - container {} stopped with exit_code={}, pid={}",
-                                container_id, code, pid
-                            );
-                            return (code, pid);
+            loop {
+                // Check timeout
+                if start.elapsed() > timeout {
+                    tracing::warn!(
+                        "wait() polling timeout after 30s for container {}",
+                        container_id
+                    );
+                    return (1, 0); // Return error exit code on timeout
+                }
+
+                let output = std::process::Command::new(&runtime_path)
+                    .arg("state")
+                    .arg(&container_id)
+                    .output();
+
+                if let Ok(output) = output {
+                    if output.status.success() {
+                        if let Ok(state) =
+                            serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                        {
+                            if state["status"].as_str() == Some("stopped") {
+                                let code = state["exit_code"].as_i64().unwrap_or(0) as i32;
+                                let pid = state["pid"].as_u64().unwrap_or(0) as u32;
+                                info!(
+                                    "wait() - container {} stopped with exit_code={}, pid={}",
+                                    container_id, code, pid
+                                );
+                                return (code, pid);
+                            }
                         }
                     }
                 }
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
         })
         .await
         .unwrap_or((1, 0));
