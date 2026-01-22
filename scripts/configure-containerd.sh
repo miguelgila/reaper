@@ -61,7 +61,7 @@ configure_containerd() {
         docker exec "$node_id" bash -c "
             # Use minimal config template instead of full default
             # This avoids compatibility issues that cause control plane instability
-            cat > /etc/containerd/config.toml <<'CONTAINERD_CONFIG'
+            cat > /tmp/containerd-config-new.toml <<'MINIMAL_CONFIG'
 version = 3
 root = '/var/lib/containerd'
 state = '/run/containerd'
@@ -94,10 +94,6 @@ default_runtime_name = 'runc'
 
 [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes]
 
-[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.reaper-v2]
-runtime_type = 'io.containerd.reaper.v2'
-sandbox_mode = 'podsandbox'
-
 [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
 runtime_type = 'io.containerd.runc.v2'
 
@@ -115,7 +111,14 @@ disable_tcp_service = true
 'io.containerd.timeout.shim.load' = '5s'
 'io.containerd.timeout.shim.shutdown' = '3s'
 'io.containerd.timeout.task.state' = '2s'
-CONTAINERD_CONFIG
+MINIMAL_CONFIG
+
+            # Add reaper-v2 runtime before runc section
+            # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
+            sed -i \"/\\[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc\\]/i\\[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.reaper-v2]\\nruntime_type = 'io.containerd.reaper.v2'\\nsandbox_mode = 'podsandbox'\\n\" /tmp/containerd-config-new.toml
+
+            # Replace config
+            mv /tmp/containerd-config-new.toml /etc/containerd/config.toml
 
             # Restart containerd
             pkill -HUP containerd || systemctl restart containerd
