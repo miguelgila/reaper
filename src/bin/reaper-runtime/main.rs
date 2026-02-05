@@ -229,19 +229,27 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
 
             // Wait for daemon to spawn workload and update state
             // The daemon needs time to: setsid(), spawn workload, write state to disk
-            // With 100ms, there's a race condition where the daemon hasn't written state yet
-            // when the parent returns. Increased to 500ms to ensure state file exists.
-            std::thread::sleep(std::time::Duration::from_millis(500));
-
-            // Read the PID from state (daemon should have updated it)
-            if let Ok(state) = load_state(&container_id) {
-                if let Some(pid) = state.pid {
-                    println!("started pid={}", pid);
-                } else {
-                    // Fallback: report daemon PID if workload PID not yet available
-                    println!("started pid={}", daemon_pid);
+            // Poll the state file until we see the workload PID
+            let mut workload_pid = None;
+            for _attempt in 0..20 {
+                // Try up to 20 times (2 seconds total)
+                if let Ok(state) = load_state(&container_id) {
+                    if let Some(pid) = state.pid {
+                        workload_pid = Some(pid);
+                        break;
+                    }
                 }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+
+            // Print the workload PID if we got it, otherwise fall back to daemon PID
+            if let Some(pid) = workload_pid {
+                println!("started pid={}", pid);
             } else {
+                // Fallback: report daemon PID if workload PID not yet available after 2s
+                info!(
+                    "do_start() - timeout waiting for workload PID, reporting daemon PID instead"
+                );
                 println!("started pid={}", daemon_pid);
             }
 

@@ -175,6 +175,11 @@ retry_kubectl "kubectl wait --for=jsonpath='{.metadata.name}'=default serviceacc
   done
 }
 
+# Delete any stale pods from previous runs before creating new ones
+echo "Cleaning up any stale pods from previous runs..."
+retry_kubectl "kubectl delete pod reaper-example --ignore-not-found" || true
+retry_kubectl "kubectl delete pod reaper-integration-test --ignore-not-found" || true
+
 # Create example pod
 echo "Creating example pod..."
 cat << 'EOF' | retry_kubectl "kubectl apply -f -"

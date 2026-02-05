@@ -4,11 +4,12 @@
 
 **What is Reaper?** A minimal OCI-compatible container runtime written in Rust that executes commands directly on Kubernetes host nodes without traditional containerization (no namespaces/cgroups by design).
 
-**Status:** ✅ Core functionality complete and validated (January 2026)
+**Status:** ✅ Core functionality complete and validated (January–February 2026)
 - Full containerd shim v2 protocol implementation
-- Kubernetes integration via RuntimeClass
+- Kubernetes integration via RuntimeClass (tested with kind)
 - Pods correctly transition to "Completed" status
 - Real exit code capture and reporting
+- Sandbox container lifecycle with blocking wait()/kill() signaling
 
 ## Architecture Overview
 
@@ -36,7 +37,12 @@ monitoring daemon → spawns workload → wait() → update state
 // In reaper-runtime start command - FORK FIRST!
 match unsafe { fork() }? {
     ForkResult::Parent { .. } => {
-        sleep(100ms);  // Let daemon start
+        // Poll state file until daemon writes the workload PID (up to 2s)
+        for _ in 0..20 {
+            if state_has_pid() { break; }
+            sleep(100ms);
+        }
+        println!("started pid={}", read_pid_from_state());
         exit(0);       // CLI exits immediately (OCI requirement)
     }
     ForkResult::Child => {
@@ -75,6 +81,7 @@ match unsafe { fork() }? {
 
 ### Tests
 - `tests/integration_basic_binary.rs` - Basic process execution
+- `tests/integration_io.rs` - FIFO stdout/stderr redirection
 - `tests/integration_user_management.rs` - uid/gid handling
 - `tests/integration_shim.rs` - Shim v2 protocol tests
 
@@ -90,7 +97,8 @@ match unsafe { fork() }? {
 ### Deployment & Scripts
 - `scripts/minikube-setup-runtime.sh` - Build and deploy to minikube
 - `scripts/test-k8s-integration.sh` - End-to-end integration test
-- `scripts/kind-integration.sh` - Kind cluster integration
+- `scripts/kind-integration.sh` - Kind cluster integration (builds musl static binaries)
+- `scripts/configure-containerd.sh` - Configure containerd for reaper runtime
 - `scripts/docker-coverage.sh` - Coverage in Docker
 - `scripts/install-hooks.sh` - Git hooks installer
 - `kubernetes/` - RuntimeClass and example pod configs
@@ -153,34 +161,46 @@ tracing-subscriber = "0.3"
 3. **daemon waits**: Updates to `status="stopped", exit_code=<code>` when workload exits
 4. **delete**: Removes state file and directory
 
-## Critical Bug Fixes (January 2026)
+## Critical Bug Fixes
 
-All core issues have been resolved:
+### January 2026
 
-### 1. Fork Order Bug
-**File:** `src/bin/reaper-runtime/main.rs:188-311`
+#### 1. Fork Order Bug
+**File:** `src/bin/reaper-runtime/main.rs`
 **Problem:** `std::process::Child` handle invalid after fork
 **Fix:** Fork first, then spawn workload in the forked child
 
-### 2. Fast Process Timing
-**File:** `src/bin/reaper-runtime/main.rs:264-270`
+#### 2. Fast Process Timing
+**File:** `src/bin/reaper-runtime/main.rs`
 **Problem:** Fast commands (echo) completed before containerd observed "running" state
 **Fix:** Added 500ms delay after setting "running" state, before calling `wait()`
 
-### 3. Kill ESRCH Error
-**File:** `src/bin/reaper-runtime/main.rs:347-365`
+#### 3. Kill ESRCH Error
+**File:** `src/bin/reaper-runtime/main.rs`
 **Problem:** `kill()` failed with ESRCH for already-dead processes
 **Fix:** Treat ESRCH as success (process not running = goal achieved)
 
-### 4. TaskExit Event Publishing
-**File:** `src/bin/containerd-shim-reaper-v2/main.rs:162-199`
+#### 4. TaskExit Event Publishing
+**File:** `src/bin/containerd-shim-reaper-v2/main.rs`
 **Problem:** containerd wasn't recognizing container exits
 **Fix:** Publish TaskExit event with proper `exited_at` timestamp
 
-### 5. Response Timestamps
-**File:** `src/bin/containerd-shim-reaper-v2/main.rs:545-552, 615-625`
+#### 5. Response Timestamps
+**File:** `src/bin/containerd-shim-reaper-v2/main.rs`
 **Problem:** Missing `exited_at` timestamps in WaitResponse and StateResponse
 **Fix:** Include proper timestamps in all responses for stopped containers
+
+### February 2026
+
+#### 6. PID Reporting Race Condition
+**File:** `src/bin/reaper-runtime/main.rs`
+**Problem:** Parent process used a fixed 500ms sleep before reading daemon's PID from state. Under load, the daemon hadn't written the workload PID yet, so the parent reported the daemon PID instead, causing PID mismatches in tests and containerd.
+**Fix:** Replaced fixed sleep with a polling loop (up to 20 attempts, 100ms apart, max 2s) that waits until the daemon writes the workload PID to the state file.
+
+#### 7. Sandbox wait() Returned Immediately
+**File:** `src/bin/containerd-shim-reaper-v2/main.rs`
+**Problem:** The shim's `wait()` for sandbox (pause) containers returned immediately with exit code 0. Containerd interpreted this as the sandbox being dead, then refused to start workload containers with `"sandbox container is not running"`.
+**Fix:** Sandbox `wait()` now blocks on a `tokio::sync::Notify` until `kill()` is called on the sandbox. The `SandboxInfo` struct tracks per-sandbox exit notifications. When containerd kills the sandbox during pod teardown, it signals the notify, unblocking `wait()` and allowing proper cleanup.
 
 ## Development Workflow
 
@@ -194,6 +214,7 @@ cargo test
 
 # Run specific test suites
 cargo test --test integration_basic_binary
+cargo test --test integration_io
 cargo test --test integration_user_management
 cargo test --test integration_shim
 
@@ -262,7 +283,7 @@ minikube ssh -- 'ps aux | grep containerd-shim-reaper'
 - [x] State persistence with exit codes
 - [x] User/group ID management (uid, gid, additional_gids, umask)
 - [x] Shim v2 protocol (all Task methods)
-- [x] Sandbox container faking (pause containers)
+- [x] Sandbox container lifecycle (pause containers with blocking wait/kill signaling)
 - [x] Process reaping via `child.wait()`
 - [x] State transitions: created → running → stopped
 - [x] Exit code reporting to Kubernetes
@@ -271,7 +292,7 @@ minikube ssh -- 'ps aux | grep containerd-shim-reaper'
 - [x] Timing delay for fast processes (500ms)
 - [x] Pods correctly show "Completed" status
 - [x] Container stdout/stderr capture via FIFOs (kubectl logs integration)
-- [x] Integration tests (basic, user management, shim)
+- [x] Integration tests (basic, I/O, user management, shim)
 - [x] CI/CD (test, build, coverage, security audit)
 
 ### 🔄 In Progress
@@ -446,6 +467,6 @@ MIT License - see LICENSE file
 
 ---
 
-**Document Version:** 1.0
-**Last Updated:** January 2026
+**Document Version:** 1.1
+**Last Updated:** February 2026
 **Maintained for:** Claude Code AI Assistant

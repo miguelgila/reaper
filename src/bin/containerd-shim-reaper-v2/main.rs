@@ -118,11 +118,17 @@ impl Shim for ReaperShim {
 }
 
 #[derive(Clone)]
+struct SandboxInfo {
+    is_sandbox: bool,
+    /// Notified when the sandbox is killed, unblocking wait()
+    exit_notify: Arc<tokio::sync::Notify>,
+}
+
+#[derive(Clone)]
 struct ReaperTask {
     runtime_path: String,
     // Track which containers are sandboxes (pause containers) vs real workloads
-    // Key: container_id, Value: (is_sandbox, fake_pid)
-    sandbox_state: Arc<Mutex<HashMap<String, (bool, u32)>>>,
+    sandbox_state: Arc<Mutex<HashMap<String, SandboxInfo>>>,
     // Publisher for sending task lifecycle events to containerd
     publisher: Arc<RemotePublisher>,
     // Namespace for events
@@ -245,7 +251,13 @@ impl Task for ReaperTask {
             info!("create() - detected SANDBOX container, faking creation");
             // Track this as a sandbox with fake PID
             let mut state = self.sandbox_state.lock().unwrap();
-            state.insert(req.id.clone(), (true, 1));
+            state.insert(
+                req.id.clone(),
+                SandboxInfo {
+                    is_sandbox: true,
+                    exit_notify: Arc::new(tokio::sync::Notify::new()),
+                },
+            );
 
             info!("create() succeeded - container_id={} (sandbox)", req.id);
             return Ok(api::CreateTaskResponse {
@@ -260,7 +272,13 @@ impl Task for ReaperTask {
         // Track this as a real workload
         {
             let mut state = self.sandbox_state.lock().unwrap();
-            state.insert(req.id.clone(), (false, 0));
+            state.insert(
+                req.id.clone(),
+                SandboxInfo {
+                    is_sandbox: false,
+                    exit_notify: Arc::new(tokio::sync::Notify::new()),
+                },
+            );
         }
 
         info!(
@@ -347,7 +365,7 @@ impl Task for ReaperTask {
             let state = self.sandbox_state.lock().unwrap();
             state
                 .get(&req.id)
-                .map(|(is_sand, _)| *is_sand)
+                .map(|info| info.is_sandbox)
                 .unwrap_or(false)
         };
 
@@ -448,7 +466,7 @@ impl Task for ReaperTask {
             let mut state = self.sandbox_state.lock().unwrap();
             let result = state
                 .get(&req.id)
-                .map(|(is_sand, _)| *is_sand)
+                .map(|info| info.is_sandbox)
                 .unwrap_or(false);
             // Remove from state
             state.remove(&req.id);
@@ -511,17 +529,18 @@ impl Task for ReaperTask {
         );
 
         // Check if this is a sandbox container
-        let is_sandbox = {
+        let sandbox_info = {
             let state = self.sandbox_state.lock().unwrap();
-            state
-                .get(&req.id)
-                .map(|(is_sand, _)| *is_sand)
-                .unwrap_or(false)
+            state.get(&req.id).cloned()
         };
 
-        if is_sandbox {
-            info!("kill() - SANDBOX container, ignoring signal");
-            return Ok(api::Empty::new());
+        if let Some(info) = sandbox_info {
+            if info.is_sandbox {
+                info!("kill() - SANDBOX container, notifying exit and returning");
+                // Notify any blocked wait() calls that the sandbox is being killed
+                info.exit_notify.notify_waiters();
+                return Ok(api::Empty::new());
+            }
         }
 
         // Real workload - call reaper-runtime with timeout
@@ -595,27 +614,32 @@ impl Task for ReaperTask {
         );
 
         // Check if this is a sandbox container
-        let is_sandbox = {
+        let sandbox_info = {
             let state = self.sandbox_state.lock().unwrap();
-            state
-                .get(&req.id)
-                .map(|(is_sand, _)| *is_sand)
-                .unwrap_or(false)
+            state.get(&req.id).cloned()
         };
 
-        if is_sandbox {
-            info!("wait() - SANDBOX container, returning immediately with exit status 0");
-            let mut resp = api::WaitResponse::new();
-            resp.set_exit_status(0);
-            // Set exited_at timestamp
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
-            let mut timestamp = ::protobuf::well_known_types::timestamp::Timestamp::new();
-            timestamp.seconds = now.as_secs() as i64;
-            timestamp.nanos = now.subsec_nanos() as i32;
-            resp.exited_at = ::protobuf::MessageField::some(timestamp);
-            return Ok(resp);
+        if let Some(ref info) = sandbox_info {
+            if info.is_sandbox {
+                // For sandbox containers, block until kill() is called.
+                // This is critical: if we return immediately, containerd considers
+                // the sandbox dead and refuses to start workload containers with
+                // "sandbox container is not running".
+                info!("wait() - SANDBOX container, blocking until kill signal");
+                info.exit_notify.notified().await;
+                info!("wait() - SANDBOX container, kill signal received, returning exit status 0");
+
+                let mut resp = api::WaitResponse::new();
+                resp.set_exit_status(0);
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                let mut timestamp = ::protobuf::well_known_types::timestamp::Timestamp::new();
+                timestamp.seconds = now.as_secs() as i64;
+                timestamp.nanos = now.subsec_nanos() as i32;
+                resp.exited_at = ::protobuf::MessageField::some(timestamp);
+                return Ok(resp);
+            }
         }
 
         // Real workload - poll state until monitoring daemon marks it stopped
@@ -707,7 +731,7 @@ impl Task for ReaperTask {
             let state = self.sandbox_state.lock().unwrap();
             state
                 .get(&req.id)
-                .map(|(is_sand, _)| *is_sand)
+                .map(|info| info.is_sandbox)
                 .unwrap_or(false)
         };
 
@@ -912,7 +936,7 @@ impl Task for ReaperTask {
             let state = self.sandbox_state.lock().unwrap();
             state
                 .get(&req.id)
-                .map(|(is_sand, _)| *is_sand)
+                .map(|info| info.is_sandbox)
                 .unwrap_or(false)
         };
 

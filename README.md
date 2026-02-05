@@ -170,6 +170,11 @@ Tests cover:
 2. **`test_run_shell_script`** — Multi-line shell command execution with output capture
 3. **`test_invalid_bundle`** — Error handling for missing `config.json`
 
+Additional test suites:
+- **`integration_io`** — FIFO stdout/stderr redirection, fallback behavior, multiline output
+- **`integration_user_management`** — uid/gid handling, additional groups, umask
+- **`integration_shim`** — Shim binary existence, bundle creation, config parsing
+
 All tests use isolated temporary directories to avoid state pollution.
 
 ### Process output (stdout/stderr)
@@ -206,27 +211,27 @@ State directory: defaults to `/run/reaper` and can be overridden via `REAPER_RUN
 To test with Kubernetes:
 
 ```bash
-# Build and install shim
-cargo build --release --bin containerd-shim-reaper-v2
+# Recommended: Kind cluster integration (builds static musl binaries, deploys, and tests)
+./scripts/kind-integration.sh
+
+# Or build and install shim manually
+cargo build --release --bin containerd-shim-reaper-v2 --bin reaper-runtime
 sudo cp target/release/containerd-shim-reaper-v2 /usr/local/bin/
+sudo cp target/release/reaper-runtime /usr/local/bin/
 
-# Run end-to-end integration test (requires kind/minikube)
-./scripts/test-k8s-integration.sh
-
-# Or manual setup (see kubernetes/README.md)
+# Manual setup (see kubernetes/README.md)
 kubectl apply -f kubernetes/runtimeclass.yaml
 kubectl logs -f reaper-example
 ```
 
-#### Configure containerd to use reaper-runtime
+#### Configure containerd to use reaper-v2
 
 Add a runtime entry in `/etc/containerd/config.toml`:
 
 ```toml
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper]
-	runtime_type = "io.containerd.runc.v2"
-	[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper.options]
-		BinaryName = "reaper-runtime"
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
+  runtime_type = "io.containerd.reaper.v2"
+  sandbox_mode = "podsandbox"
 ```
 
 Restart containerd:
@@ -240,51 +245,28 @@ sudo systemctl restart containerd
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
-	name: reaper
-handler: reaper
+  name: reaper-v2
+handler: reaper-v2
 ```
 
-### Next steps to reach full OCI/CRI compatibility
+### Implemented features
 
-**User/Group ID Management (Security-Critical)**:
-- Parse `process.user.uid`, `process.user.gid`, `process.user.additionalGids`, `process.user.umask` from config.json
-- Set process credentials before exec using `setuid()`/`setgid()`/`setgroups()`
-- **OCI allows root processes** — `uid: 0` is valid; runtime must call `setuid(0)` if specified
-- ⚠️ **Security concern**: Without user namespaces, `uid: 0` = actual host root (full privileges)
-- Without explicit uid/gid handling, processes inherit runtime's effective UID
-- Example config.json (non-root):
-  ```json
-  {
-    "process": {
-      "user": {
-        "uid": 1000,
-        "gid": 1000,
-        "additionalGids": [100, 101],
-        "umask": 22
-      },
-      "args": ["/bin/sh"]
-    }
-  }
-  ```
-- Example config.json (root):
-  ```json
-  {
-    "process": {
-      "user": {
-        "uid": 0,
-        "gid": 0
-      },
-      "args": ["/bin/sh"]
-    }
-  }
-  ```
-
-**Kubernetes/containerd Integration**:
-- ✅ **Implemented containerd shim v2 protocol**: Full Task trait with create/start/delete/wait/kill/state/pids/exec/stats/resize_pty methods
+- ✅ **User/Group ID Management**: Parses `process.user.uid`, `process.user.gid`, `process.user.additionalGids`, `process.user.umask` from config.json (currently disabled for debugging — code exists in `do_start()`)
+- ✅ **Containerd shim v2 protocol**: Full Task trait with create/start/delete/wait/kill/state/pids/exec/stats/resize_pty methods
+- ✅ **Sandbox lifecycle**: Pause containers use blocking `wait()` with `kill()` signaling via `tokio::sync::Notify`
 - ✅ **Direct command execution**: Commands run on host nodes (no container isolation by design)
 - ✅ **RuntimeClass support**: Configure via `kubernetes/runtimeclass.yaml`
-- ✅ **End-to-end testing**: Ready for minikube/kind cluster testing
+- ✅ **End-to-end testing**: Validated with kind cluster (`scripts/kind-integration.sh`)
+- ✅ **Container I/O**: stdout/stderr captured via FIFOs for `kubectl logs` integration
 - See `kubernetes/README.md` for complete setup and testing instructions
+
+### Next steps
+
+- Exec into running containers (requires daemon protocol)
+- Resource monitoring (stats without cgroups)
+- Performance optimization (reduce 500ms startup delay)
+- Re-enable user/group switching after further validation
+- Optional namespace/cgroup support
 
 
 ## Coverage

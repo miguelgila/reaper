@@ -10,14 +10,15 @@ This directory contains configuration files and examples for integrating the Rea
 
 ## Installation
 
-### 1. Install Reaper Shim Binary
+### 1. Install Reaper Binaries
 
-Build and install the shim binary on all Kubernetes nodes:
+Build and install both binaries on all Kubernetes nodes:
 
 ```bash
-cargo build --release --bin containerd-shim-reaper-v2
+cargo build --release --bin containerd-shim-reaper-v2 --bin reaper-runtime
 sudo cp target/release/containerd-shim-reaper-v2 /usr/local/bin/
-sudo chmod +x /usr/local/bin/containerd-shim-reaper-v2
+sudo cp target/release/reaper-runtime /usr/local/bin/
+sudo chmod +x /usr/local/bin/containerd-shim-reaper-v2 /usr/local/bin/reaper-runtime
 ```
 
 ### 2. Configure containerd
@@ -29,8 +30,7 @@ sudo mkdir -p /etc/containerd
 sudo tee -a /etc/containerd/config.toml > /dev/null <<EOF
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
   runtime_type = "io.containerd.reaper.v2"
-  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2.options]
-    BinaryName = "/usr/local/bin/containerd-shim-reaper-v2"
+  sandbox_mode = "podsandbox"
 EOF
 ```
 
@@ -39,6 +39,8 @@ Restart containerd:
 ```bash
 sudo systemctl restart containerd
 ```
+
+> **Note:** The shim binary (`containerd-shim-reaper-v2`) must be in `$PATH` (e.g., `/usr/local/bin/`). Containerd discovers shims by name convention, not by explicit path.
 
 ### 3. Label Nodes (Optional)
 
@@ -72,10 +74,16 @@ Expected output: `Hello from Reaper runtime!`
 ### End-to-End Testing
 
 1. Create a pod with the reaper runtime
-2. Verify pod status: `kubectl get pods`
+2. Verify pod status: `kubectl get pods` (should reach `Completed` for one-shot tasks)
 3. Check logs: `kubectl logs <pod-name>`
-4. Test exec: `kubectl exec -it <pod-name> -- /bin/sh`
-5. Test deletion: `kubectl delete pod <pod-name>`
+4. Test deletion: `kubectl delete pod <pod-name>`
+
+Or use the automated kind integration script:
+```bash
+./scripts/kind-integration.sh
+```
+
+> **Note:** `kubectl exec` is not supported — the shim returns UNIMPLEMENTED for exec requests.
 
 ## Configuration Files
 
@@ -96,11 +104,17 @@ Expected output: `Hello from Reaper runtime!`
 - Verify shim binary path in containerd config
 - Ensure bundle directory exists with config.json
 
+### Pod Failed with "sandbox container is not running"
+
+- This was a known bug fixed in February 2026
+- Ensure you are using the latest shim binary where sandbox `wait()` blocks until `kill()`
+- Rebuild and redeploy the shim: `cargo build --release && sudo cp target/release/containerd-shim-reaper-v2 /usr/local/bin/`
+
 ### Command Execution Issues
 
 - Verify config.json format in bundle
 - Check command permissions on host
-- Review shim logs for TTRPC errors
+- Review shim logs for TTRPC errors (set `REAPER_SHIM_LOG=/var/log/reaper-shim.log`)
 
 ## Notes
 
