@@ -2,7 +2,6 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 containerdConfigPatches:
   - |
-    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper]
-      runtime_type = "io.containerd.runc.v2"
-      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper.options]
-        BinaryName = "/usr/local/bin/reaper-runtime"
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
+      runtime_type = "io.containerd.reaper.v2"
+      sandbox_mode = "podsandbox"

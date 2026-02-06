@@ -1,0 +1,16 @@
+# Containerd configuration snippet for Reaper Shim v2 runtime
+# This should be added to the containerd config on Kubernetes nodes.
+#
+# IMPORTANT: Use the default containerd config as a base, then add this runtime.
+# Do NOT use the [options] section - it causes a cgroup path bug in containerd-shim.
+#
+# Installation:
+# 1. Place containerd-shim-reaper-v2 binary at /usr/local/bin/containerd-shim-reaper-v2
+# 2. Make it executable: chmod +x /usr/local/bin/containerd-shim-reaper-v2
+# 3. Add this configuration (or use scripts/configure-containerd.sh)
+# 4. Restart containerd: systemctl restart containerd
+
+[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
+runtime_type = "io.containerd.reaper.v2"
+sandbox_mode = "podsandbox"
+# No [options] section - containerd will auto-discover the shim binary by name

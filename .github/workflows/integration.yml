@@ -6,8 +6,13 @@ on:
   pull_request:
     branches: [main, develop]
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
-  kind-integration:
+  build:
+    name: Build and Cache
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -15,30 +20,78 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binaries
+        run: cargo build --release --verbose
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-binaries
+          path: target/release/
+
+  kind-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
       - name: Install kubectl
         uses: azure/setup-kubectl@v3
         with:
           version: "v1.30.0"
 
-      - name: Create Kind cluster
+      - name: Run kind integration tests
         run: |
-          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64
-          chmod +x ./kind
-          sudo mv ./kind /usr/local/bin/kind
-          kind create cluster --name reaper-ci --config kind-config.yaml
+          chmod +x scripts/kind-integration.sh
 
-      - name: Build runtime
-        run: cargo build --release --bin reaper-runtime
+          # Run the shared integration test script
+          # Note: The script builds static musl binaries for kind node compatibility
+          ./scripts/kind-integration.sh
 
-      - name: Copy runtime into node and restart containerd
+      - name: Capture kind cluster logs on failure
+        if: always()
+        continue-on-error: true
         run: |
-          NODE_ID=$(docker ps --filter "name=reaper-ci-control-plane" --format '{{.ID}}')
-          docker cp target/release/reaper-runtime "$NODE_ID":/usr/local/bin/reaper-runtime
-          docker exec "$NODE_ID" bash -lc "pkill -HUP containerd || true"
+          mkdir -p /tmp/debug-logs
 
-      - name: Apply RuntimeClass and test pod
-        run: |
-          kubectl apply -f k8s/runtimeclass.yaml
-          kubectl apply -f k8s/pod-reaper.yaml
-          kubectl wait --for=condition=Succeeded --timeout=120s pod/reaper-dummy
-          kubectl logs pod/reaper-dummy
+          # Get kind cluster info
+          kind get clusters > /tmp/debug-logs/kind-clusters.txt 2>&1 || true
+
+          # Get kind node info
+          docker ps -a --filter "name=reaper-ci" > /tmp/debug-logs/docker-ps.txt 2>&1 || true
+
+          # Extract logs from kind node
+          NODE_ID=$(docker ps -q --filter "name=reaper-ci-control-plane" 2>/dev/null) || true
+          if [ -n "$NODE_ID" ]; then
+            echo "Capturing logs from node: $NODE_ID" > /tmp/debug-logs/node-info.txt
+            docker exec "$NODE_ID" journalctl -u containerd -n 200 --no-pager > /tmp/debug-logs/containerd-journal.log 2>&1 || true
+            docker exec "$NODE_ID" journalctl -u kubelet -n 200 --no-pager > /tmp/debug-logs/kubelet-journal.log 2>&1 || true
+            docker exec "$NODE_ID" tail -200 /var/log/containerd.log > /tmp/debug-logs/containerd-daemon.log 2>&1 || true
+            docker exec "$NODE_ID" find /run/reaper -type f -exec cat {} \; > /tmp/debug-logs/reaper-state-files.txt 2>&1 || true
+          fi
+
+      - name: Upload debug logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: kind-debug-logs
+          path: /tmp/debug-logs/
+          retention-days: 7

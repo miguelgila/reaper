@@ -1,0 +1,53 @@
+# Minimal containerd configuration base for kind
+# This is the base template without reaper-v2; the install script adds reaper-v2 via sed
+
+version = 3
+root = '/var/lib/containerd'
+state = '/run/containerd'
+
+[grpc]
+address = '/run/containerd/containerd.sock'
+uid = 0
+gid = 0
+max_recv_message_size = 16777216
+max_send_message_size = 16777216
+
+[debug]
+level = 'info'
+
+[plugins]
+[plugins.'io.containerd.cri.v1.images']
+snapshotter = 'overlayfs'
+
+[plugins.'io.containerd.cri.v1.images'.registry]
+config_path = '/etc/containerd/certs.d:/etc/docker/certs.d'
+
+[plugins.'io.containerd.cri.v1.runtime']
+enable_selinux = false
+max_container_log_line_size = 16384
+tolerate_missing_hugetlb_controller = true
+disable_hugetlb_controller = true
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd]
+default_runtime_name = 'runc'
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes]
+
+# Runc runtime (default for non-reaper containers)
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
+runtime_type = 'io.containerd.runc.v2'
+
+[plugins.'io.containerd.cri.v1.runtime'.cni]
+bin_dirs = ['/opt/cni/bin']
+conf_dir = '/etc/cni/net.d'
+
+[plugins.'io.containerd.grpc.v1.cri']
+disable_tcp_service = true
+
+[plugins.'io.containerd.snapshotter.v1.overlayfs']
+
+[timeouts]
+'io.containerd.timeout.shim.cleanup' = '5s'
+'io.containerd.timeout.shim.load' = '5s'
+'io.containerd.timeout.shim.shutdown' = '3s'
+'io.containerd.timeout.task.state' = '2s'
