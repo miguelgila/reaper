@@ -18,10 +18,11 @@
 
 use anyhow::{bail, Context, Result};
 use std::fs;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::OwnedFd;
 use std::path::{Path, PathBuf};
-use tracing::{info, warn};
+use tracing::info;
 
+use nix::fcntl::{Flock, FlockArg};
 use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::sched::{setns, unshare, CloneFlags};
 use nix::sys::signal::{kill, Signal};
@@ -91,7 +92,7 @@ pub fn enter_overlay(config: &OverlayConfig) -> Result<bool> {
 
 /// Acquire an exclusive file lock. Blocks until the lock is available.
 /// The lock is released when the returned File is dropped.
-fn acquire_lock(lock_path: &Path) -> Result<fs::File> {
+fn acquire_lock(lock_path: &Path) -> Result<Flock<fs::File>> {
     if let Some(parent) = lock_path.parent() {
         fs::create_dir_all(parent).context("creating lock dir")?;
     }
@@ -103,10 +104,11 @@ fn acquire_lock(lock_path: &Path) -> Result<fs::File> {
         .context("opening lock file")?;
 
     // LOCK_EX: exclusive lock, blocks until acquired
-    nix::fcntl::flock(file.as_raw_fd(), nix::fcntl::FlockArg::LockExclusive)
+    let locked = Flock::lock(file, FlockArg::LockExclusive)
+        .map_err(|(_, errno)| anyhow::anyhow!("flock: {}", errno))
         .context("acquiring file lock")?;
 
-    Ok(file)
+    Ok(locked)
 }
 
 /// Check if the shared namespace bind-mount exists and is a valid namespace.
@@ -115,30 +117,15 @@ fn namespace_exists(ns_path: &Path) -> bool {
         return false;
     }
 
-    // Try opening as a namespace fd to verify it's still valid
-    match fs::File::open(ns_path) {
-        Ok(f) => {
-            // Attempt a read of the file metadata to verify it's a valid ns reference
-            // A stale bind-mount would fail here or during setns
-            let fd = f.as_raw_fd();
-            // Try setns with 0 flags just to validate - but this would actually change
-            // our namespace. Instead, just check the file is openable and non-empty.
-            // We'll handle setns errors gracefully in join_namespace.
-            drop(f);
-
-            // Verify the fd is usable by checking /proc/self/ns/mnt would change
-            // For now, trust that if the file exists and is openable, it's valid
-            let _ = fd;
-            true
-        }
-        Err(_) => false,
-    }
+    // Try opening to verify it's still a valid namespace reference.
+    // We'll handle setns errors gracefully in join_namespace.
+    fs::File::open(ns_path).is_ok()
 }
 
 /// Join an existing shared mount namespace via setns().
 fn join_namespace(ns_path: &Path) -> Result<()> {
     let f = fs::File::open(ns_path).context("opening namespace file")?;
-    setns(f.as_raw_fd(), CloneFlags::CLONE_NEWNS).context("setns into shared namespace")?;
+    setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace")?;
     info!("overlay: successfully joined shared namespace");
     Ok(())
 }
@@ -180,11 +167,7 @@ fn create_namespace(config: &OverlayConfig) -> Result<()> {
 }
 
 /// Inner child: creates the mount namespace, mounts overlay, pivots root.
-fn inner_child_setup(
-    config: &OverlayConfig,
-    merged_dir: &Path,
-    write_fd: std::os::unix::io::RawFd,
-) -> Result<()> {
+fn inner_child_setup(config: &OverlayConfig, merged_dir: &Path, write_fd: OwnedFd) -> Result<()> {
     // 1. Create new mount namespace
     unshare(CloneFlags::CLONE_NEWNS).context("unshare CLONE_NEWNS")?;
 
@@ -244,8 +227,8 @@ fn inner_child_setup(
     fs::remove_dir("/old_root").ok();
 
     // 8. Signal parent that namespace is ready
-    let _ = nix::unistd::write(write_fd, b"R");
-    let _ = nix::unistd::close(write_fd);
+    let _ = nix::unistd::write(&write_fd, b"R");
+    drop(write_fd);
 
     // 9. Sleep until parent kills us (namespace persists via bind-mount)
     loop {
@@ -257,12 +240,12 @@ fn inner_child_setup(
 fn inner_parent_persist(
     config: &OverlayConfig,
     helper_pid: nix::unistd::Pid,
-    read_fd: std::os::unix::io::RawFd,
+    read_fd: OwnedFd,
 ) -> Result<()> {
     // 1. Wait for helper to signal namespace is ready
     let mut buf = [0u8; 1];
-    let n = nix::unistd::read(read_fd, &mut buf).context("reading from helper pipe")?;
-    let _ = nix::unistd::close(read_fd);
+    let n = nix::unistd::read(&read_fd, &mut buf).context("reading from helper pipe")?;
+    drop(read_fd);
 
     if n == 0 || buf[0] != b'R' {
         bail!("helper child failed to create namespace");
