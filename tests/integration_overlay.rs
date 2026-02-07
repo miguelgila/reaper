@@ -23,12 +23,8 @@ mod overlay_tests {
     }
 
     /// Helper: run a workload through reaper-runtime create/start/delete lifecycle.
-    /// Returns the stdout captured from the workload.
-    fn run_workload(
-        container_id: &str,
-        command: &[&str],
-        env_overlay_enabled: Option<&str>,
-    ) -> String {
+    /// Returns the state JSON captured from the workload.
+    fn run_workload(container_id: &str, command: &[&str]) -> String {
         let tmp = tempfile::tempdir().unwrap();
         let bundle = tmp.path().join("bundle");
         fs::create_dir_all(&bundle).unwrap();
@@ -51,16 +47,14 @@ mod overlay_tests {
         let state_dir = tmp.path().join("state");
 
         // Create
-        let mut cmd = Command::new(&runtime);
-        cmd.arg("create")
+        let output = Command::new(&runtime)
+            .arg("create")
             .arg(container_id)
             .arg("--bundle")
             .arg(&bundle)
-            .env("REAPER_RUNTIME_ROOT", &state_dir);
-        if let Some(val) = env_overlay_enabled {
-            cmd.env("REAPER_OVERLAY_ENABLED", val);
-        }
-        let output = cmd.output().unwrap();
+            .env("REAPER_RUNTIME_ROOT", &state_dir)
+            .output()
+            .unwrap();
         assert!(
             output.status.success(),
             "create failed: {}",
@@ -68,16 +62,14 @@ mod overlay_tests {
         );
 
         // Start
-        let mut cmd = Command::new(&runtime);
-        cmd.arg("start")
+        let output = Command::new(&runtime)
+            .arg("start")
             .arg(container_id)
             .arg("--bundle")
             .arg(&bundle)
-            .env("REAPER_RUNTIME_ROOT", &state_dir);
-        if let Some(val) = env_overlay_enabled {
-            cmd.env("REAPER_OVERLAY_ENABLED", val);
-        }
-        let output = cmd.output().unwrap();
+            .env("REAPER_RUNTIME_ROOT", &state_dir)
+            .output()
+            .unwrap();
         assert!(
             output.status.success(),
             "start failed: {}",
@@ -92,57 +84,28 @@ mod overlay_tests {
         let state_data = fs::read_to_string(&state_file).unwrap_or_default();
 
         // Delete
-        let mut cmd = Command::new(&runtime);
-        cmd.arg("delete")
+        let _ = Command::new(&runtime)
+            .arg("delete")
             .arg(container_id)
-            .env("REAPER_RUNTIME_ROOT", &state_dir);
-        let _ = cmd.output();
+            .env("REAPER_RUNTIME_ROOT", &state_dir)
+            .output();
 
         state_data
     }
 
     #[test]
     #[serial]
-    fn test_overlay_disabled_runs_normally() {
-        // With overlay disabled, workloads should run as before (host-direct)
-        let state = run_workload(
-            "overlay-disabled-test",
-            &["/bin/echo", "overlay-disabled-ok"],
-            Some("false"),
-        );
+    fn test_overlay_requires_root() {
+        if !is_root() {
+            eprintln!("Skipping test_overlay_requires_root: requires root");
+            return;
+        }
+
+        let state = run_workload("overlay-root-test", &["/bin/echo", "overlay-root-ok"]);
         assert!(
             state.contains("\"status\":"),
             "state should contain status field"
         );
-    }
-
-    #[test]
-    #[serial]
-    fn test_overlay_enabled_requires_root() {
-        if is_root() {
-            // If running as root on Linux, overlay should work
-            let state = run_workload(
-                "overlay-root-test",
-                &["/bin/echo", "overlay-root-ok"],
-                Some("true"),
-            );
-            assert!(
-                state.contains("\"status\":"),
-                "state should contain status field"
-            );
-        } else {
-            // Without root, overlay will fail-open to host-direct (graceful degradation)
-            let state = run_workload(
-                "overlay-noroot-test",
-                &["/bin/echo", "overlay-noroot-ok"],
-                Some("true"),
-            );
-            // Should still succeed due to fail-open design
-            assert!(
-                state.contains("\"status\":"),
-                "state should contain status field even without root"
-            );
-        }
     }
 
     #[test]
@@ -162,7 +125,6 @@ mod overlay_tests {
         run_workload(
             "overlay-protect-test",
             &["/bin/sh", "-c", &format!("echo protected > {}", marker)],
-            Some("true"),
         );
 
         // The marker should NOT exist on the host filesystem
@@ -186,14 +148,12 @@ mod overlay_tests {
         run_workload(
             "overlay-writer",
             &["/bin/sh", "-c", &format!("echo shared-data > {}", marker)],
-            Some("true"),
         );
 
         // Workload B: read file — should see it because they share the overlay
         let state = run_workload(
             "overlay-reader",
             &["/bin/sh", "-c", &format!("cat {}", marker)],
-            Some("true"),
         );
 
         // If the shared namespace works, workload B finds the file and exits 0
@@ -216,7 +176,6 @@ mod overlay_tests {
         let state = run_workload(
             "overlay-proc-test",
             &["/bin/sh", "-c", "test -f /proc/self/status"],
-            Some("true"),
         );
         assert!(
             state.contains("\"exit_code\": 0") || state.contains("\"exit_code\":0"),

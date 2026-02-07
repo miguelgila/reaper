@@ -365,12 +365,14 @@ else
   echo "   This may indicate overlay is not yet active or the test needs adjustment"
 fi
 
-# Verify host filesystem is protected
+# Verify host filesystem is protected — this MUST pass (overlay is mandatory)
 HOST_FILE_EXISTS=$(docker exec "$NODE_ID" test -f /tmp/overlay-test.txt && echo "yes" || echo "no")
 if [ "$HOST_FILE_EXISTS" = "no" ]; then
   echo "✅ PASS: Host filesystem protected — file did not leak to host"
 else
-  echo "⚠️  Host protection test: file leaked to host /tmp/overlay-test.txt"
+  echo "❌ FAIL: Host protection test: file leaked to host /tmp/overlay-test.txt"
+  echo "Overlay isolation is mandatory — workloads must not modify the host filesystem."
+  exit 1
 fi
 
 # Cleanup overlay test pods

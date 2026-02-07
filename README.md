@@ -272,12 +272,11 @@ All Reaper workloads on a node share a single overlay filesystem. The host root 
 
 Configuration:
 ```bash
-# Disable overlay (run directly on host)
-export REAPER_OVERLAY_ENABLED=false
-
-# Custom overlay location
+# Custom overlay location (default: /run/reaper/overlay)
 export REAPER_OVERLAY_BASE=/custom/path
 ```
+
+Overlay is mandatory — workloads cannot run without isolation.
 
 ### Next steps
 

@@ -267,25 +267,24 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                 eprintln!("Monitor daemon: setsid failed: {}", e);
             }
 
-            // Join shared overlay namespace if enabled (Linux only).
-            // Fail-open: if overlay setup fails, fall back to host-direct execution.
+            // Join shared overlay namespace (Linux only).
+            // Overlay is mandatory — workloads must not run on the host filesystem.
             #[cfg(target_os = "linux")]
             {
                 let overlay_config = overlay::read_config();
-                match overlay::enter_overlay(&overlay_config) {
-                    Ok(true) => {
-                        info!("do_start() - joined shared overlay namespace");
+                if let Err(e) = overlay::enter_overlay(&overlay_config) {
+                    tracing::error!(
+                        "do_start() - overlay setup failed: {:#}, refusing to run without isolation",
+                        e
+                    );
+                    if let Ok(mut state) = load_state(&container_id) {
+                        state.status = "stopped".into();
+                        state.exit_code = Some(1);
+                        let _ = save_state(&state);
                     }
-                    Ok(false) => {
-                        info!("do_start() - overlay disabled, running on host filesystem");
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "do_start() - overlay setup failed: {:#}, falling back to host-direct",
-                            e
-                        );
-                    }
+                    std::process::exit(1);
                 }
+                info!("do_start() - joined shared overlay namespace");
             }
 
             // Now spawn the workload - we are its parent!

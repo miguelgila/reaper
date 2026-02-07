@@ -31,8 +31,6 @@ use nix::unistd::{fork, ForkResult};
 
 /// Overlay configuration, read from environment variables.
 pub struct OverlayConfig {
-    /// Whether overlay is enabled (default: true)
-    pub enabled: bool,
     /// Base directory for overlay upper/work dirs (default: /run/reaper/overlay)
     pub base_dir: PathBuf,
     /// Path to the persisted namespace bind-mount (default: /run/reaper/shared-mnt-ns)
@@ -43,13 +41,8 @@ pub struct OverlayConfig {
 
 /// Read overlay configuration from environment variables.
 ///
-/// - `REAPER_OVERLAY_ENABLED`: "true" (default) or "false"
 /// - `REAPER_OVERLAY_BASE`: base dir for overlay (default: "/run/reaper/overlay")
 pub fn read_config() -> OverlayConfig {
-    let enabled = std::env::var("REAPER_OVERLAY_ENABLED")
-        .map(|v| v != "false" && v != "0")
-        .unwrap_or(true);
-
     let base_dir = std::env::var("REAPER_OVERLAY_BASE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/run/reaper/overlay"));
@@ -58,7 +51,6 @@ pub fn read_config() -> OverlayConfig {
     let lock_path = PathBuf::from("/run/reaper/overlay.lock");
 
     OverlayConfig {
-        enabled,
         base_dir,
         ns_path,
         lock_path,
@@ -70,12 +62,8 @@ pub fn read_config() -> OverlayConfig {
 /// Must be called AFTER `setsid()` and BEFORE `Command::new()` in the
 /// monitoring daemon child process.
 ///
-/// Returns `Ok(true)` if overlay was applied, `Ok(false)` if disabled.
-pub fn enter_overlay(config: &OverlayConfig) -> Result<bool> {
-    if !config.enabled {
-        return Ok(false);
-    }
-
+/// Overlay is mandatory — if this fails, the workload must not run.
+pub fn enter_overlay(config: &OverlayConfig) -> Result<()> {
     // Acquire exclusive lock to prevent races during namespace creation
     let _lock = acquire_lock(&config.lock_path)?;
 
@@ -87,7 +75,7 @@ pub fn enter_overlay(config: &OverlayConfig) -> Result<bool> {
         create_namespace(config)?;
     }
 
-    Ok(true)
+    Ok(())
 }
 
 /// Acquire an exclusive file lock. Blocks until the lock is available.
@@ -196,8 +184,12 @@ fn inner_child_setup(config: &OverlayConfig, merged_dir: &Path, write_fd: OwnedF
     )
     .context("mounting overlay")?;
 
-    // 4. Bind-mount special filesystems into the merged root
-    for dir in &["proc", "sys", "dev", "run", "tmp"] {
+    // 4. Bind-mount special filesystems into the merged root.
+    // ONLY kernel-backed filesystems (/proc, /sys, /dev) and /run (needed for
+    // state file communication between daemon and shim) are bind-mounted.
+    // /tmp is NOT bind-mounted — writes to /tmp go through the overlay upper
+    // layer, protecting the host filesystem.
+    for dir in &["proc", "sys", "dev", "run"] {
         let src = PathBuf::from("/").join(dir);
         let dst = merged_dir.join(dir);
         if src.exists() && src.is_dir() {
@@ -290,31 +282,12 @@ mod tests {
 
     #[test]
     fn test_read_config_defaults() {
-        // Clear env vars to test defaults
-        std::env::remove_var("REAPER_OVERLAY_ENABLED");
         std::env::remove_var("REAPER_OVERLAY_BASE");
 
         let config = read_config();
-        assert!(config.enabled);
         assert_eq!(config.base_dir, PathBuf::from("/run/reaper/overlay"));
         assert_eq!(config.ns_path, PathBuf::from("/run/reaper/shared-mnt-ns"));
         assert_eq!(config.lock_path, PathBuf::from("/run/reaper/overlay.lock"));
-    }
-
-    #[test]
-    fn test_read_config_disabled() {
-        std::env::set_var("REAPER_OVERLAY_ENABLED", "false");
-        let config = read_config();
-        assert!(!config.enabled);
-        std::env::remove_var("REAPER_OVERLAY_ENABLED");
-    }
-
-    #[test]
-    fn test_read_config_disabled_zero() {
-        std::env::set_var("REAPER_OVERLAY_ENABLED", "0");
-        let config = read_config();
-        assert!(!config.enabled);
-        std::env::remove_var("REAPER_OVERLAY_ENABLED");
     }
 
     #[test]

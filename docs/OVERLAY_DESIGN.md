@@ -42,7 +42,7 @@ reaper-runtime do_start()
                  │    ├─ unshare(CLONE_NEWNS)
                  │    ├─ mount("", "/", MS_PRIVATE | MS_REC)
                  │    ├─ mount overlay on /run/reaper/merged
-                 │    ├─ bind-mount /proc, /sys, /dev, /run, /tmp
+                 │    ├─ bind-mount /proc, /sys, /dev, /run
                  │    ├─ pivot_root(/run/reaper/merged, .../old_root)
                  │    ├─ umount(/old_root, MNT_DETACH)
                  │    └─ signal parent "ready", sleep forever
@@ -83,8 +83,23 @@ real host `/proc`, `/sys`, and `/dev`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REAPER_OVERLAY_ENABLED` | `true` | Set to `false` or `0` to disable |
 | `REAPER_OVERLAY_BASE` | `/run/reaper/overlay` | Base dir for upper/work layers |
+
+Overlay is always enabled on Linux. There is no option to disable it —
+workloads must not modify the host filesystem.
+
+### Bind-Mounted Directories
+
+Only kernel-backed special filesystems and `/run` are bind-mounted from
+the host into the overlay:
+
+- `/proc` — process information (kernel-backed)
+- `/sys` — kernel/device information (kernel-backed)
+- `/dev` — device nodes (kernel-backed)
+- `/run` — runtime state (needed for daemon↔shim communication via state files)
+
+**`/tmp` is NOT bind-mounted** — writes to `/tmp` go through the overlay
+upper layer, protecting the host's `/tmp` from modification.
 
 ### Directory Structure
 
@@ -106,11 +121,12 @@ real host `/proc`, `/sys`, and `/dev`.
 3. **Subsequent workloads**: Join existing namespace via `setns()`
 4. **Reboot**: Everything under `/run` is cleared; fresh start
 
-## Fail-Open Design
+## Mandatory Isolation
 
-If overlay setup fails (e.g., not running as root, kernel lacks overlay
-support), the workload runs directly on the host filesystem — preserving
-existing behavior. Errors are logged but don't prevent workload execution.
+Overlay is mandatory on Linux. If overlay setup fails (e.g., not running
+as root, kernel lacks overlay support), the workload is **refused** — it
+will not run on the host filesystem. The daemon exits with code 1 and
+updates the container state to `stopped`.
 
 ## Requirements
 

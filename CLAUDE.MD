@@ -343,13 +343,12 @@ export REAPER_SHIM_LOG=/var/log/reaper-shim.log
 export REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log
 ```
 
-### Overlay Filesystem Configuration
-All workloads share a mount namespace with overlayfs to protect the host. Enabled by default.
+### Overlay Filesystem (Mandatory)
+All workloads run inside a shared mount namespace with overlayfs. The host
+filesystem is protected — workloads cannot modify it. If overlay setup fails,
+the workload is refused.
 
 ```bash
-# Disable overlay (run directly on host, original behavior)
-export REAPER_OVERLAY_ENABLED=false
-
 # Custom overlay base directory (default: /run/reaper/overlay)
 export REAPER_OVERLAY_BASE=/custom/overlay/path
 ```
