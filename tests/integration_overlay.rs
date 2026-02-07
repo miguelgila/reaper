@@ -19,7 +19,7 @@ mod overlay_tests {
     }
 
     fn is_root() -> bool {
-        unsafe { libc::getuid() == 0 }
+        nix::unistd::getuid().is_root()
     }
 
     /// Helper: run a workload through reaper-runtime create/start/delete lifecycle.
@@ -66,9 +66,6 @@ mod overlay_tests {
             "create failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-
-        // Capture stdout via a temp file (since daemon redirects)
-        let stdout_file = tmp.path().join("stdout.txt");
 
         // Start
         let mut cmd = Command::new(&runtime);
