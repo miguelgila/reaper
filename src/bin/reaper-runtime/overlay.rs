@@ -18,7 +18,7 @@
 
 use anyhow::{bail, Context, Result};
 use std::fs;
-use std::os::unix::io::OwnedFd;
+use std::os::unix::io::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -244,7 +244,7 @@ fn inner_parent_persist(
 ) -> Result<()> {
     // 1. Wait for helper to signal namespace is ready
     let mut buf = [0u8; 1];
-    let n = nix::unistd::read(&read_fd, &mut buf).context("reading from helper pipe")?;
+    let n = nix::unistd::read(read_fd.as_raw_fd(), &mut buf).context("reading from helper pipe")?;
     drop(read_fd);
 
     if n == 0 || buf[0] != b'R' {
