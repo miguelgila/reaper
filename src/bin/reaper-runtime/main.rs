@@ -10,6 +10,9 @@ use tracing_subscriber::EnvFilter;
 mod state;
 use state::{delete as delete_state, load_pid, load_state, save_pid, save_state, ContainerState};
 
+#[cfg(target_os = "linux")]
+mod overlay;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "reaper-runtime",
@@ -262,6 +265,27 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
             // Detach from parent session to become a proper daemon
             if let Err(e) = nix::unistd::setsid() {
                 eprintln!("Monitor daemon: setsid failed: {}", e);
+            }
+
+            // Join shared overlay namespace if enabled (Linux only).
+            // Fail-open: if overlay setup fails, fall back to host-direct execution.
+            #[cfg(target_os = "linux")]
+            {
+                let overlay_config = overlay::read_config();
+                match overlay::enter_overlay(&overlay_config) {
+                    Ok(true) => {
+                        info!("do_start() - joined shared overlay namespace");
+                    }
+                    Ok(false) => {
+                        info!("do_start() - overlay disabled, running on host filesystem");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "do_start() - overlay setup failed: {:#}, falling back to host-direct",
+                            e
+                        );
+                    }
+                }
             }
 
             // Now spawn the workload - we are its parent!

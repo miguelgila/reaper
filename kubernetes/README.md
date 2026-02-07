@@ -116,8 +116,20 @@ Or use the automated kind integration script:
 - Check command permissions on host
 - Review shim logs for TTRPC errors (set `REAPER_SHIM_LOG=/var/log/reaper-shim.log`)
 
+## Overlay Filesystem
+
+By default, all Reaper workloads share a mount namespace with an overlay filesystem:
+- The host root is the read-only lower layer
+- Writes go to a shared upper layer at `/run/reaper/overlay/upper`
+- Cross-deployment file sharing works (workload A writes → workload B reads)
+- Host filesystem is protected from modifications
+
+To disable: set `REAPER_OVERLAY_ENABLED=false` in the runtime environment.
+
+See `docs/OVERLAY_DESIGN.md` for full architecture details.
+
 ## Notes
 
-- Reaper executes commands directly on the host (no container isolation)
-- Ensure commands are safe to run with host privileges
+- Reaper executes commands directly on the host (through an overlay by default)
+- The overlay protects the host filesystem; disable it with `REAPER_OVERLAY_ENABLED=false` for direct host access
 - Monitor host resources as commands share the node's resources

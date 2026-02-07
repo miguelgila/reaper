@@ -77,6 +77,7 @@ match unsafe { fork() }? {
 - `src/bin/containerd-shim-reaper-v2/main.rs` - Shim (ttrpc server, long-lived)
 - `src/bin/reaper-runtime/main.rs` - Runtime CLI (OCI operations + forking)
 - `src/bin/reaper-runtime/state.rs` - State persistence
+- `src/bin/reaper-runtime/overlay.rs` - Shared mount namespace + overlayfs (Linux only)
 - `src/main.rs` - Placeholder main binary
 
 ### Tests
@@ -84,12 +85,14 @@ match unsafe { fork() }? {
 - `tests/integration_io.rs` - FIFO stdout/stderr redirection
 - `tests/integration_user_management.rs` - uid/gid handling
 - `tests/integration_shim.rs` - Shim v2 protocol tests
+- `tests/integration_overlay.rs` - Overlay namespace tests (Linux only, requires root)
 
 ### Documentation
 - `.github/claude-instructions.md` - This file's predecessor (detailed context)
 - `docs/CURRENT_STATE.md` - Implementation status and testing
 - `docs/SHIMV2_DESIGN.md` - Shim v2 implementation milestones
 - `docs/SHIM_ARCHITECTURE.md` - Architecture and process flow
+- `docs/OVERLAY_DESIGN.md` - Overlay filesystem architecture and configuration
 - `docs/NOTES_FUTURE.md` - Kubernetes security and access control
 - `README.md` - Public-facing documentation
 - `CONTRIBUTING.md` - Contribution guidelines
@@ -122,7 +125,7 @@ tokio = "1"
 async-trait = "0.1"
 
 # Process management
-nix = "0.28"  # POSIX APIs (fork, signals, setuid/setgid)
+nix = "0.28"  # POSIX APIs (fork, signals, setuid/setgid, mount namespaces, overlayfs)
 
 # Error handling & serialization
 anyhow = "1"
@@ -294,6 +297,7 @@ minikube ssh -- 'ps aux | grep containerd-shim-reaper'
 - [x] Container stdout/stderr capture via FIFOs (kubectl logs integration)
 - [x] Integration tests (basic, I/O, user management, shim)
 - [x] CI/CD (test, build, coverage, security audit)
+- [x] Shared overlay filesystem (mount namespace + overlayfs for host protection)
 
 ### 🔄 In Progress
 - [ ] Multi-container pods testing
@@ -305,21 +309,18 @@ minikube ssh -- 'ps aux | grep containerd-shim-reaper'
 - [ ] Exec into running containers (requires daemon protocol)
 - [ ] Resource monitoring (stats without cgroups)
 - [ ] Performance optimization (reduce startup delay)
-- [ ] Optional namespace support
 - [ ] Optional cgroup integration
 - [ ] Production deployment guides
 
 ### ❌ Not Implemented (By Design)
-- Namespaces (intentionally - use host namespaces)
 - Cgroups (intentionally - no resource limits)
 - Full container isolation (not the goal)
 
 ## Current Limitations
 
 ### By Design
-- **No namespaces:** Processes run in host namespace (intended behavior)
 - **No cgroups:** No resource limits enforced
-- **No isolation:** Full host access (use case specific)
+- **No full isolation:** Workloads share overlay filesystem (by design, for cross-deployment file sharing)
 
 ### Current Implementation
 - **User switching disabled:** Temporarily disabled for debugging
@@ -341,6 +342,19 @@ Enable logging:
 export REAPER_SHIM_LOG=/var/log/reaper-shim.log
 export REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log
 ```
+
+### Overlay Filesystem Configuration
+All workloads share a mount namespace with overlayfs to protect the host. Enabled by default.
+
+```bash
+# Disable overlay (run directly on host, original behavior)
+export REAPER_OVERLAY_ENABLED=false
+
+# Custom overlay base directory (default: /run/reaper/overlay)
+export REAPER_OVERLAY_BASE=/custom/overlay/path
+```
+
+See `docs/OVERLAY_DESIGN.md` for architecture details.
 
 ### Containerd Configuration
 ```toml

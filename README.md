@@ -251,6 +251,7 @@ handler: reaper-v2
 
 ### Implemented features
 
+- ✅ **Overlay filesystem**: Shared mount namespace + overlayfs protects the host filesystem while allowing cross-deployment file sharing. Enabled by default. See `docs/OVERLAY_DESIGN.md`.
 - ✅ **User/Group ID Management**: Parses `process.user.uid`, `process.user.gid`, `process.user.additionalGids`, `process.user.umask` from config.json (currently disabled for debugging — code exists in `do_start()`)
 - ✅ **Containerd shim v2 protocol**: Full Task trait with create/start/delete/wait/kill/state/pids/exec/stats/resize_pty methods
 - ✅ **Sandbox lifecycle**: Pause containers use blocking `wait()` with `kill()` signaling via `tokio::sync::Notify`
@@ -260,13 +261,30 @@ handler: reaper-v2
 - ✅ **Container I/O**: stdout/stderr captured via FIFOs for `kubectl logs` integration
 - See `kubernetes/README.md` for complete setup and testing instructions
 
+### Overlay filesystem
+
+All Reaper workloads on a node share a single overlay filesystem. The host root is the read-only lower layer; writes go to a shared upper layer. This means:
+
+- Workload A writes `/etc/config` → Workload B can read it
+- The host's real `/etc/config` is never modified
+- `/proc`, `/sys`, `/dev` remain real host mounts
+- Overlay is ephemeral (clears on reboot)
+
+Configuration:
+```bash
+# Disable overlay (run directly on host)
+export REAPER_OVERLAY_ENABLED=false
+
+# Custom overlay location
+export REAPER_OVERLAY_BASE=/custom/path
+```
+
 ### Next steps
 
 - Exec into running containers (requires daemon protocol)
 - Resource monitoring (stats without cgroups)
 - Performance optimization (reduce 500ms startup delay)
 - Re-enable user/group switching after further validation
-- Optional namespace/cgroup support
 
 
 ## Coverage

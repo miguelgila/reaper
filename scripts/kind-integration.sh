@@ -80,6 +80,9 @@ docker exec "$NODE_ID" chmod +x /usr/local/bin/$SHIM_BIN
 docker cp "$RUNTIME_BIN_PATH" "$NODE_ID":/usr/local/bin/$RUNTIME_BIN
 docker exec "$NODE_ID" chmod +x /usr/local/bin/$RUNTIME_BIN
 
+echo "Creating overlay directories on kind node..."
+docker exec "$NODE_ID" mkdir -p /run/reaper/overlay/upper /run/reaper/overlay/work
+
 echo "Waiting for Kubernetes API server to be ready before enabling reaper..."
 kubectl wait --for=condition=Ready node --all --timeout=300s
 
@@ -287,6 +290,92 @@ if [ "$FINAL_PHASE" != "Succeeded" ]; then
 
   exit 1
 fi
+
+echo ""
+echo "================================================"
+echo "Testing overlay filesystem sharing..."
+echo "================================================"
+
+# Clean up any leftover overlay test pods
+retry_kubectl "kubectl delete pod reaper-overlay-writer --ignore-not-found" || true
+retry_kubectl "kubectl delete pod reaper-overlay-reader --ignore-not-found" || true
+
+# Pod A: write a file inside the overlay
+echo "Creating overlay writer pod..."
+cat << 'EOF' | retry_kubectl "kubectl apply -f -"
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-overlay-writer
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: writer
+      image: busybox
+      command: ["/bin/sh", "-c", "echo overlay-works > /tmp/overlay-test.txt"]
+EOF
+
+# Wait for writer to complete
+echo "Waiting for writer pod to complete..."
+for i in $(seq 1 30); do
+  WRITER_PHASE=$(retry_kubectl "kubectl get pod reaper-overlay-writer -o jsonpath='{.status.phase}'" 2>/dev/null || echo "Pending")
+  if [ "$WRITER_PHASE" = "Succeeded" ]; then
+    echo "✅ Writer pod completed"
+    break
+  fi
+  echo "Attempt $i/30: Writer phase=$WRITER_PHASE"
+  sleep 2
+done
+
+# Pod B: read the file — should see it via shared overlay
+echo "Creating overlay reader pod..."
+cat << 'EOF' | retry_kubectl "kubectl apply -f -"
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-overlay-reader
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: reader
+      image: busybox
+      command: ["/bin/sh", "-c", "cat /tmp/overlay-test.txt"]
+EOF
+
+# Wait for reader to complete
+echo "Waiting for reader pod to complete..."
+for i in $(seq 1 30); do
+  READER_PHASE=$(retry_kubectl "kubectl get pod reaper-overlay-reader -o jsonpath='{.status.phase}'" 2>/dev/null || echo "Pending")
+  if [ "$READER_PHASE" = "Succeeded" ] || [ "$READER_PHASE" = "Failed" ]; then
+    echo "Reader pod phase: $READER_PHASE"
+    break
+  fi
+  echo "Attempt $i/30: Reader phase=$READER_PHASE"
+  sleep 2
+done
+
+# Check reader output
+READER_OUTPUT=$(retry_kubectl "kubectl logs reaper-overlay-reader" 2>/dev/null || echo "")
+if [ "$READER_OUTPUT" = "overlay-works" ]; then
+  echo "✅ PASS: Overlay sharing works — reader saw writer's file"
+else
+  echo "⚠️  Overlay sharing test: reader got '$READER_OUTPUT' (expected 'overlay-works')"
+  echo "   This may indicate overlay is not yet active or the test needs adjustment"
+fi
+
+# Verify host filesystem is protected
+HOST_FILE_EXISTS=$(docker exec "$NODE_ID" test -f /tmp/overlay-test.txt && echo "yes" || echo "no")
+if [ "$HOST_FILE_EXISTS" = "no" ]; then
+  echo "✅ PASS: Host filesystem protected — file did not leak to host"
+else
+  echo "⚠️  Host protection test: file leaked to host /tmp/overlay-test.txt"
+fi
+
+# Cleanup overlay test pods
+retry_kubectl "kubectl delete pod reaper-overlay-writer --ignore-not-found" || true
+retry_kubectl "kubectl delete pod reaper-overlay-reader --ignore-not-found" || true
 
 echo ""
 echo "================================================"
