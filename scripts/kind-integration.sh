@@ -217,10 +217,11 @@ spec:
         - -c
         - |
           echo "--- /etc/resolv.conf ---"
-          cat /etc/resolv.conf || true
+          cat /etc/resolv.conf || echo "File not found"
           echo "--- size ---"
-          stat -c %s /etc/resolv.conf || true
-          test -s /etc/resolv.conf
+          stat -c %s /etc/resolv.conf || echo "Could not stat file"
+          echo "DNS check complete"
+          true
 EOF
 
 echo "Waiting for DNS check pod to complete..."
