@@ -275,9 +275,13 @@ fn inner_parent_persist(
         config.ns_path.display()
     );
 
-    // 3. Kill helper — namespace persists via bind-mount
-    let _ = kill(helper_pid, Signal::SIGKILL);
-    let _ = waitpid(helper_pid, None);
+    // 3. Keep helper alive as a namespace anchor so the mount namespace never
+    //    disappears between workloads. The helper is sleeping in the namespace
+    //    and keeps the mount tree referenced even if no containers are running.
+    info!(
+        "overlay: keeping helper pid={} alive to anchor shared mount namespace",
+        helper_pid
+    );
 
     // 4. Join the namespace ourselves
     join_namespace(&config.ns_path)?;
