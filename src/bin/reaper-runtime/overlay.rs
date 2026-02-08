@@ -67,6 +67,9 @@ pub fn enter_overlay(config: &OverlayConfig) -> Result<()> {
     // Acquire exclusive lock to prevent races during namespace creation
     let _lock = acquire_lock(&config.lock_path)?;
 
+    // Read host /etc files up front so we can restore them inside an existing namespace
+    let host_etc = read_host_etc_files(Path::new("/etc"));
+
     if namespace_exists(&config.ns_path) {
         info!("overlay: joining existing shared namespace");
         join_namespace(&config.ns_path)?;
@@ -74,6 +77,9 @@ pub fn enter_overlay(config: &OverlayConfig) -> Result<()> {
         info!("overlay: creating new shared namespace");
         create_namespace(config)?;
     }
+
+    // After joining (or creating) the namespace, ensure resolver files exist/non-empty.
+    ensure_etc_files_in_namespace(&host_etc);
 
     Ok(())
 }
@@ -205,6 +211,9 @@ fn inner_child_setup(config: &OverlayConfig, merged_dir: &Path, write_fd: OwnedF
         }
     }
 
+    // Copy resolver/hosts config into the namespace so workloads can override them if needed.
+    copy_etc_files(Path::new("/etc"), &merged_dir.join("etc"));
+
     // 5. pivot_root to the merged overlay root
     let old_root = merged_dir.join("old_root");
     fs::create_dir_all(&old_root).context("creating old_root")?;
@@ -276,9 +285,72 @@ fn inner_parent_persist(
     Ok(())
 }
 
+// Copy a subset of /etc into the overlay namespace so workloads can edit resolver configuration.
+fn copy_etc_files(src_etc: &Path, dst_etc: &Path) {
+    if let Err(e) = fs::create_dir_all(dst_etc) {
+        tracing::warn!("overlay: failed to create {}: {}", dst_etc.display(), e);
+        return;
+    }
+
+    for name in ["resolv.conf", "hosts", "nsswitch.conf"] {
+        let src = src_etc.join(name);
+        let dst = dst_etc.join(name);
+
+        if src.exists() {
+            if let Err(e) = fs::copy(&src, &dst) {
+                tracing::warn!("overlay: failed to copy {}: {}", src.display(), e);
+            }
+        } else {
+            tracing::warn!(
+                "overlay: host {} missing; functionality may be limited",
+                src.display()
+            );
+        }
+    }
+}
+
+// Read host resolver-related files so we can restore them into an existing namespace.
+fn read_host_etc_files(src_etc: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut files = Vec::new();
+    for name in ["resolv.conf", "hosts", "nsswitch.conf"] {
+        let src = src_etc.join(name);
+        if let Ok(data) = fs::read(&src) {
+            files.push((name.to_string(), data));
+        } else {
+            tracing::warn!(
+                "overlay: host {} missing or unreadable; functionality may be limited",
+                src.display()
+            );
+        }
+    }
+    files
+}
+
+// Ensure /etc files inside the current namespace are present and non-empty; if empty/missing, restore from host copies.
+fn ensure_etc_files_in_namespace(host_files: &[(String, Vec<u8>)]) {
+    for (name, data) in host_files {
+        let path = Path::new("/etc").join(name);
+        let needs_write = match fs::metadata(&path) {
+            Ok(meta) => meta.len() == 0,
+            Err(_) => true,
+        };
+
+        if needs_write {
+            if let Err(e) = fs::create_dir_all(Path::new("/etc")) {
+                tracing::warn!("overlay: failed to create /etc: {}", e);
+                continue;
+            }
+            if let Err(e) = fs::write(&path, data) {
+                tracing::warn!("overlay: failed to restore {}: {}", path.display(), e);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile;
 
     #[test]
     fn test_read_config_defaults() {
@@ -301,5 +373,32 @@ mod tests {
     #[test]
     fn test_namespace_exists_nonexistent() {
         assert!(!namespace_exists(Path::new("/nonexistent/path/ns")));
+    }
+
+    #[test]
+    fn test_copy_etc_files_copies_expected_files() {
+        let src_dir = tempfile::tempdir().expect("src tempdir");
+        let src_etc = src_dir.path().join("etc");
+        fs::create_dir_all(&src_etc).unwrap();
+
+        let files = [
+            ("resolv.conf", "nameserver 8.8.8.8\n"),
+            ("hosts", "127.0.0.1 localhost\n"),
+            ("nsswitch.conf", "hosts: files dns\n"),
+        ];
+
+        for (name, contents) in &files {
+            fs::write(src_etc.join(name), contents).unwrap();
+        }
+
+        let dst_dir = tempfile::tempdir().expect("dst tempdir");
+        let dst_etc = dst_dir.path().join("etc");
+
+        super::copy_etc_files(&src_etc, &dst_etc);
+
+        for (name, contents) in &files {
+            let copied = fs::read_to_string(dst_etc.join(name)).unwrap();
+            assert_eq!(copied, *contents);
+        }
     }
 }

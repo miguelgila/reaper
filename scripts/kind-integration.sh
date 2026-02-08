@@ -182,6 +182,7 @@ retry_kubectl "kubectl wait --for=jsonpath='{.metadata.name}'=default serviceacc
 echo "Cleaning up any stale pods from previous runs..."
 retry_kubectl "kubectl delete pod reaper-example --ignore-not-found" || true
 retry_kubectl "kubectl delete pod reaper-integration-test --ignore-not-found" || true
+retry_kubectl "kubectl delete pod reaper-dns-check --ignore-not-found" || true
 
 # Create example pod
 echo "Creating example pod..."
@@ -198,6 +199,34 @@ spec:
       image: busybox
       command: ["/bin/echo", "Hello from Reaper runtime!"]
 EOF
+
+# Create DNS check pod to verify /etc/resolv.conf is populated inside the namespace
+cat << 'EOF' | retry_kubectl "kubectl apply -f -"
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-dns-check
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: busybox
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "--- /etc/resolv.conf ---"
+          cat /etc/resolv.conf || true
+          echo "--- size ---"
+          stat -c %s /etc/resolv.conf || true
+          test -s /etc/resolv.conf
+EOF
+
+echo "Waiting for DNS check pod to complete..."
+retry_kubectl "kubectl wait pod reaper-dns-check --for=condition=Succeeded --timeout=60s"
+echo "DNS check pod output:"
+retry_kubectl "kubectl logs reaper-dns-check"
 
 # Create a test pod that uses the Reaper runtime
 echo "Creating test pod..."

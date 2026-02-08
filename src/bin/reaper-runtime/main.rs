@@ -116,8 +116,8 @@ struct OciProcess {
     env: Option<Vec<String>>,  // key=value
     cwd: Option<String>,
     user: Option<OciUser>,
-    #[serde(default)]
-    terminal: bool,
+    // #[serde(default)]
+    // terminal: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]

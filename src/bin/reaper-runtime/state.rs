@@ -134,13 +134,13 @@ pub fn load_exec_state(container_id: &str, exec_id: &str) -> anyhow::Result<Exec
     Ok(state)
 }
 
-pub fn delete_exec_state(container_id: &str, exec_id: &str) -> anyhow::Result<()> {
-    let path = exec_state_path(container_id, exec_id);
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    Ok(())
-}
+// pub fn delete_exec_state(container_id: &str, exec_id: &str) -> anyhow::Result<()> {
+//     let path = exec_state_path(container_id, exec_id);
+//     if path.exists() {
+//         fs::remove_file(path)?;
+//     }
+//     Ok(())
+// }
 
 #[cfg(test)]
 mod tests {
@@ -331,44 +331,44 @@ mod tests {
         });
     }
 
-    #[test]
-    #[serial]
-    fn test_delete_exec_state() {
-        with_test_root(|_| {
-            let exec_state = ExecState {
-                container_id: "test-container".to_string(),
-                exec_id: "exec1".to_string(),
-                status: "created".to_string(),
-                pid: None,
-                exit_code: None,
-                args: vec!["/bin/echo".to_string(), "hello".to_string()],
-                env: None,
-                cwd: None,
-                terminal: false,
-                stdin: None,
-                stdout: None,
-                stderr: None,
-            };
+    // #[test]
+    // #[serial]
+    // fn test_delete_exec_state() {
+    //     with_test_root(|_| {
+    //         let exec_state = ExecState {
+    //             container_id: "test-container".to_string(),
+    //             exec_id: "exec1".to_string(),
+    //             status: "created".to_string(),
+    //             pid: None,
+    //             exit_code: None,
+    //             args: vec!["/bin/echo".to_string(), "hello".to_string()],
+    //             env: None,
+    //             cwd: None,
+    //             terminal: false,
+    //             stdin: None,
+    //             stdout: None,
+    //             stderr: None,
+    //         };
 
-            save_exec_state(&exec_state).expect("Failed to save exec state");
-            let path = exec_state_path("test-container", "exec1");
-            assert!(path.exists(), "Exec state file should exist after save");
+    //         save_exec_state(&exec_state).expect("Failed to save exec state");
+    //         let path = exec_state_path("test-container", "exec1");
+    //         assert!(path.exists(), "Exec state file should exist after save");
 
-            delete_exec_state("test-container", "exec1").expect("Failed to delete exec state");
-            assert!(
-                !path.exists(),
-                "Exec state file should not exist after delete"
-            );
-        });
-    }
+    //         delete_exec_state("test-container", "exec1").expect("Failed to delete exec state");
+    //         assert!(
+    //             !path.exists(),
+    //             "Exec state file should not exist after delete"
+    //         );
+    //     });
+    // }
 
-    #[test]
-    #[serial]
-    fn test_delete_nonexistent_exec_state() {
-        with_test_root(|_| {
-            // Should not error on deleting nonexistent exec state
-            delete_exec_state("nonexistent", "exec1")
-                .expect("Delete should not fail on nonexistent exec");
-        });
-    }
+    // #[test]
+    // #[serial]
+    // fn test_delete_nonexistent_exec_state() {
+    //     with_test_root(|_| {
+    //         // Should not error on deleting nonexistent exec state
+    //         delete_exec_state("nonexistent", "exec1")
+    //             .expect("Delete should not fail on nonexistent exec");
+    //     });
+    // }
 }
