@@ -1,4 +1,4 @@
-# Current State - Reaper OCI Runtime (January 2026)
+# Current State - Reaper OCI Runtime (February 2026)
 
 ## Quick Summary
 
@@ -9,10 +9,13 @@
 - Containerd shim v2 protocol complete
 - Fork-based process monitoring with real exit codes
 - Container stdout/stderr capture via FIFOs (kubectl logs support)
+- PTY/terminal support for interactive containers (kubectl run -it)
+- Exec into running containers (kubectl exec -it)
 - Proper zombie process reaping
 - State persistence and lifecycle management
 - Kubernetes integration via RuntimeClass
 - Pods correctly transition to "Completed" status
+- Overlay filesystem namespace with persistent helper
 
 **Validated:** Pods running `/bin/echo` correctly show `Completed` status with `exitCode: 0`
 
@@ -102,7 +105,7 @@ match unsafe { fork() }? {
 - No orphan processes
 - Clean lifecycle: daemon exits after workload completes
 
-## Critical Bug Fixes (January 2026)
+## Critical Bug Fixes (January-February 2026)
 
 ### 1. Fork Order Bug
 **Problem:** `std::process::Child` handle invalid after fork
@@ -128,6 +131,16 @@ match unsafe { fork() }? {
 **Problem:** Missing `exited_at` timestamp in WaitResponse
 **Fix:** Include proper timestamp in all WaitResponse and StateResponse messages
 **File:** `src/bin/containerd-shim-reaper-v2/main.rs:545-552`
+
+### 6. File Descriptor Leak (ContainerCreating Bug)
+**Problem:** Daemon inherited stdout/stderr pipes from parent's `cmd.output()`, keeping parent blocked indefinitely, causing pods stuck in ContainerCreating
+**Fix:** Redirect daemon's stdout/stderr to `/dev/null` immediately after fork using `dup2()`
+**File:** `src/bin/reaper-runtime/main.rs`
+
+### 7. Wait Timeout for Interactive Containers
+**Problem:** 60-second polling timeout in shim's wait() was killing interactive containers (kubectl run -it) after ~1 minute
+**Fix:** Increased timeout from 60s to 1 hour to support long-running interactive sessions
+**File:** `src/bin/containerd-shim-reaper-v2/main.rs`
 
 ## File Structure
 
@@ -277,6 +290,12 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 - [x] restartPolicy: Never for one-shot tasks
 - [x] Container stdout/stderr capture via FIFOs
 - [x] kubectl logs integration
+- [x] PTY allocation for interactive containers (kubectl run -it)
+- [x] Exec into running containers (kubectl exec)
+- [x] Exec with PTY support (kubectl exec -it)
+- [x] Overlay filesystem namespace (shared writable layer)
+- [x] Overlay namespace persistence via helper process
+- [x] /etc files propagation into overlay namespace
 
 ### 🔄 In Progress
 - [ ] Multi-container pods
@@ -287,7 +306,7 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 ### ⏳ Not Started
 - [ ] User/group ID management (currently disabled)
 - [ ] Signal handling robustness
-- [ ] Exec into running containers
+- [ ] Dynamic PTY resize (ResizePty)
 - [ ] Resource monitoring (stats)
 - [ ] Performance optimization
 
@@ -309,10 +328,6 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
   - State file corruption
   - Concurrent access to state
 
-- **No exec support:** Can't execute commands in running containers
-  - Would require daemon to accept commands
-  - Not critical for current use case
-
 - **500ms startup delay:** Added for timing correctness
   - Required for containerd to observe "running" state
   - May be reducible with better synchronization
@@ -327,9 +342,9 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 5. Clean up debug logging
 
 ### Medium Term
-1. Implement exec support
-2. Add resource monitoring
-3. Enhanced signal handling
+1. Add resource monitoring
+2. Enhanced signal handling
+3. Dynamic PTY resize support
 4. Documentation polish
 5. Example use cases
 
@@ -382,6 +397,6 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 
 ---
 
-**Document Version:** 2.0
-**Last Updated:** January 2026
-**Status:** Core Functionality Complete
+**Document Version:** 2.1
+**Last Updated:** February 2026
+**Status:** Core Functionality Complete with Exec and PTY Support

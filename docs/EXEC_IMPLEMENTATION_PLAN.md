@@ -1,9 +1,13 @@
 # Exec Implementation Plan
 
+## Status: ✅ COMPLETED (February 2026)
+
 ## Goal
 
 Enable `kubectl exec -it <pod> -- /bin/sh` for containers running with the reaper runtime.
 This requires implementing the containerd shim v2 `exec` lifecycle across three components.
+
+**Implementation completed in commits 8847a4e through 4ce274a.**
 
 ## Background
 
@@ -69,13 +73,25 @@ Path: `/run/reaper/<container-id>/exec-<exec-id>.json`
 
 Status values: `"created"` → `"running"` → `"stopped"`
 
-## Implementation Steps
+## Implementation Summary
 
-### Step 1: Fix Cargo.toml (DONE)
+All steps have been completed. The implementation includes:
+
+- ExecState struct and persistence functions in `state.rs`
+- `do_exec()` function in `main.rs` with fork-first architecture
+- `exec_with_pty()` and `exec_without_pty()` helper functions
+- PTY allocation and I/O relay for interactive exec sessions
+- Shim exec lifecycle (exec, start, wait, kill, delete, state methods)
+- Overlay namespace joining for exec processes
+- Integration tests for exec functionality
+
+## Original Implementation Steps (Reference)
+
+### Step 1: Fix Cargo.toml (✅ DONE)
 
 Changed nix feature from `"pty"` (doesn't exist) to `"term"` (correct feature for PTY support).
 
-### Step 2: Add ExecState to `src/bin/reaper-runtime/state.rs`
+### Step 2: Add ExecState to `src/bin/reaper-runtime/state.rs` (✅ DONE)
 
 Add after the existing `delete()` function, before `#[cfg(test)]`:
 
@@ -854,12 +870,27 @@ cargo test
 
 6. **1-hour timeout for exec wait** - Interactive sessions can run for a long time. The shim polls the exec state file with a 1-hour timeout.
 
-## Potential Issues
+## Implementation Notes
 
-1. **FIFO open blocking** - If containerd hasn't opened its end of the FIFOs when the runtime daemon tries to open them, the open() call will block. This should resolve quickly as containerd opens FIFOs before/around the time it calls start().
+### Issues Resolved
 
-2. **PTY master File ownership** - Converting `OwnedFd` from `openpty()` to `File` requires careful ownership management. Use `File::from(pty.master.into())` to transfer ownership cleanly.
+1. **FIFO open blocking** - Handled gracefully. Containerd opens FIFOs before calling start().
 
-3. **macOS vs Linux ioctl** - `TIOCSCTTY` has different values on macOS vs Linux but `libc::TIOCSCTTY` handles this. The second argument (0) works on both.
+2. **PTY master File ownership** - `File::from(pty.master.into())` successfully transfers ownership.
 
-4. **nix 0.28 "term" feature** - The feature is called "term" not "pty". Already fixed in Cargo.toml.
+3. **macOS vs Linux ioctl** - `TIOCSCTTY` constant handled correctly via platform-specific values.
+
+4. **nix 0.28 "term" feature** - Correct feature name used in Cargo.toml.
+
+5. **Wait timeout** - Increased from 60s to 1 hour to support long-running interactive sessions.
+
+### Known Limitations
+
+- **resize_pty** returns OK but doesn't dynamically resize. Terminal uses default size (typically 80x24).
+- Dynamic resize would require IPC between shim and runtime daemon.
+
+---
+
+**Document Status:** Implementation Complete
+**Last Updated:** February 2026
+**Commits:** 8847a4e, 28c13c7, cc931e6, 4ce274a

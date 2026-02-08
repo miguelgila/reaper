@@ -38,19 +38,20 @@ reaper-runtime do_start()
        └─ enter_overlay()
             └─ acquire_lock(/run/reaper/overlay.lock)
             └─ create_namespace()
-                 └─ fork() (inner child)
+                 └─ fork() (inner child - helper)
                  │    ├─ unshare(CLONE_NEWNS)
                  │    ├─ mount("", "/", MS_PRIVATE | MS_REC)
                  │    ├─ mount overlay on /run/reaper/merged
                  │    ├─ bind-mount /proc, /sys, /dev, /run
+                 │    ├─ bind-mount /etc → /run/reaper/merged/etc
                  │    ├─ pivot_root(/run/reaper/merged, .../old_root)
                  │    ├─ umount(/old_root, MNT_DETACH)
-                 │    └─ signal parent "ready", sleep forever
+                 │    └─ signal parent "ready", sleep forever (kept alive)
                  │
                  └─ inner parent (host ns):
                       ├─ wait for "ready"
                       ├─ bind-mount /proc/<child>/ns/mnt → /run/reaper/shared-mnt-ns
-                      ├─ kill(child)  # namespace persists via bind-mount
+                      ├─ keep child alive (helper persists namespace)
                       └─ setns(shared-mnt-ns)  # join the namespace
 ```
 
@@ -71,6 +72,13 @@ The bind-mount of `/proc/<pid>/ns/mnt` to a host path must be done from
 the HOST mount namespace. After `unshare(CLONE_NEWNS)`, the process is in
 the new namespace and bind-mounts don't propagate to the host. The inner
 parent stays in the host namespace to perform this operation.
+
+### Why Keep Helper Alive?
+
+The helper process (inner child) is kept alive to persist the namespace.
+While the bind-mount of `/proc/<pid>/ns/mnt` keeps the namespace reference,
+keeping the helper alive ensures /etc files and other bind-mounts remain
+accessible. The helper sleeps indefinitely until explicitly terminated.
 
 ### Why pivot_root?
 

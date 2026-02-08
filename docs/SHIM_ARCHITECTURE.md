@@ -206,6 +206,11 @@ match unsafe { fork() }? {
    - No orphan processes
    - No zombie processes
 
+5. **File descriptor isolation**
+   - Daemon redirects stdout/stderr to `/dev/null` via `dup2()`
+   - Prevents inherited pipes from blocking parent process
+   - Fixes ContainerCreating bug from leaked file descriptors
+
 ### Timing Considerations
 
 **500ms delay is critical for fast processes:**
@@ -319,6 +324,23 @@ fn is_sandbox_container(bundle: &str) -> bool {
 ```
 
 Sandboxes return fake responses immediately (PID 1, exit code 0) without spawning real processes.
+
+### PTY and Exec Support
+
+Reaper supports interactive containers and exec sessions:
+
+**PTY for Interactive Containers:**
+- `kubectl run -it` sets `terminal: true` in ContainerState
+- Runtime allocates PTY via `openpty()` during `do_start()`
+- Relay threads connect stdin FIFO → PTY master and PTY master → stdout FIFO
+- Child process becomes session leader and PTY slave becomes controlling terminal via `TIOCSCTTY`
+
+**Exec into Running Containers:**
+- Shim's `exec()` writes exec state file with process spec, FIFO paths, and terminal flag
+- Runtime's `do_exec()` forks daemon, joins overlay namespace, spawns exec process
+- Exec with PTY (`kubectl exec -it`) uses same PTY allocation pattern as interactive containers
+- Exec without PTY connects FIFOs directly to stdin/stdout/stderr
+- Wait timeout increased to 1 hour to support long-running interactive sessions
 
 ## Deployment Requirements
 
@@ -441,6 +463,6 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 
 ---
 
-**Document Version:** 2.0
-**Last Updated:** January 2026
-**Status:** Core Implementation Complete
+**Document Version:** 2.1
+**Last Updated:** February 2026
+**Status:** Core Implementation Complete with Exec and PTY Support
