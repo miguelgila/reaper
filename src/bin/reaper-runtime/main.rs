@@ -294,6 +294,13 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                 println!("started pid={}", daemon_pid);
             }
 
+            // Attempt to reap daemon if it has already exited (non-blocking).
+            // WNOHANG means don't block if still running. This prevents zombie processes.
+            use nix::sys::wait::{waitpid, WaitPidFlag};
+            use nix::unistd::Pid;
+            let daemon_pid_raw = Pid::from_raw(daemon_pid.as_raw());
+            let _ = waitpid(daemon_pid_raw, Some(WaitPidFlag::WNOHANG));
+
             Ok(())
         }
         Ok(ForkResult::Child) => {
