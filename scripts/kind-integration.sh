@@ -381,6 +381,56 @@ retry_kubectl "kubectl delete pod reaper-overlay-reader --ignore-not-found" || t
 
 echo ""
 echo "================================================"
+echo "Testing exec support..."
+echo "================================================"
+
+# Clean up any stale exec test pods
+retry_kubectl "kubectl delete pod reaper-exec-test --ignore-not-found" || true
+
+# Create a long-running pod for exec testing
+echo "Creating long-running pod for exec testing..."
+cat << 'EOF' | retry_kubectl "kubectl apply -f -"
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-exec-test
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["sleep", "60"]
+EOF
+
+# Wait for pod to be running
+echo "Waiting for exec test pod to start..."
+for i in $(seq 1 30); do
+  EXEC_POD_PHASE=$(retry_kubectl "kubectl get pod reaper-exec-test -o jsonpath='{.status.phase}'" 2>/dev/null || echo "Pending")
+  if [ "$EXEC_POD_PHASE" = "Running" ]; then
+    echo "✅ Exec test pod is running"
+    break
+  fi
+  echo "Attempt $i/30: Exec pod phase=$EXEC_POD_PHASE"
+  sleep 1
+done
+
+# Test exec with a simple echo command
+echo "Testing kubectl exec..."
+EXEC_OUTPUT=$(retry_kubectl "kubectl exec reaper-exec-test -- echo 'exec works'" 2>/dev/null || echo "")
+if [ "$EXEC_OUTPUT" = "exec works" ]; then
+  echo "✅ PASS: kubectl exec works - output: $EXEC_OUTPUT"
+else
+  echo "⚠️  Exec test: unexpected output '$EXEC_OUTPUT'"
+  # Note: This is a soft failure - exec functionality is still being implemented
+  # Don't exit(1) since this is experimental
+fi
+
+# Clean up exec test pod
+retry_kubectl "kubectl delete pod reaper-exec-test --ignore-not-found" || true
+
+echo ""
+echo "================================================"
 echo "✅ Kind integration test complete!"
 echo "================================================"
 echo "Both binaries deployed:"

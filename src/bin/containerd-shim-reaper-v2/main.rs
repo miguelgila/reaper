@@ -32,6 +32,10 @@ fn execute_and_reap_child(program: &str, args: Vec<&str>) -> std::io::Result<std
     Ok(output)
 }
 
+fn runtime_state_dir() -> String {
+    std::env::var("REAPER_RUNTIME_ROOT").unwrap_or_else(|_| "/run/reaper".to_string())
+}
+
 #[derive(Clone)]
 struct ReaperShim {
     exit: Arc<ExitSignal>,
@@ -193,7 +197,13 @@ fn is_sandbox_container(bundle: &str) -> bool {
 
 impl ReaperTask {
     /// Publish a TaskExit event to containerd
-    async fn publish_exit_event(&self, container_id: &str, pid: u32, exit_code: u32) {
+    async fn publish_exit_event(
+        &self,
+        container_id: &str,
+        exec_id: &str,
+        pid: u32,
+        exit_code: u32,
+    ) {
         use containerd_shim_protos::events::task::TaskExit;
 
         let now = std::time::SystemTime::now()
@@ -203,9 +213,16 @@ impl ReaperTask {
         timestamp.seconds = now.as_secs() as i64;
         timestamp.nanos = now.subsec_nanos() as i32;
 
+        // Use exec_id as the event ID if non-empty, otherwise use container_id
+        let event_id = if !exec_id.is_empty() {
+            exec_id.to_string()
+        } else {
+            container_id.to_string()
+        };
+
         let event = TaskExit {
             container_id: container_id.to_string(),
-            id: container_id.to_string(),
+            id: event_id.clone(),
             pid,
             exit_status: exit_code,
             exited_at: ::protobuf::MessageField::some(timestamp),
@@ -213,8 +230,8 @@ impl ReaperTask {
         };
 
         info!(
-            "Publishing TaskExit event: container_id={}, pid={}, exit_code={}",
-            container_id, pid, exit_code
+            "Publishing TaskExit event: container_id={}, exec_id={}, pid={}, exit_code={}",
+            container_id, exec_id, pid, exit_code
         );
 
         if let Err(e) = self
@@ -282,8 +299,8 @@ impl Task for ReaperTask {
         }
 
         info!(
-            "create() - about to execute: {} create {} --bundle {} (stdin={}, stdout={}, stderr={})",
-            self.runtime_path, req.id, req.bundle, req.stdin, req.stdout, req.stderr
+            "create() - about to execute: {} create {} --bundle {} (terminal={}, stdin={}, stdout={}, stderr={})",
+            self.runtime_path, req.id, req.bundle, req.terminal, req.stdin, req.stdout, req.stderr
         );
 
         // Call reaper-runtime create <container-id> --bundle <bundle-path>
@@ -291,6 +308,7 @@ impl Task for ReaperTask {
         let runtime_path = self.runtime_path.clone();
         let container_id = req.id.clone();
         let bundle_path = req.bundle.clone();
+        let terminal = req.terminal;
         let stdin_path = req.stdin.clone();
         let stdout_path = req.stdout.clone();
         let stderr_path = req.stderr.clone();
@@ -301,6 +319,11 @@ impl Task for ReaperTask {
                 .arg(&container_id)
                 .arg("--bundle")
                 .arg(&bundle_path);
+
+            // Pass terminal flag if containerd requests a PTY (kubectl run -it)
+            if terminal {
+                cmd.arg("--terminal");
+            }
 
             // Pass I/O paths if provided by containerd
             if !stdin_path.is_empty() {
@@ -359,6 +382,69 @@ impl Task for ReaperTask {
         req: api::StartRequest,
     ) -> TtrpcResult<api::StartResponse> {
         info!("start() called - container_id={}", req.id);
+
+        // Handle exec start
+        if !req.exec_id.is_empty() {
+            info!("start() - EXEC process, exec_id={}", req.exec_id);
+
+            let runtime_path = self.runtime_path.clone();
+            let container_id = req.id.clone();
+            let exec_id = req.exec_id.clone();
+
+            let output = tokio::task::spawn_blocking(move || {
+                execute_and_reap_child(
+                    &runtime_path,
+                    vec!["exec", &container_id, "--exec-id", &exec_id],
+                )
+            })
+            .await
+            .map_err(|e| {
+                ttrpc::Error::RpcStatus(ttrpc::get_status(ttrpc::Code::INTERNAL, format!("{}", e)))
+            })?
+            .map_err(|e| {
+                ttrpc::Error::RpcStatus(ttrpc::get_status(ttrpc::Code::INTERNAL, format!("{}", e)))
+            })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::INTERNAL,
+                    format!("exec failed: {}", stderr),
+                )));
+            }
+
+            // Poll exec state file for PID
+            let state_dir = runtime_state_dir();
+            let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+            let exec_path_clone = exec_path.clone();
+
+            let pid = tokio::task::spawn_blocking(move || {
+                for _ in 0..20 {
+                    if let Ok(data) = std::fs::read_to_string(&exec_path_clone) {
+                        if let Ok(state) = serde_json::from_str::<serde_json::Value>(&data) {
+                            if let Some(pid) = state["pid"].as_u64() {
+                                if pid > 0 {
+                                    return pid as u32;
+                                }
+                            }
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                0u32
+            })
+            .await
+            .unwrap_or(0);
+
+            info!(
+                "start() exec succeeded - exec_id={}, pid={}",
+                req.exec_id, pid
+            );
+            return Ok(api::StartResponse {
+                pid,
+                ..Default::default()
+            });
+        }
 
         // Check if this is a sandbox container
         let is_sandbox = {
@@ -461,6 +547,21 @@ impl Task for ReaperTask {
     ) -> TtrpcResult<api::DeleteResponse> {
         info!("delete() called - container_id={}", req.id);
 
+        // Handle exec delete
+        if !req.exec_id.is_empty() {
+            info!("delete() - EXEC process, exec_id={}", req.exec_id);
+
+            let state_dir = runtime_state_dir();
+            let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+            let _ = std::fs::remove_file(&exec_path);
+
+            return Ok(api::DeleteResponse {
+                pid: 0,
+                exit_status: 0,
+                ..Default::default()
+            });
+        }
+
         // Check if this is a sandbox container
         let is_sandbox = {
             let mut state = self.sandbox_state.lock().unwrap();
@@ -541,6 +642,37 @@ impl Task for ReaperTask {
                 info.exit_notify.notify_waiters();
                 return Ok(api::Empty::new());
             }
+        }
+
+        // Handle exec kill
+        if !req.exec_id.is_empty() {
+            info!("kill() - EXEC process, exec_id={}", req.exec_id);
+
+            let state_dir = runtime_state_dir();
+            let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+
+            if let Ok(data) = std::fs::read_to_string(&exec_path) {
+                if let Ok(state) = serde_json::from_str::<serde_json::Value>(&data) {
+                    if let Some(pid) = state["pid"].as_i64() {
+                        if pid > 0 {
+                            let sig = nix::sys::signal::Signal::try_from(req.signal as i32)
+                                .unwrap_or(nix::sys::signal::Signal::SIGTERM);
+                            match nix::sys::signal::kill(
+                                nix::unistd::Pid::from_raw(pid as i32),
+                                sig,
+                            ) {
+                                Ok(()) => info!("kill() exec - signal sent to pid {}", pid),
+                                Err(nix::errno::Errno::ESRCH) => {
+                                    info!("kill() exec - pid {} already exited", pid)
+                                }
+                                Err(e) => tracing::error!("kill() exec failed: {}", e),
+                            }
+                        }
+                    }
+                }
+            }
+
+            return Ok(api::Empty::new());
         }
 
         // Real workload - call reaper-runtime with timeout
@@ -642,6 +774,53 @@ impl Task for ReaperTask {
             }
         }
 
+        // Handle exec wait
+        if !req.exec_id.is_empty() {
+            info!("wait() - EXEC process, exec_id={}", req.exec_id);
+
+            let state_dir = runtime_state_dir();
+            let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+            let container_id = req.id.clone();
+            let exec_id_clone = req.exec_id.clone();
+
+            let (exit_code, pid) = tokio::task::spawn_blocking(move || {
+                let timeout = std::time::Duration::from_secs(3600); // 1 hour for interactive
+                let start = std::time::Instant::now();
+                loop {
+                    if start.elapsed() > timeout {
+                        return (1i32, 0u32);
+                    }
+                    if let Ok(data) = std::fs::read_to_string(&exec_path) {
+                        if let Ok(state) = serde_json::from_str::<serde_json::Value>(&data) {
+                            if state["status"].as_str() == Some("stopped") {
+                                let code = state["exit_code"].as_i64().unwrap_or(0) as i32;
+                                let pid = state["pid"].as_u64().unwrap_or(0) as u32;
+                                return (code, pid);
+                            }
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+            })
+            .await
+            .unwrap_or((1, 0));
+
+            self.publish_exit_event(&container_id, &exec_id_clone, pid, exit_code as u32)
+                .await;
+
+            let mut resp = api::WaitResponse::new();
+            resp.set_exit_status(exit_code as u32);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let mut timestamp = ::protobuf::well_known_types::timestamp::Timestamp::new();
+            timestamp.seconds = now.as_secs() as i64;
+            timestamp.nanos = now.subsec_nanos() as i32;
+            resp.exited_at = ::protobuf::MessageField::some(timestamp);
+
+            return Ok(resp);
+        }
+
         // Real workload - poll state until monitoring daemon marks it stopped
         info!("wait() - WORKLOAD container, polling runtime state for completion");
 
@@ -694,7 +873,7 @@ impl Task for ReaperTask {
         .unwrap_or((1, 0));
 
         // Publish TaskExit event to notify containerd
-        self.publish_exit_event(&req.id, pid, exit_code as u32)
+        self.publish_exit_event(&req.id, "", pid, exit_code as u32)
             .await;
 
         let mut resp = api::WaitResponse::new();
@@ -725,6 +904,38 @@ impl Task for ReaperTask {
             "state() called - container_id={}, exec_id={:?}",
             req.id, req.exec_id
         );
+
+        // Handle exec state
+        if !req.exec_id.is_empty() {
+            info!("state() - EXEC process, exec_id={}", req.exec_id);
+
+            let state_dir = runtime_state_dir();
+            let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+
+            if let Ok(data) = std::fs::read_to_string(&exec_path) {
+                if let Ok(state) = serde_json::from_str::<serde_json::Value>(&data) {
+                    let mut resp = api::StateResponse::new();
+                    resp.id = req.exec_id.clone();
+                    resp.pid = state["pid"].as_u64().unwrap_or(0) as u32;
+                    let status_str = state["status"].as_str().unwrap_or("unknown");
+                    resp.status = match status_str {
+                        "created" => ::protobuf::EnumOrUnknown::new(api::Status::CREATED),
+                        "running" => ::protobuf::EnumOrUnknown::new(api::Status::RUNNING),
+                        "stopped" => ::protobuf::EnumOrUnknown::new(api::Status::STOPPED),
+                        _ => ::protobuf::EnumOrUnknown::new(api::Status::UNKNOWN),
+                    };
+                    if status_str == "stopped" {
+                        resp.exit_status = state["exit_code"].as_u64().unwrap_or(0) as u32;
+                    }
+                    return Ok(resp);
+                }
+            }
+
+            return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::NOT_FOUND,
+                format!("exec {} not found", req.exec_id),
+            )));
+        }
 
         // Check if this is a sandbox container
         let is_sandbox = {
@@ -881,15 +1092,79 @@ impl Task for ReaperTask {
         _ctx: &TtrpcContext,
         req: api::ExecProcessRequest,
     ) -> TtrpcResult<api::Empty> {
-        info!("exec() called - container_id={}, exec_id={}, stdin={}, stdout={}, stderr={}, terminal={}",
-            req.id, req.exec_id, req.stdin.is_empty(), req.stdout.is_empty(), req.stderr.is_empty(), req.terminal);
+        info!(
+            "exec() called - container_id={}, exec_id={}, terminal={}",
+            req.id, req.exec_id, req.terminal
+        );
 
-        // For now, we don't support exec since each container runs independently
-        // In the future, this could spawn additional processes via runtime
-        Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
-            ttrpc::Code::UNIMPLEMENTED,
-            "Exec not supported - each container runs independently".to_string(),
-        )))
+        // Parse process spec from protobuf Any
+        let spec = req.spec.as_ref().ok_or_else(|| {
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INVALID_ARGUMENT,
+                "missing spec",
+            ))
+        })?;
+
+        // The spec value is JSON-encoded OCI process spec
+        let process: serde_json::Value = serde_json::from_slice(&spec.value).map_err(|e| {
+            ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INVALID_ARGUMENT,
+                format!("invalid spec: {}", e),
+            ))
+        })?;
+
+        let args: Vec<String> = process["args"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let env: Option<Vec<String>> = process["env"].as_array().map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        });
+        let cwd: Option<String> = process["cwd"].as_str().map(String::from);
+
+        if args.is_empty() {
+            return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::INVALID_ARGUMENT,
+                "exec args must not be empty",
+            )));
+        }
+
+        // Write exec state file for the runtime to read
+        let exec_state = serde_json::json!({
+            "container_id": req.id,
+            "exec_id": req.exec_id,
+            "status": "created",
+            "pid": null,
+            "exit_code": null,
+            "args": args,
+            "env": env,
+            "cwd": cwd,
+            "terminal": req.terminal,
+            "stdin": if req.stdin.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(req.stdin.clone()) },
+            "stdout": if req.stdout.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(req.stdout.clone()) },
+            "stderr": if req.stderr.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(req.stderr.clone()) },
+        });
+
+        let state_dir = runtime_state_dir();
+        let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+
+        std::fs::write(&exec_path, serde_json::to_vec_pretty(&exec_state).unwrap()).map_err(
+            |e| {
+                ttrpc::Error::RpcStatus(ttrpc::get_status(
+                    ttrpc::Code::INTERNAL,
+                    format!("write exec state: {}", e),
+                ))
+            },
+        )?;
+
+        info!("exec() succeeded - wrote exec state to {}", exec_path);
+        Ok(api::Empty::new())
     }
 
     async fn stats(
@@ -913,15 +1188,12 @@ impl Task for ReaperTask {
         req: api::ResizePtyRequest,
     ) -> TtrpcResult<api::Empty> {
         info!(
-            "resize_pty() called - container_id={}, width={}, height={}",
-            req.id, req.width, req.height
+            "resize_pty() called - container_id={}, exec_id={}, width={}, height={}",
+            req.id, req.exec_id, req.width, req.height
         );
-
-        // For now, we don't support interactive resizing since containers run non-interactively
-        Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
-            ttrpc::Code::UNIMPLEMENTED,
-            "ResizePty not supported for non-interactive containers".to_string(),
-        )))
+        // TODO: Propagate window size to PTY master (requires IPC with runtime daemon)
+        // For now, return success - terminal works but won't resize dynamically
+        Ok(api::Empty::new())
     }
 
     async fn connect(

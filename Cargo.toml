@@ -13,7 +13,7 @@ thiserror = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-nix = { version = "0.28", features = ["signal", "process", "user", "sched", "mount", "fs"] }
+nix = { version = "0.28", features = ["signal", "process", "user", "sched", "mount", "fs", "term"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 tokio = { version = "1", features = ["full"] }
