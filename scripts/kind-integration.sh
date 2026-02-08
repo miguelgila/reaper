@@ -216,12 +216,39 @@ spec:
         - /bin/sh
         - -c
         - |
-          echo "--- /etc/resolv.conf ---"
-          cat /etc/resolv.conf || echo "File not found"
-          echo "--- size ---"
-          stat -c %s /etc/resolv.conf || echo "Could not stat file"
-          echo "DNS check complete"
-          true
+          set -e
+
+          echo "=== DNS Check ==="
+
+          # Check if /etc/resolv.conf exists
+          if [ ! -f /etc/resolv.conf ]; then
+            echo "FAIL: /etc/resolv.conf does not exist"
+            exit 1
+          fi
+
+          echo "✓ /etc/resolv.conf exists"
+
+          # Check if file is empty
+          if [ ! -s /etc/resolv.conf ]; then
+            echo "FAIL: /etc/resolv.conf is empty"
+            exit 1
+          fi
+
+          echo "✓ /etc/resolv.conf is not empty (size: $(wc -c < /etc/resolv.conf) bytes)"
+
+          # Check if at least one nameserver is configured
+          if ! grep -q '^nameserver ' /etc/resolv.conf; then
+            echo "FAIL: No valid nameserver entries found in /etc/resolv.conf"
+            echo "Content:"
+            cat /etc/resolv.conf
+            exit 1
+          fi
+
+          echo "✓ Valid nameserver entries found:"
+          grep '^nameserver ' /etc/resolv.conf
+
+          echo "=== DNS Check PASSED ==="
+          exit 0
 EOF
 
 echo "Waiting for DNS check pod to complete..."
