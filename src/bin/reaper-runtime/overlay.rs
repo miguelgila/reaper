@@ -40,13 +40,20 @@ pub struct OverlayConfig {
 /// Read overlay configuration from environment variables.
 ///
 /// - `REAPER_OVERLAY_BASE`: base dir for overlay (default: "/run/reaper/overlay")
+/// - `REAPER_OVERLAY_NS`: path to namespace bind-mount (default: "/run/reaper/shared-mnt-ns")
+/// - `REAPER_OVERLAY_LOCK`: path to lock file (default: "/run/reaper/overlay.lock")
 pub fn read_config() -> OverlayConfig {
     let base_dir = std::env::var("REAPER_OVERLAY_BASE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/run/reaper/overlay"));
 
-    let ns_path = PathBuf::from("/run/reaper/shared-mnt-ns");
-    let lock_path = PathBuf::from("/run/reaper/overlay.lock");
+    let ns_path = std::env::var("REAPER_OVERLAY_NS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/run/reaper/shared-mnt-ns"));
+
+    let lock_path = std::env::var("REAPER_OVERLAY_LOCK")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/run/reaper/overlay.lock"));
 
     OverlayConfig {
         base_dir,

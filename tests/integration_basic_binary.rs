@@ -27,12 +27,21 @@ fn test_run_echo_hello_world() {
     let state_dir = TempDir::new().expect("Failed to create state dir");
     let state_root = state_dir.path().to_string_lossy().to_string();
 
+    // Set overlay paths to temp dirs for Linux tests (overlay only runs on Linux)
+    let overlay_dir = TempDir::new().expect("Failed to create overlay dir");
+    let overlay_base = overlay_dir.path().join("overlay");
+    let overlay_ns = overlay_dir.path().join("shared-mnt-ns");
+    let overlay_lock = overlay_dir.path().join("overlay.lock");
+
     // Get the reaper-runtime binary (built during test)
     let reaper_bin = env!("CARGO_BIN_EXE_reaper-runtime");
 
     // Create container
     let create_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_OVERLAY_BASE", &overlay_base)
+        .env("REAPER_OVERLAY_NS", &overlay_ns)
+        .env("REAPER_OVERLAY_LOCK", &overlay_lock)
         .arg("create")
         .arg("test-echo")
         .arg("--bundle")
@@ -56,6 +65,9 @@ fn test_run_echo_hello_world() {
     // Start container
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_OVERLAY_BASE", &overlay_base)
+        .env("REAPER_OVERLAY_NS", &overlay_ns)
+        .env("REAPER_OVERLAY_LOCK", &overlay_lock)
         .arg("start")
         .arg("test-echo")
         .arg("--bundle")
@@ -92,6 +104,9 @@ fn test_run_echo_hello_world() {
     // We'll poll for a bit to see if it's still running, but accept either "running" or "stopped"
     let state_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_OVERLAY_BASE", &overlay_base)
+        .env("REAPER_OVERLAY_NS", &overlay_ns)
+        .env("REAPER_OVERLAY_LOCK", &overlay_lock)
         .arg("state")
         .arg("test-echo")
         .output()
@@ -129,6 +144,9 @@ fn test_run_echo_hello_world() {
     // Delete container (cleanup)
     let delete_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_OVERLAY_BASE", &overlay_base)
+        .env("REAPER_OVERLAY_NS", &overlay_ns)
+        .env("REAPER_OVERLAY_LOCK", &overlay_lock)
         .arg("delete")
         .arg("test-echo")
         .output()
@@ -170,11 +188,19 @@ fn test_run_shell_script() {
     let state_dir = TempDir::new().expect("Failed to create state dir");
     let state_root = state_dir.path().to_string_lossy().to_string();
 
+    let overlay_dir = TempDir::new().expect("Failed to create overlay dir");
+    let overlay_base = overlay_dir.path().join("overlay");
+    let overlay_ns = overlay_dir.path().join("shared-mnt-ns");
+    let overlay_lock = overlay_dir.path().join("overlay.lock");
+
     let reaper_bin = env!("CARGO_BIN_EXE_reaper-runtime");
 
     // Create and start
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_OVERLAY_BASE", &overlay_base)
+        .env("REAPER_OVERLAY_NS", &overlay_ns)
+        .env("REAPER_OVERLAY_LOCK", &overlay_lock)
         .arg("create")
         .arg("test-script")
         .arg("--bundle")
@@ -184,6 +210,9 @@ fn test_run_shell_script() {
 
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_OVERLAY_BASE", &overlay_base)
+        .env("REAPER_OVERLAY_NS", &overlay_ns)
+        .env("REAPER_OVERLAY_LOCK", &overlay_lock)
         .arg("start")
         .arg("test-script")
         .arg("--bundle")
@@ -196,6 +225,9 @@ fn test_run_shell_script() {
     // Cleanup
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_OVERLAY_BASE", &overlay_base)
+        .env("REAPER_OVERLAY_NS", &overlay_ns)
+        .env("REAPER_OVERLAY_LOCK", &overlay_lock)
         .arg("delete")
         .arg("test-script")
         .output()
@@ -209,11 +241,19 @@ fn test_invalid_bundle() {
     let state_dir = TempDir::new().expect("Failed to create state dir");
     let state_root = state_dir.path().to_string_lossy().to_string();
 
+    let overlay_dir = TempDir::new().expect("Failed to create overlay dir");
+    let overlay_base = overlay_dir.path().join("overlay");
+    let overlay_ns = overlay_dir.path().join("shared-mnt-ns");
+    let overlay_lock = overlay_dir.path().join("overlay.lock");
+
     let reaper_bin = env!("CARGO_BIN_EXE_reaper-runtime");
 
     // Create should succeed (just stores metadata)
     let _create_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_OVERLAY_BASE", &overlay_base)
+        .env("REAPER_OVERLAY_NS", &overlay_ns)
+        .env("REAPER_OVERLAY_LOCK", &overlay_lock)
         .arg("create")
         .arg("test-invalid")
         .arg("--bundle")
@@ -224,6 +264,9 @@ fn test_invalid_bundle() {
     // But start will fail due to missing config.json
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_OVERLAY_BASE", &overlay_base)
+        .env("REAPER_OVERLAY_NS", &overlay_ns)
+        .env("REAPER_OVERLAY_LOCK", &overlay_lock)
         .arg("start")
         .arg("test-invalid")
         .arg("--bundle")
