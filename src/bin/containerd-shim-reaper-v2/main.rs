@@ -655,6 +655,9 @@ impl Task for ReaperTask {
             tracing::error!("reaper-runtime delete failed: {}", stderr);
         }
 
+        // Reap any zombie monitoring daemons from this or previous containers.
+        reap_orphaned_children();
+
         let mut resp = api::DeleteResponse::new();
         resp.set_pid(0);
         resp.set_exit_status(0);
@@ -834,6 +837,8 @@ impl Task for ReaperTask {
                             if state["status"].as_str() == Some("stopped") {
                                 let code = state["exit_code"].as_i64().unwrap_or(0) as i32;
                                 let pid = state["pid"].as_u64().unwrap_or(0) as u32;
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                                reap_orphaned_children();
                                 return (code, pid);
                             }
                         }
@@ -902,6 +907,10 @@ impl Task for ReaperTask {
                                     "wait() - container {} stopped with exit_code={}, pid={}",
                                     container_id, code, pid
                                 );
+                                // Give the monitoring daemon a moment to exit after
+                                // writing "stopped", then reap it immediately.
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                                reap_orphaned_children();
                                 return (code, pid);
                             }
                         }
@@ -1374,6 +1383,19 @@ async fn main() {
     }
 
     set_child_subreaper();
+
+    // Spawn a background task to periodically reap zombie children.
+    // Because no_reaper=true (required to avoid conflicts with std::process::Command),
+    // the containerd-shim library does NOT install a SIGCHLD handler. Monitoring daemons
+    // forked by reaper-runtime (start/exec) get reparented to us via PR_SET_CHILD_SUBREAPER,
+    // but nobody reaps them when they exit. This background loop ensures zombies are
+    // cleaned up within a few seconds regardless of when they exit.
+    tokio::spawn(async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            reap_orphaned_children();
+        }
+    });
 
     info!("Calling containerd_shim::run()...");
 
