@@ -377,6 +377,8 @@ mod tests {
     #[test]
     fn test_read_config_defaults() {
         std::env::remove_var("REAPER_OVERLAY_BASE");
+        std::env::remove_var("REAPER_OVERLAY_NS");
+        std::env::remove_var("REAPER_OVERLAY_LOCK");
 
         let config = read_config();
         assert_eq!(config.base_dir, PathBuf::from("/run/reaper/overlay"));
@@ -390,6 +392,8 @@ mod tests {
         let config = read_config();
         assert_eq!(config.base_dir, PathBuf::from("/custom/overlay"));
         std::env::remove_var("REAPER_OVERLAY_BASE");
+        std::env::remove_var("REAPER_OVERLAY_NS");
+        std::env::remove_var("REAPER_OVERLAY_LOCK");
     }
 
     #[test]
