@@ -25,8 +25,6 @@ use tracing::info;
 use nix::fcntl::{Flock, FlockArg};
 use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::sched::{setns, unshare, CloneFlags};
-use nix::sys::signal::{kill, Signal};
-use nix::sys::wait::waitpid;
 use nix::unistd::{fork, ForkResult};
 
 /// Overlay configuration, read from environment variables.

@@ -402,19 +402,14 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                             return Err(std::io::Error::last_os_error());
                         }
                         // Set controlling terminal
-                        #[cfg(target_os = "linux")]
+                        // TIOCSCTTY request type is u64 on both Linux and macOS
+                        if nix::libc::ioctl(
+                            slave_raw_fd,
+                            nix::libc::TIOCSCTTY as nix::libc::c_ulong,
+                            0 as nix::libc::c_int,
+                        ) < 0
                         {
-                            if nix::libc::ioctl(slave_raw_fd, nix::libc::TIOCSCTTY as i32, 0) < 0 {
-                                return Err(std::io::Error::last_os_error());
-                            }
-                        }
-                        #[cfg(target_os = "macos")]
-                        {
-                            if nix::libc::ioctl(slave_raw_fd, nix::libc::TIOCSCTTY as u64, 0_u64)
-                                < 0
-                            {
-                                return Err(std::io::Error::last_os_error());
-                            }
+                            return Err(std::io::Error::last_os_error());
                         }
                         // Dup slave to stdin/stdout/stderr
                         nix::libc::dup2(slave_raw_fd, 0);
@@ -803,18 +798,14 @@ fn exec_with_pty(
                 return Err(std::io::Error::last_os_error());
             }
             // Set controlling terminal
-            // TIOCSCTTY has different types on different platforms (i32 on Linux, u64 on macOS)
-            #[cfg(target_os = "linux")]
+            // Use Ioctl type alias which is u64 on both Linux and macOS
+            if nix::libc::ioctl(
+                slave_raw_fd,
+                nix::libc::TIOCSCTTY as nix::libc::c_ulong,
+                0 as nix::libc::c_int,
+            ) < 0
             {
-                if nix::libc::ioctl(slave_raw_fd, nix::libc::TIOCSCTTY as i32, 0) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
-            }
-            #[cfg(target_os = "macos")]
-            {
-                if nix::libc::ioctl(slave_raw_fd, nix::libc::TIOCSCTTY as u64, 0_u64) < 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
+                return Err(std::io::Error::last_os_error());
             }
             // Dup slave to stdin/stdout/stderr
             nix::libc::dup2(slave_raw_fd, 0);
