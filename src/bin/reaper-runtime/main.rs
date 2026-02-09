@@ -351,29 +351,38 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
             }
 
             // Join shared overlay namespace (Linux only).
-            // Overlay is mandatory — workloads must not run on the host filesystem.
+            // Overlay is mandatory in production — workloads must not run on the host filesystem.
+            // REAPER_NO_OVERLAY=1 disables overlay for unit tests that lack CAP_SYS_ADMIN.
             #[cfg(target_os = "linux")]
             {
-                let overlay_config = overlay::read_config();
-                if let Err(e) = overlay::enter_overlay(&overlay_config) {
-                    tracing::error!(
-                        "do_start() - overlay setup failed: {:#}, refusing to run without isolation",
-                        e
-                    );
-                    if let Ok(mut state) = load_state(&container_id) {
-                        state.status = "stopped".into();
-                        state.exit_code = Some(1);
-                        let _ = save_state(&state);
+                let skip_overlay = std::env::var("REAPER_NO_OVERLAY")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+
+                if skip_overlay {
+                    info!("do_start() - overlay disabled via REAPER_NO_OVERLAY");
+                } else {
+                    let overlay_config = overlay::read_config();
+                    if let Err(e) = overlay::enter_overlay(&overlay_config) {
+                        tracing::error!(
+                            "do_start() - overlay setup failed: {:#}, refusing to run without isolation",
+                            e
+                        );
+                        if let Ok(mut state) = load_state(&container_id) {
+                            state.status = "stopped".into();
+                            state.exit_code = Some(1);
+                            let _ = save_state(&state);
+                        }
+                        std::process::exit(1);
                     }
-                    std::process::exit(1);
+                    info!("do_start() - joined shared overlay namespace");
                 }
-                info!("do_start() - joined shared overlay namespace");
             }
 
             // Now spawn the workload - we are its parent!
             // Reload state to get I/O paths and terminal flag from create
             let io_state = load_state(&container_id).ok();
-            let use_terminal = io_state.as_ref().map_or(false, |s| s.terminal);
+            let use_terminal = io_state.as_ref().is_some_and(|s| s.terminal);
 
             if use_terminal {
                 // Terminal mode: allocate a PTY so the shell sees isatty()=true.
@@ -768,6 +777,7 @@ fn do_delete(id: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn exec_with_pty(
     program: &str,
     argv: &[String],
@@ -923,6 +933,7 @@ fn exec_with_pty(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn exec_without_pty(
     program: &str,
     argv: &[String],

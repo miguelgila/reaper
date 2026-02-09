@@ -4,6 +4,7 @@ use std::process::Command;
 use tempfile::TempDir;
 
 /// Helper to setup OCI bundle directory
+#[allow(dead_code)]
 fn create_test_bundle(dir: &TempDir, args: &[&str], env: Option<Vec<String>>) -> PathBuf {
     let config = serde_json::json!({
         "ociVersion": "1.1.0",
@@ -74,7 +75,7 @@ fn test_exec_state_lifecycle() {
 fn test_exec_command_help() {
     // Test that the runtime supports the exec command
     let output = Command::new("cargo")
-        .args(&["run", "--bin", "reaper-runtime", "--", "exec", "--help"])
+        .args(["run", "--bin", "reaper-runtime", "--", "exec", "--help"])
         .output();
 
     match output {

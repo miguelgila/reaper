@@ -37,6 +37,7 @@ fn test_run_with_current_user() {
     // Create container
     let create_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-user")
         .arg("--bundle")
@@ -53,6 +54,7 @@ fn test_run_with_current_user() {
     // Start container
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-user")
         .arg("--bundle")
@@ -72,6 +74,7 @@ fn test_run_with_current_user() {
     // Cleanup
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("delete")
         .arg("test-user")
         .output()
@@ -105,6 +108,7 @@ fn test_run_without_user_field() {
     // Create and start should work without user field
     let create_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-no-user")
         .arg("--bundle")
@@ -116,6 +120,7 @@ fn test_run_without_user_field() {
 
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-no-user")
         .arg("--bundle")
@@ -131,6 +136,7 @@ fn test_run_without_user_field() {
     // Cleanup
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("delete")
         .arg("test-no-user")
         .output()
@@ -176,6 +182,7 @@ fn test_run_with_umask() {
 
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-umask")
         .arg("--bundle")
@@ -185,6 +192,7 @@ fn test_run_with_umask() {
 
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-umask")
         .arg("--bundle")
@@ -204,6 +212,7 @@ fn test_run_with_umask() {
     // Cleanup
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("delete")
         .arg("test-umask")
         .output()
@@ -246,6 +255,7 @@ fn test_run_with_additional_groups() {
 
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-groups")
         .arg("--bundle")
@@ -255,6 +265,7 @@ fn test_run_with_additional_groups() {
 
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-groups")
         .arg("--bundle")
@@ -279,6 +290,7 @@ fn test_run_with_additional_groups() {
     // Cleanup
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("delete")
         .arg("test-groups")
         .output()
@@ -319,6 +331,7 @@ fn test_config_with_root_user() {
     // Create should work fine
     let create_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-root")
         .arg("--bundle")
@@ -332,6 +345,7 @@ fn test_config_with_root_user() {
     // In a production implementation, this would fail if uid=0 and not running as root
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-root")
         .arg("--bundle")
@@ -349,6 +363,7 @@ fn test_config_with_root_user() {
     // Cleanup
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("delete")
         .arg("test-root")
         .output()

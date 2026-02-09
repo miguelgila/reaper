@@ -52,6 +52,7 @@ fn test_io_paths_stored_in_state() {
 
     let create_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-io-paths")
         .arg("--bundle")
@@ -131,6 +132,7 @@ fn test_basic_fifo_stdout_redirection() {
     // Create container with stdout FIFO
     let create_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-fifo-stdout")
         .arg("--bundle")
@@ -164,6 +166,7 @@ fn test_basic_fifo_stdout_redirection() {
     // Start container - this will write to the FIFO
     let _start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-fifo-stdout")
         .arg("--bundle")
@@ -215,6 +218,7 @@ fn test_multiline_output_to_fifo() {
 
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-multiline")
         .arg("--bundle")
@@ -241,6 +245,7 @@ fn test_multiline_output_to_fifo() {
 
     let _start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-multiline")
         .arg("--bundle")
@@ -284,6 +289,7 @@ fn test_fifo_nonexistent_fallback_to_inherit() {
 
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-fallback")
         .arg("--bundle")
@@ -296,6 +302,7 @@ fn test_fifo_nonexistent_fallback_to_inherit() {
     // Start should still succeed (fallback to inherit)
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-fallback")
         .arg("--bundle")
@@ -313,6 +320,7 @@ fn test_fifo_nonexistent_fallback_to_inherit() {
     // Verify process completed
     let state_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("state")
         .arg("test-fallback")
         .output()
@@ -362,6 +370,7 @@ fn test_stderr_redirection() {
 
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-stderr")
         .arg("--bundle")
@@ -388,6 +397,7 @@ fn test_stderr_redirection() {
 
     let _start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-stderr")
         .arg("--bundle")
@@ -437,6 +447,7 @@ fn test_permission_denied_on_fifo() {
 
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-permission")
         .arg("--bundle")
@@ -449,6 +460,7 @@ fn test_permission_denied_on_fifo() {
     // Start should succeed (graceful fallback to inherit)
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-permission")
         .arg("--bundle")
@@ -492,6 +504,7 @@ fn test_state_skips_none_io_fields() {
     // Create without I/O paths
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-no-io")
         .arg("--bundle")
@@ -555,6 +568,7 @@ fn test_empty_io_paths_fallback() {
     // Create with empty string I/O paths
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-empty-io")
         .arg("--bundle")
@@ -567,6 +581,7 @@ fn test_empty_io_paths_fallback() {
     // Start should succeed (empty path falls back to inherit)
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-empty-io")
         .arg("--bundle")
