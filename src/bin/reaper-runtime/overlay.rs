@@ -372,10 +372,15 @@ fn ensure_etc_files_in_namespace(host_files: &[(String, Vec<u8>)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_read_config_defaults() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
         std::env::remove_var("REAPER_OVERLAY_BASE");
         std::env::remove_var("REAPER_OVERLAY_NS");
         std::env::remove_var("REAPER_OVERLAY_LOCK");
@@ -388,6 +393,8 @@ mod tests {
 
     #[test]
     fn test_read_config_custom_base() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
         std::env::set_var("REAPER_OVERLAY_BASE", "/custom/overlay");
         let config = read_config();
         assert_eq!(config.base_dir, PathBuf::from("/custom/overlay"));
