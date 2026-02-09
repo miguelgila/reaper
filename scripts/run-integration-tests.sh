@@ -586,6 +586,46 @@ test_no_defunct_processes() {
   return 0
 }
 
+test_shim_cleanup_after_delete() {
+  # After all test pods have been deleted, there should be no lingering
+  # containerd-shim-reaper-v2 processes for k8s.io containers.
+  # Each shim's shutdown() must signal ExitSignal so the process exits.
+  sleep 5
+
+  # Count reaper shim processes still running
+  local shim_pids
+  shim_pids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
+    | grep '[c]ontainerd-shim-reaper-v2' \
+    | grep -v grep || true)
+
+  local shim_count
+  shim_count=$(echo "$shim_pids" | grep -c . 2>/dev/null || echo 0)
+
+  # Count how many reaper pods are still actually running
+  local running_pods
+  running_pods=$(kubectl get pods --no-headers 2>/dev/null \
+    | grep -c '^reaper-' || echo 0)
+
+  log_verbose "Shim processes: $shim_count, Running reaper pods: $running_pods"
+
+  if [[ "$shim_count" -gt 0 && "$running_pods" -eq 0 ]]; then
+    log_error "Found $shim_count orphaned containerd-shim-reaper-v2 processes with no reaper pods running:"
+    log_error "$shim_pids"
+
+    # Grab container IDs from the shim command lines for diagnostics
+    local shim_ids
+    shim_ids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
+      | grep '[c]ontainerd-shim-reaper-v2' \
+      | grep -oP '(?<=-id )[0-9a-f]+' || true)
+    log_verbose "Orphaned shim container IDs: $shim_ids"
+
+    return 1
+  fi
+
+  log_verbose "Shim cleanup OK: $shim_count shims for $running_pods pods."
+  return 0
+}
+
 test_exec_support() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -639,6 +679,7 @@ phase_integration_tests() {
 
   # Run defunct check last, after all pods are gone
   run_test test_no_defunct_processes "No defunct (zombie) processes" --hard-fail
+  run_test test_shim_cleanup_after_delete "Shim processes exit after pod delete" --hard-fail
 }
 
 # ---------------------------------------------------------------------------

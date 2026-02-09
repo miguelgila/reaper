@@ -156,6 +156,7 @@ impl Shim for ReaperShim {
             sandbox_state: Arc::new(Mutex::new(HashMap::new())),
             publisher: Arc::new(publisher),
             namespace: self.namespace.clone(),
+            exit: self.exit.clone(),
         }
     }
 }
@@ -176,6 +177,8 @@ struct ReaperTask {
     publisher: Arc<RemotePublisher>,
     // Namespace for events
     namespace: String,
+    // Signal to tell the shim process to exit
+    exit: Arc<ExitSignal>,
 }
 
 // Helper function to detect if a container is a sandbox/pause container
@@ -1333,9 +1336,12 @@ impl Task for ReaperTask {
             req.id, req.now
         );
 
-        // For now, we acknowledge the shutdown request
-        // The shim will exit when containerd disconnects
-        info!("shutdown() succeeded - container_id={}", req.id);
+        // Signal the shim to exit. containerd calls shutdown after all
+        // containers managed by this shim have been deleted.
+        // Without this, shim processes accumulate as zombies.
+        self.exit.signal();
+
+        info!("shutdown() succeeded - signaled exit for shim");
         Ok(api::Empty::new())
     }
 }
