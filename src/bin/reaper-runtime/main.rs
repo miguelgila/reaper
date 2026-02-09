@@ -402,10 +402,10 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                             return Err(std::io::Error::last_os_error());
                         }
                         // Set controlling terminal
-                        // TIOCSCTTY request type is u64 on both Linux and macOS
+                        // TIOCSCTTY: ioctl request type varies by arch (c_int on aarch64, c_ulong on x86_64/macOS)
                         if nix::libc::ioctl(
                             slave_raw_fd,
-                            nix::libc::TIOCSCTTY as nix::libc::c_ulong,
+                            nix::libc::TIOCSCTTY as _,
                             0 as nix::libc::c_int,
                         ) < 0
                         {
@@ -798,10 +798,10 @@ fn exec_with_pty(
                 return Err(std::io::Error::last_os_error());
             }
             // Set controlling terminal
-            // Use Ioctl type alias which is u64 on both Linux and macOS
+            // TIOCSCTTY: ioctl request type varies by arch (c_int on aarch64, c_ulong on x86_64/macOS)
             if nix::libc::ioctl(
                 slave_raw_fd,
-                nix::libc::TIOCSCTTY as nix::libc::c_ulong,
+                nix::libc::TIOCSCTTY as _,
                 0 as nix::libc::c_int,
             ) < 0
             {

@@ -549,6 +549,29 @@ test_host_protection() {
   return 0
 }
 
+test_no_defunct_processes() {
+  # Wait briefly to let any remaining shim processes settle after pod completions
+  sleep 5
+
+  local defunct_output
+  defunct_output=$(docker exec "$NODE_ID" ps aux 2>/dev/null | grep -E '\<defunct\>' | grep -v grep || true)
+
+  if [[ -n "$defunct_output" ]]; then
+    log_error "Defunct (zombie) processes found on node:"
+    log_error "$defunct_output"
+
+    # Also grab the process tree for diagnostics
+    local pstree_output
+    pstree_output=$(docker exec "$NODE_ID" ps auxf 2>/dev/null || true)
+    log_verbose "Full process tree: $pstree_output"
+
+    return 1
+  fi
+
+  log_verbose "No defunct processes found on node."
+  return 0
+}
+
 test_exec_support() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -583,10 +606,25 @@ phase_integration_tests() {
   run_test test_host_protection  "Host filesystem protection"    --hard-fail
   run_test test_exec_support     "kubectl exec support"          --soft-fail
 
-  # Cleanup test pods
+  # Cleanup test pods (before defunct check so pods are terminated)
   kubectl delete pod reaper-dns-check reaper-integration-test \
     reaper-overlay-writer reaper-overlay-reader reaper-exec-test \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+
+  # Wait for all pods to fully terminate before checking for zombies
+  log_verbose "Waiting for test pods to terminate..."
+  for i in $(seq 1 30); do
+    local remaining
+    remaining=$(kubectl get pods --no-headers 2>/dev/null | grep -c '^reaper-' || true)
+    if [[ "$remaining" -eq 0 ]]; then
+      break
+    fi
+    log_verbose "Still $remaining reaper pods remaining ($i/30)..."
+    sleep 2
+  done
+
+  # Run defunct check last, after all pods are gone
+  run_test test_no_defunct_processes "No defunct (zombie) processes" --hard-fail
 }
 
 # ---------------------------------------------------------------------------
