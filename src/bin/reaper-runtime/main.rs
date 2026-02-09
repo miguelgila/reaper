@@ -269,27 +269,47 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
             );
 
             // Wait for daemon to spawn workload and update state
-            // The daemon needs time to: setsid(), spawn workload, write state to disk
-            // Poll the state file until we see the workload PID
+            // The daemon needs time to: setsid(), [enter overlay namespace on Linux], spawn workload, write state to disk
+            // On Linux, overlay namespace setup can take significant time (creating namespace, mounting, pivot_root)
+            // Poll the state file until we see the workload PID or the container exits
             let mut workload_pid = None;
-            for _attempt in 0..20 {
-                // Try up to 20 times (2 seconds total)
+            let max_attempts = if cfg!(target_os = "linux") { 100 } else { 20 };
+            let poll_interval_ms = 100;
+
+            for attempt in 0..max_attempts {
                 if let Ok(state) = load_state(&container_id) {
                     if let Some(pid) = state.pid {
                         workload_pid = Some(pid);
                         break;
                     }
+                    // If container is already stopped, daemon failed to start workload
+                    if state.status == "stopped" {
+                        info!(
+                            "do_start() - container stopped before PID was recorded (daemon likely failed), exit_code={:?}",
+                            state.exit_code
+                        );
+                        break;
+                    }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                std::thread::sleep(std::time::Duration::from_millis(poll_interval_ms));
+
+                // Log progress every second for debugging
+                if attempt > 0 && attempt % 10 == 0 {
+                    info!(
+                        "do_start() - still waiting for workload PID (attempt {}/{})",
+                        attempt, max_attempts
+                    );
+                }
             }
 
             // Print the workload PID if we got it, otherwise fall back to daemon PID
             if let Some(pid) = workload_pid {
                 println!("started pid={}", pid);
             } else {
-                // Fallback: report daemon PID if workload PID not yet available after 2s
+                // Fallback: report daemon PID if workload PID not yet available
                 info!(
-                    "do_start() - timeout waiting for workload PID, reporting daemon PID instead"
+                    "do_start() - timeout waiting for workload PID after {}ms, reporting daemon PID instead",
+                    max_attempts * poll_interval_ms
                 );
                 println!("started pid={}", daemon_pid);
             }

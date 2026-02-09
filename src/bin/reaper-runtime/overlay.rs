@@ -62,23 +62,36 @@ pub fn read_config() -> OverlayConfig {
 ///
 /// Overlay is mandatory — if this fails, the workload must not run.
 pub fn enter_overlay(config: &OverlayConfig) -> Result<()> {
+    info!(
+        "overlay: enter_overlay started, lock_path={}, ns_path={}",
+        config.lock_path.display(),
+        config.ns_path.display()
+    );
+
     // Acquire exclusive lock to prevent races during namespace creation
-    let _lock = acquire_lock(&config.lock_path)?;
+    info!("overlay: acquiring lock...");
+    let _lock = acquire_lock(&config.lock_path).context("failed to acquire overlay lock")?;
+    info!("overlay: lock acquired");
 
     // Read host /etc files up front so we can restore them inside an existing namespace
     let host_etc = read_host_etc_files(Path::new("/etc"));
 
     if namespace_exists(&config.ns_path) {
-        info!("overlay: joining existing shared namespace");
-        join_namespace(&config.ns_path)?;
+        info!(
+            "overlay: joining existing shared namespace at {}",
+            config.ns_path.display()
+        );
+        join_namespace(&config.ns_path).context("failed to join existing namespace")?;
     } else {
-        info!("overlay: creating new shared namespace");
-        create_namespace(config)?;
+        info!("overlay: creating new shared namespace (first workload on this node)");
+        create_namespace(config).context("failed to create shared namespace")?;
+        info!("overlay: shared namespace created successfully");
     }
 
     // After joining (or creating) the namespace, ensure resolver files exist/non-empty.
     ensure_etc_files_in_namespace(&host_etc);
 
+    info!("overlay: enter_overlay completed successfully");
     Ok(())
 }
 
