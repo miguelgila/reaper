@@ -12,6 +12,47 @@ use std::sync::{Arc, Mutex};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+#[cfg(target_os = "linux")]
+fn set_child_subreaper() {
+    // Adopt orphaned grandchildren (monitoring daemons) so we can reap them.
+    let rc = unsafe { nix::libc::prctl(nix::libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
+    if rc != 0 {
+        tracing::warn!(
+            "Failed to set PR_SET_CHILD_SUBREAPER: {}",
+            std::io::Error::last_os_error()
+        );
+    } else {
+        info!("Shim set as child subreaper (PR_SET_CHILD_SUBREAPER)");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_child_subreaper() {}
+
+#[cfg(target_os = "linux")]
+fn reap_orphaned_children() {
+    use nix::errno::Errno;
+    use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+    use nix::unistd::Pid;
+
+    loop {
+        match waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::StillAlive) => break,
+            Ok(WaitStatus::Exited(_pid, _status)) => continue,
+            Ok(WaitStatus::Signaled(_pid, _sig, _core)) => continue,
+            Ok(_) => continue,
+            Err(Errno::ECHILD) => break,
+            Err(e) => {
+                tracing::warn!("reap_orphaned_children waitpid error: {}", e);
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn reap_orphaned_children() {}
+
 /// Helper function to execute a command and properly reap the child process
 /// This is critical when forking happens inside the spawned process - we need to ensure
 /// the parent process is fully reaped even if it exits before the child is ready
@@ -24,10 +65,8 @@ fn execute_and_reap_child(program: &str, args: Vec<&str>) -> std::io::Result<std
     // Spawn and wait for the process
     let output = cmd.output()?;
 
-    // Explicitly try to reap any orphaned child processes (grandchildren that have exited)
-    // This helps clean up zombies if the direct child exited but had children
-    use nix::sys::wait;
-    let _ = wait::waitpid(None, Some(wait::WaitPidFlag::WNOHANG));
+    // Reap any orphaned child processes (monitoring daemons) adopted by the shim.
+    reap_orphaned_children();
 
     Ok(output)
 }
@@ -799,6 +838,8 @@ impl Task for ReaperTask {
                             }
                         }
                     }
+                    // Reap any orphaned runtime daemons while we poll.
+                    reap_orphaned_children();
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
             })
@@ -866,6 +907,8 @@ impl Task for ReaperTask {
                         }
                     }
                 }
+                // Reap any orphaned runtime daemons while we poll.
+                reap_orphaned_children();
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         })
@@ -1329,6 +1372,8 @@ async fn main() {
             .with_ansi(false)
             .init();
     }
+
+    set_child_subreaper();
 
     info!("Calling containerd_shim::run()...");
 

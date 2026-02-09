@@ -76,6 +76,20 @@ setup_colors() {
 setup_colors
 
 # ---------------------------------------------------------------------------
+# Git commit tracking
+# ---------------------------------------------------------------------------
+get_commit_id() {
+  if command -v git >/dev/null 2>&1 && [[ -d .git ]]; then
+    git rev-parse --short HEAD 2>/dev/null || echo "unknown"
+  else
+    echo "unknown"
+  fi
+}
+
+COMMIT_ID=$(get_commit_id)
+TEST_TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+
+# ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
 mkdir -p "$LOG_DIR"
@@ -684,6 +698,8 @@ phase_summary() {
 main() {
   log_status "${CLR_PHASE}Reaper Integration Test Suite${CLR_RESET}"
   log_status "========================================"
+  log_status "Timestamp: $TEST_TIMESTAMP"
+  log_status "Commit: $COMMIT_ID"
   log_status "Log file: $LOG_FILE"
 
   if ! $SKIP_CARGO; then
