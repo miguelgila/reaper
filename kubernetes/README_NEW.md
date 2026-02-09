@@ -37,7 +37,7 @@ This script will:
 #### Option 2: Using kind
 
 ```bash
-./scripts/kind-integration.sh
+./scripts/run-integration-tests.sh
 ```
 
 #### Option 3: Manual deployment
@@ -141,6 +141,6 @@ sandbox_mode = "podsandbox"
 ## See Also
 
 - [../scripts/minikube-setup-runtime.sh](../scripts/minikube-setup-runtime.sh) - Minikube deployment
-- [../scripts/kind-integration.sh](../scripts/kind-integration.sh) - Kind deployment
+- [../scripts/run-integration-tests.sh](../scripts/run-integration-tests.sh) - Kind integration tests
 - [../scripts/configure-containerd.sh](../scripts/configure-containerd.sh) - Unified containerd configuration
 - [../examples/k8s/](../examples/k8s/) - Additional example manifests

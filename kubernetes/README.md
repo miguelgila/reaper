@@ -80,7 +80,7 @@ Expected output: `Hello from Reaper runtime!`
 
 Or use the automated kind integration script:
 ```bash
-./scripts/kind-integration.sh
+./scripts/run-integration-tests.sh
 ```
 
 > **Note:** `kubectl exec` is not supported — the shim returns UNIMPLEMENTED for exec requests.

@@ -212,7 +212,7 @@ To test with Kubernetes:
 
 ```bash
 # Recommended: Kind cluster integration (builds static musl binaries, deploys, and tests)
-./scripts/kind-integration.sh
+./scripts/run-integration-tests.sh
 
 # Or build and install shim manually
 cargo build --release --bin containerd-shim-reaper-v2 --bin reaper-runtime
@@ -257,7 +257,7 @@ handler: reaper-v2
 - ✅ **Sandbox lifecycle**: Pause containers use blocking `wait()` with `kill()` signaling via `tokio::sync::Notify`
 - ✅ **Direct command execution**: Commands run on host nodes (no container isolation by design)
 - ✅ **RuntimeClass support**: Configure via `kubernetes/runtimeclass.yaml`
-- ✅ **End-to-end testing**: Validated with kind cluster (`scripts/kind-integration.sh`)
+- ✅ **End-to-end testing**: Validated with kind cluster (`scripts/run-integration-tests.sh`)
 - ✅ **Container I/O**: stdout/stderr captured via FIFOs for `kubectl logs` integration
 - See `kubernetes/README.md` for complete setup and testing instructions
 
