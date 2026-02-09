@@ -187,6 +187,64 @@ wait_for_pod_phase() {
   return 1
 }
 
+dump_pod_diagnostics() {
+  local pod_name="$1"
+  local diag_header="--- Diagnostics for pod $pod_name ---"
+  log_status "$diag_header"
+
+  # Pod status overview
+  local pod_json
+  pod_json=$(kubectl get pod "$pod_name" -o json 2>/dev/null || echo "")
+  if [[ -n "$pod_json" ]]; then
+    local phase status_msg
+    phase=$(echo "$pod_json" | grep -oP '"phase"\s*:\s*"\K[^"]+' | head -1 || echo "unknown")
+    log_status "  Pod phase: $phase"
+
+    # Container statuses — show waiting/terminated reasons
+    local container_statuses
+    container_statuses=$(echo "$pod_json" | jq -r '
+      .status.containerStatuses // [] | .[] |
+      . as $cs | .state | to_entries[] |
+      "    Container \($cs.name): state=\(.key)" +
+      (if .value.reason then " reason=\(.value.reason)" else "" end) +
+      (if .value.message then " message=\(.value.message)" else "" end) +
+      (if .value.exitCode != null then " exitCode=\(.value.exitCode)" else "" end)
+    ' 2>/dev/null || echo "    (container status unavailable)")
+    log_status "$container_statuses"
+  else
+    log_status "  (pod $pod_name not found or kubectl failed)"
+  fi
+
+  # Pod events (often reveals scheduling/pull/runtime errors)
+  log_status "  Events:"
+  local events
+  events=$(kubectl get events --field-selector "involvedObject.name=$pod_name" \
+    --sort-by='.lastTimestamp' -o custom-columns=TIME:.lastTimestamp,TYPE:.type,REASON:.reason,MESSAGE:.message \
+    --no-headers 2>/dev/null || echo "    (no events found)")
+  # Indent each line for readability
+  echo "$events" | while IFS= read -r line; do
+    log_status "    $line"
+  done
+
+  # Container logs (may not exist if container never started)
+  local logs
+  logs=$(kubectl logs "$pod_name" --all-containers=true 2>&1 || echo "(no logs available)")
+  log_status "  Container logs:"
+  echo "$logs" | while IFS= read -r line; do
+    log_status "    $line"
+  done
+
+  # kubectl describe (full detail, to log file only to avoid overwhelming stdout)
+  {
+    echo "=== kubectl describe pod $pod_name ==="
+    kubectl describe pod "$pod_name" 2>/dev/null || true
+    echo "=== kubectl get pod $pod_name -o yaml ==="
+    kubectl get pod "$pod_name" -o yaml 2>/dev/null || true
+  } >> "$LOG_FILE" 2>&1
+
+  log_status "--- End diagnostics for $pod_name ---"
+}
+
 collect_diagnostics() {
   log_verbose "--- Collecting diagnostics ---"
   {
@@ -269,6 +327,16 @@ run_test() {
     ci_error "Test failed: $name"
     TEST_RESULTS+=("FAIL")
     TESTS_FAILED=$((TESTS_FAILED + 1))
+    # Dump node-level runtime logs on hard failures for context
+    if [[ -n "$NODE_ID" ]]; then
+      log_status "  Containerd logs (last 50 lines):"
+      docker exec "$NODE_ID" journalctl -u containerd -n 50 --no-pager 2>/dev/null \
+        | while IFS= read -r line; do log_status "    $line"; done || true
+      log_status "  Kubelet logs (last 30 lines):"
+      docker exec "$NODE_ID" journalctl -u kubelet -n 30 --no-pager 2>/dev/null \
+        | while IFS= read -r line; do log_status "    $line"; done || true
+    fi
+    log_status "  Full diagnostic log: $LOG_FILE"
   fi
 
   ci_group_end
@@ -474,11 +542,23 @@ spec:
 YAML
 
   # BUG FIX: use phase polling instead of condition=Succeeded (pods have phases, not conditions)
-  wait_for_pod_phase reaper-dns-check Succeeded 60 2 || return 1
+  wait_for_pod_phase reaper-dns-check Succeeded 60 2 || {
+    log_error "DNS check pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-dns-check
+    return 1
+  }
   local logs
-  logs=$(kubectl logs reaper-dns-check 2>/dev/null || echo "")
+  logs=$(kubectl logs reaper-dns-check --all-containers=true 2>&1 || echo "(failed to retrieve logs)")
   log_verbose "DNS check logs: $logs"
-  [[ "$logs" == *"DNS Check PASSED"* ]]
+  if [[ "$logs" != *"DNS Check PASSED"* ]]; then
+    log_error "DNS check did not produce expected 'DNS Check PASSED' output"
+    log_error "Actual pod logs:"
+    echo "$logs" | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    dump_pod_diagnostics reaper-dns-check
+    return 1
+  fi
 }
 
 test_echo_command() {
@@ -497,15 +577,22 @@ spec:
 YAML
 
   wait_for_pod_phase reaper-integration-test Succeeded 120 5 || {
-    log_verbose "Echo pod did not succeed. Collecting pod info..."
-    kubectl describe pod reaper-integration-test >> "$LOG_FILE" 2>&1 || true
-    kubectl get pod reaper-integration-test -o yaml >> "$LOG_FILE" 2>&1 || true
+    log_error "Echo command pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-integration-test
     return 1
   }
   local logs
-  logs=$(kubectl logs reaper-integration-test 2>/dev/null || echo "")
+  logs=$(kubectl logs reaper-integration-test --all-containers=true 2>&1 || echo "(failed to retrieve logs)")
   log_verbose "Echo test logs: $logs"
-  [[ "$logs" == *"Hello from Reaper!"* ]]
+  if [[ "$logs" != *"Hello from Reaper!"* ]]; then
+    log_error "Echo test did not produce expected 'Hello from Reaper!' output"
+    log_error "Actual pod logs:"
+    echo "$logs" | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    dump_pod_diagnostics reaper-integration-test
+    return 1
+  fi
 }
 
 test_overlay_sharing() {
@@ -524,7 +611,11 @@ spec:
       command: ["/bin/sh", "-c", "echo overlay-works > /tmp/overlay-test.txt"]
 YAML
 
-  wait_for_pod_phase reaper-overlay-writer Succeeded 60 2 || return 1
+  wait_for_pod_phase reaper-overlay-writer Succeeded 60 2 || {
+    log_error "Overlay writer pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-overlay-writer
+    return 1
+  }
 
   # Reader pod
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
@@ -541,12 +632,21 @@ spec:
       command: ["/bin/sh", "-c", "cat /tmp/overlay-test.txt"]
 YAML
 
-  wait_for_pod_phase reaper-overlay-reader Succeeded 60 2 || return 1
+  wait_for_pod_phase reaper-overlay-reader Succeeded 60 2 || {
+    log_error "Overlay reader pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-overlay-reader
+    return 1
+  }
 
   local reader_output
-  reader_output=$(kubectl logs reaper-overlay-reader 2>/dev/null || echo "")
+  reader_output=$(kubectl logs reaper-overlay-reader --all-containers=true 2>&1 || echo "(failed to retrieve logs)")
   log_verbose "Overlay reader output: '$reader_output'"
-  [[ "$reader_output" == "overlay-works" ]]
+  if [[ "$reader_output" != "overlay-works" ]]; then
+    log_error "Overlay reader did not produce expected 'overlay-works' output"
+    log_error "Actual pod logs: '$reader_output'"
+    dump_pod_diagnostics reaper-overlay-reader
+    return 1
+  fi
 }
 
 test_host_protection() {
@@ -641,12 +741,21 @@ spec:
       command: ["sleep", "60"]
 YAML
 
-  wait_for_pod_phase reaper-exec-test Running 60 1 || return 1
+  wait_for_pod_phase reaper-exec-test Running 60 1 || {
+    log_error "Exec test pod did not reach Running phase"
+    dump_pod_diagnostics reaper-exec-test
+    return 1
+  }
 
   local exec_output
-  exec_output=$(kubectl exec reaper-exec-test -- echo 'exec works' 2>/dev/null || echo "")
+  exec_output=$(kubectl exec reaper-exec-test -- echo 'exec works' 2>&1 || echo "")
   log_verbose "Exec output: '$exec_output'"
-  [[ "$exec_output" == "exec works" ]]
+  if [[ "$exec_output" != "exec works" ]]; then
+    log_error "kubectl exec did not produce expected 'exec works' output"
+    log_error "Actual exec output: '$exec_output'"
+    dump_pod_diagnostics reaper-exec-test
+    return 1
+  fi
 }
 
 phase_integration_tests() {
