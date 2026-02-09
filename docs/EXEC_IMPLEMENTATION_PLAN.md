@@ -810,9 +810,9 @@ Key test pattern:
 
 Note: Full exec integration tests require the shim. Unit tests can test the runtime exec command directly.
 
-### Step 6: Update kind-integration.sh
+### Step 6: Update run-integration-tests.sh
 
-Add an exec test section:
+Add an exec test section (this has been implemented):
 
 ```bash
 echo "--- Testing exec support ---"

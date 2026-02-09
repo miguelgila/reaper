@@ -412,27 +412,14 @@ spec:
 
 ## Testing
 
-### Deploy to Minikube
+### Run Integration Tests
 ```bash
-./scripts/minikube-setup-runtime.sh
+./scripts/run-integration-tests.sh
 ```
 
-### Verify Pod Completion
-```bash
-kubectl get pod reaper-example
-# Expected: Completed (0 restarts)
-```
+This creates a kind cluster, builds the runtime, configures containerd, and runs comprehensive tests (DNS, overlay, host protection, zombie processes, etc.).
 
-### Check State File
-```bash
-minikube ssh -- 'sudo cat /run/reaper/<container-id>/state.json'
-```
-
-### View Logs
-```bash
-minikube ssh -- 'tail -50 /var/log/reaper-shim.log'
-minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
-```
+For options and troubleshooting, see [TESTING.md](../TESTING.md).
 
 ## Troubleshooting
 

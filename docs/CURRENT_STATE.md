@@ -162,8 +162,8 @@ match unsafe { fork() }? {
 - `docs/NOTES_FUTURE.md` - Future enhancements
 - `docs/CURRENT_STATE.md` - This file
 
-### Deployment
-- `scripts/minikube-setup-runtime.sh` - Build and deploy to minikube
+### Deployment & Testing
+- `scripts/run-integration-tests.sh` - Automated integration test suite (kind-based)
 - `kubernetes/runtimeclass.yaml` - RuntimeClass and example pod
 
 ## State Management
@@ -232,45 +232,12 @@ cargo build --release
 cargo test
 ```
 
-### Build and Deploy to Minikube
+### Run Integration Tests (Recommended)
 ```bash
-./scripts/minikube-setup-runtime.sh
+./scripts/run-integration-tests.sh
 ```
 
-This script:
-1. Starts/restarts minikube with containerd
-2. Builds both binaries for Linux (musl, cross-compiled)
-3. Copies binaries to minikube node
-4. Configures containerd with reaper-v2 runtime
-5. Creates RuntimeClass and example pod
-6. Sets up logging environment variables
-
-### Test Pod Deployment
-```bash
-kubectl apply -f kubernetes/runtimeclass.yaml
-kubectl get pod reaper-example
-# Should show: Completed (0 restarts)
-```
-
-### Expected Output
-```
-NAME             READY   STATUS      RESTARTS   AGE
-reaper-example   0/1     Completed   0          5s
-```
-
-### Check Container State
-```bash
-minikube ssh -- 'sudo cat /run/reaper/<container-id>/state.json'
-```
-
-### View Logs
-```bash
-# Shim logs
-minikube ssh -- 'tail -50 /var/log/reaper-shim.log'
-
-# Runtime logs
-minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
-```
+This creates a kind cluster, builds musl binaries, deploys them, and runs all integration tests including DNS resolution, overlay filesystem, host protection, and more. See [TESTING.md](../TESTING.md) for options and troubleshooting.
 
 ## Testing Checklist
 
@@ -362,6 +329,7 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 1. **Read context files:**
    - `.github/claude-instructions.md` (for Claude)
    - `docs/CURRENT_STATE.md` (this file)
+   - `TESTING.md` (for test workflows)
 
 2. **Check recent changes:**
    ```bash
@@ -369,10 +337,13 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
    git status
    ```
 
-3. **Deploy and test:**
+3. **Run tests:**
    ```bash
-   ./scripts/minikube-setup-runtime.sh
-   kubectl get pod reaper-example  # Should show Completed
+   # Unit tests (fast)
+   cargo test
+
+   # Integration tests (full suite)
+   ./scripts/run-integration-tests.sh
    ```
 
 ### Key Files to Understand
@@ -384,9 +355,10 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 **For shim changes:**
 - `src/bin/containerd-shim-reaper-v2/main.rs` (especially `Task` trait impl)
 
-**For deployment:**
-- `kubernetes/runtimeclass.yaml`
-- `scripts/minikube-setup-runtime.sh`
+**For deployment & testing:**
+- `kubernetes/runtimeclass.yaml` - RuntimeClass definition
+- `scripts/run-integration-tests.sh` - Integration test harness
+- `TESTING.md` - Complete testing guide
 
 ## References
 

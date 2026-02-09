@@ -276,22 +276,14 @@ tracing-subscriber = "0.3"
 
 ## Testing
 
-### Deploy to Minikube
+### Run Integration Tests
 ```bash
-./scripts/minikube-setup-runtime.sh
+./scripts/run-integration-tests.sh
 ```
 
-### Verify Pod Completion
-```bash
-kubectl get pod reaper-example
-# Should show: Completed (0 restarts)
-```
+This orchestrates all testing including Rust unit tests, Kubernetes infrastructure setup, and comprehensive integration tests (DNS, overlay, host protection, zombies, exec, etc.).
 
-### Check Logs
-```bash
-minikube ssh -- 'tail -50 /var/log/reaper-shim.log'
-minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
-```
+For options and troubleshooting, see [TESTING.md](../TESTING.md).
 
 ## Resources
 
