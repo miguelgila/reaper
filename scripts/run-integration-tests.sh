@@ -76,6 +76,20 @@ setup_colors() {
 setup_colors
 
 # ---------------------------------------------------------------------------
+# Git commit tracking
+# ---------------------------------------------------------------------------
+get_commit_id() {
+  if command -v git >/dev/null 2>&1 && [[ -d .git ]]; then
+    git rev-parse --short HEAD 2>/dev/null || echo "unknown"
+  else
+    echo "unknown"
+  fi
+}
+
+COMMIT_ID=$(get_commit_id)
+TEST_TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+
+# ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
 mkdir -p "$LOG_DIR"
@@ -549,6 +563,69 @@ test_host_protection() {
   return 0
 }
 
+test_no_defunct_processes() {
+  # Wait briefly to let any remaining shim processes settle after pod completions
+  sleep 5
+
+  local defunct_output
+  defunct_output=$(docker exec "$NODE_ID" ps aux 2>/dev/null | grep -E '\<defunct\>' | grep -v grep || true)
+
+  if [[ -n "$defunct_output" ]]; then
+    log_error "Defunct (zombie) processes found on node:"
+    log_error "$defunct_output"
+
+    # Also grab the process tree for diagnostics
+    local pstree_output
+    pstree_output=$(docker exec "$NODE_ID" ps auxf 2>/dev/null || true)
+    log_verbose "Full process tree: $pstree_output"
+
+    return 1
+  fi
+
+  log_verbose "No defunct processes found on node."
+  return 0
+}
+
+test_shim_cleanup_after_delete() {
+  # After all test pods have been deleted, there should be no lingering
+  # containerd-shim-reaper-v2 processes for k8s.io containers.
+  # Each shim's shutdown() must signal ExitSignal so the process exits.
+  sleep 5
+
+  # Count reaper shim processes still running
+  local shim_pids
+  shim_pids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
+    | grep '[c]ontainerd-shim-reaper-v2' \
+    | grep -v grep || true)
+
+  local shim_count
+  shim_count=$(echo "$shim_pids" | grep -c . 2>/dev/null || echo 0)
+
+  # Count how many reaper pods are still actually running
+  local running_pods
+  running_pods=$(kubectl get pods --no-headers 2>/dev/null \
+    | grep -c '^reaper-' || echo 0)
+
+  log_verbose "Shim processes: $shim_count, Running reaper pods: $running_pods"
+
+  if [[ "$shim_count" -gt 0 && "$running_pods" -eq 0 ]]; then
+    log_error "Found $shim_count orphaned containerd-shim-reaper-v2 processes with no reaper pods running:"
+    log_error "$shim_pids"
+
+    # Grab container IDs from the shim command lines for diagnostics
+    local shim_ids
+    shim_ids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
+      | grep '[c]ontainerd-shim-reaper-v2' \
+      | grep -oP '(?<=-id )[0-9a-f]+' || true)
+    log_verbose "Orphaned shim container IDs: $shim_ids"
+
+    return 1
+  fi
+
+  log_verbose "Shim cleanup OK: $shim_count shims for $running_pods pods."
+  return 0
+}
+
 test_exec_support() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -583,10 +660,26 @@ phase_integration_tests() {
   run_test test_host_protection  "Host filesystem protection"    --hard-fail
   run_test test_exec_support     "kubectl exec support"          --soft-fail
 
-  # Cleanup test pods
+  # Cleanup test pods (before defunct check so pods are terminated)
   kubectl delete pod reaper-dns-check reaper-integration-test \
     reaper-overlay-writer reaper-overlay-reader reaper-exec-test \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+
+  # Wait for all pods to fully terminate before checking for zombies
+  log_verbose "Waiting for test pods to terminate..."
+  for i in $(seq 1 30); do
+    local remaining
+    remaining=$(kubectl get pods --no-headers 2>/dev/null | grep -c '^reaper-' || true)
+    if [[ "$remaining" -eq 0 ]]; then
+      break
+    fi
+    log_verbose "Still $remaining reaper pods remaining ($i/30)..."
+    sleep 2
+  done
+
+  # Run defunct check last, after all pods are gone
+  run_test test_no_defunct_processes "No defunct (zombie) processes" --hard-fail
+  run_test test_shim_cleanup_after_delete "Shim processes exit after pod delete" --hard-fail
 }
 
 # ---------------------------------------------------------------------------
@@ -646,6 +739,8 @@ phase_summary() {
 main() {
   log_status "${CLR_PHASE}Reaper Integration Test Suite${CLR_RESET}"
   log_status "========================================"
+  log_status "Timestamp: $TEST_TIMESTAMP"
+  log_status "Commit: $COMMIT_ID"
   log_status "Log file: $LOG_FILE"
 
   if ! $SKIP_CARGO; then
