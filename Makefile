@@ -51,10 +51,11 @@ test-unit: ## Run only unit tests for reaper-runtime
 # ---------------------------------------------------------------------------
 
 coverage: ## Run tarpaulin in Docker (same as CI, with caching)
-	@echo "Building Docker image $(DOCKER_IMAGE)..."
-	@docker build -q -t $(DOCKER_IMAGE) .
-	@docker volume create $(COVERAGE_VOL) > /dev/null 2>&1 || true
-	@echo "Running tarpaulin (Linux)..."
+	@echo "==> Building Docker image $(DOCKER_IMAGE)..."
+	docker build -t $(DOCKER_IMAGE) .
+	@echo "==> Ensuring cargo cache volume $(COVERAGE_VOL)..."
+	docker volume create $(COVERAGE_VOL) 2>/dev/null || true
+	@echo "==> Running tarpaulin (Linux)..."
 	docker run --rm \
 		--cap-add=SYS_PTRACE \
 		--security-opt seccomp=unconfined \
@@ -64,8 +65,8 @@ coverage: ## Run tarpaulin in Docker (same as CI, with caching)
 		-e CARGO_TERM_COLOR=always \
 		-e RUST_BACKTRACE=1 \
 		$(DOCKER_IMAGE) \
-		cargo tarpaulin --out Xml --timeout 600 --fail-under 75
-	@echo "Coverage report: cobertura.xml"
+		cargo tarpaulin
+	@echo "==> Coverage report: cobertura.xml"
 
 # ---------------------------------------------------------------------------
 # CI — run everything GitHub Actions runs (except kind integration)
