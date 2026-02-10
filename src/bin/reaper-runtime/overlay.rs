@@ -434,4 +434,66 @@ mod tests {
             assert_eq!(copied, *contents);
         }
     }
+
+    #[test]
+    fn test_copy_etc_files_handles_missing_source_files() {
+        // Source dir exists but contains no files — exercises the "missing" warning branch
+        let src_dir = tempfile::tempdir().expect("src tempdir");
+        let src_etc = src_dir.path().join("etc");
+        fs::create_dir_all(&src_etc).unwrap();
+
+        let dst_dir = tempfile::tempdir().expect("dst tempdir");
+        let dst_etc = dst_dir.path().join("etc");
+
+        super::copy_etc_files(&src_etc, &dst_etc);
+
+        // Destination dir is created but no files are copied
+        assert!(dst_etc.exists());
+        assert!(!dst_etc.join("resolv.conf").exists());
+        assert!(!dst_etc.join("hosts").exists());
+        assert!(!dst_etc.join("nsswitch.conf").exists());
+    }
+
+    #[test]
+    fn test_read_host_etc_files_reads_existing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let etc = dir.path().join("etc");
+        fs::create_dir_all(&etc).unwrap();
+
+        fs::write(etc.join("resolv.conf"), b"nameserver 1.1.1.1\n").unwrap();
+        fs::write(etc.join("hosts"), b"127.0.0.1 localhost\n").unwrap();
+        fs::write(etc.join("nsswitch.conf"), b"hosts: files dns\n").unwrap();
+
+        let result = super::read_host_etc_files(&etc);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].0, "resolv.conf");
+        assert_eq!(result[0].1, b"nameserver 1.1.1.1\n");
+        assert_eq!(result[1].0, "hosts");
+        assert_eq!(result[2].0, "nsswitch.conf");
+    }
+
+    #[test]
+    fn test_read_host_etc_files_handles_missing() {
+        // Empty dir — none of the expected files exist, exercises the warning branch
+        let dir = tempfile::tempdir().expect("tempdir");
+        let etc = dir.path().join("etc");
+        fs::create_dir_all(&etc).unwrap();
+
+        let result = super::read_host_etc_files(&etc);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_read_host_etc_files_partial() {
+        // Only one file present — exercises both the Ok and Err branches
+        let dir = tempfile::tempdir().expect("tempdir");
+        let etc = dir.path().join("etc");
+        fs::create_dir_all(&etc).unwrap();
+
+        fs::write(etc.join("hosts"), b"127.0.0.1 localhost\n").unwrap();
+
+        let result = super::read_host_etc_files(&etc);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "hosts");
+    }
 }
