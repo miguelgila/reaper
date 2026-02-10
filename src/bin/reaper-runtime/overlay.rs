@@ -96,7 +96,7 @@ pub fn enter_overlay(config: &OverlayConfig) -> Result<()> {
     }
 
     // After joining (or creating) the namespace, ensure resolver files exist/non-empty.
-    ensure_etc_files_in_namespace(&host_etc);
+    ensure_etc_files_in_namespace(Path::new("/etc"), &host_etc);
 
     info!("overlay: enter_overlay completed successfully");
     Ok(())
@@ -349,17 +349,17 @@ fn read_host_etc_files(src_etc: &Path) -> Vec<(String, Vec<u8>)> {
 }
 
 // Ensure /etc files inside the current namespace are present and non-empty; if empty/missing, restore from host copies.
-fn ensure_etc_files_in_namespace(host_files: &[(String, Vec<u8>)]) {
+fn ensure_etc_files_in_namespace(etc_dir: &Path, host_files: &[(String, Vec<u8>)]) {
     for (name, data) in host_files {
-        let path = Path::new("/etc").join(name);
+        let path = etc_dir.join(name);
         let needs_write = match fs::metadata(&path) {
             Ok(meta) => meta.len() == 0,
             Err(_) => true,
         };
 
         if needs_write {
-            if let Err(e) = fs::create_dir_all(Path::new("/etc")) {
-                tracing::warn!("overlay: failed to create /etc: {}", e);
+            if let Err(e) = fs::create_dir_all(etc_dir) {
+                tracing::warn!("overlay: failed to create {}: {}", etc_dir.display(), e);
                 continue;
             }
             if let Err(e) = fs::write(&path, data) {
@@ -495,5 +495,58 @@ mod tests {
         let result = super::read_host_etc_files(&etc);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "hosts");
+    }
+
+    #[test]
+    fn test_ensure_etc_files_restores_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let etc = dir.path().join("etc");
+        // Don't create the dir — ensure_etc_files_in_namespace should create it
+
+        let host_files = vec![
+            ("resolv.conf".to_string(), b"nameserver 8.8.8.8\n".to_vec()),
+            ("hosts".to_string(), b"127.0.0.1 localhost\n".to_vec()),
+        ];
+
+        super::ensure_etc_files_in_namespace(&etc, &host_files);
+
+        assert_eq!(
+            fs::read_to_string(etc.join("resolv.conf")).unwrap(),
+            "nameserver 8.8.8.8\n"
+        );
+        assert_eq!(
+            fs::read_to_string(etc.join("hosts")).unwrap(),
+            "127.0.0.1 localhost\n"
+        );
+    }
+
+    #[test]
+    fn test_ensure_etc_files_restores_empty() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let etc = dir.path().join("etc");
+        fs::create_dir_all(&etc).unwrap();
+
+        // Create an empty file — should be overwritten
+        fs::write(etc.join("resolv.conf"), b"").unwrap();
+        // Create a non-empty file — should be left alone
+        fs::write(etc.join("hosts"), b"existing content\n").unwrap();
+
+        let host_files = vec![
+            ("resolv.conf".to_string(), b"nameserver 1.1.1.1\n".to_vec()),
+            ("hosts".to_string(), b"127.0.0.1 localhost\n".to_vec()),
+        ];
+
+        super::ensure_etc_files_in_namespace(&etc, &host_files);
+
+        // Empty file was restored
+        assert_eq!(
+            fs::read_to_string(etc.join("resolv.conf")).unwrap(),
+            "nameserver 1.1.1.1\n"
+        );
+        // Non-empty file was left alone
+        assert_eq!(
+            fs::read_to_string(etc.join("hosts")).unwrap(),
+            "existing content\n"
+        );
     }
 }
