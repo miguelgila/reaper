@@ -68,6 +68,9 @@ pub fn read_config() -> OverlayConfig {
 /// monitoring daemon child process.
 ///
 /// Overlay is mandatory — if this fails, the workload must not run.
+///
+/// Tested by kind-integration tests (requires root + Linux namespaces).
+#[cfg(not(tarpaulin_include))]
 pub fn enter_overlay(config: &OverlayConfig) -> Result<()> {
     info!(
         "overlay: enter_overlay started, lock_path={}, ns_path={}",
@@ -135,6 +138,8 @@ fn namespace_exists(ns_path: &Path) -> bool {
 }
 
 /// Join an existing shared mount namespace via setns().
+/// Tested by kind-integration (requires root + Linux namespaces).
+#[cfg(not(tarpaulin_include))]
 fn join_namespace(ns_path: &Path) -> Result<()> {
     let f = fs::File::open(ns_path).context("opening namespace file")?;
     setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace")?;
@@ -147,6 +152,9 @@ fn join_namespace(ns_path: &Path) -> Result<()> {
 /// Uses an inner fork:
 /// - Inner child: unshare(CLONE_NEWNS), mount overlay, pivot_root, signal parent
 /// - Inner parent (host ns): bind-mount child's ns to persist it, kill child, join ns
+///
+/// Tested by kind-integration (requires root + Linux namespaces).
+#[cfg(not(tarpaulin_include))]
 fn create_namespace(config: &OverlayConfig) -> Result<()> {
     let upper_dir = config.base_dir.join("upper");
     let work_dir = config.base_dir.join("work");
@@ -179,6 +187,7 @@ fn create_namespace(config: &OverlayConfig) -> Result<()> {
 }
 
 /// Inner child: creates the mount namespace, mounts overlay, pivots root.
+#[cfg(not(tarpaulin_include))]
 fn inner_child_setup(config: &OverlayConfig, merged_dir: &Path, write_fd: OwnedFd) -> Result<()> {
     // 1. Create new mount namespace
     unshare(CloneFlags::CLONE_NEWNS).context("unshare CLONE_NEWNS")?;
@@ -256,6 +265,7 @@ fn inner_child_setup(config: &OverlayConfig, merged_dir: &Path, write_fd: OwnedF
 }
 
 /// Inner parent: persists the namespace via bind-mount, kills helper, joins namespace.
+#[cfg(not(tarpaulin_include))]
 fn inner_parent_persist(
     config: &OverlayConfig,
     helper_pid: nix::unistd::Pid,
@@ -373,7 +383,6 @@ fn ensure_etc_files_in_namespace(etc_dir: &Path, host_files: &[(String, Vec<u8>)
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use tempfile;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -518,6 +527,21 @@ mod tests {
             fs::read_to_string(etc.join("hosts")).unwrap(),
             "127.0.0.1 localhost\n"
         );
+    }
+
+    #[test]
+    fn test_acquire_lock_creates_and_locks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock_path = dir.path().join("subdir").join("test.lock");
+
+        // Lock file (and parent dir) don't exist yet
+        assert!(!lock_path.exists());
+
+        let lock = super::acquire_lock(&lock_path).unwrap();
+        assert!(lock_path.exists());
+
+        // Dropping the lock releases it
+        drop(lock);
     }
 
     #[test]

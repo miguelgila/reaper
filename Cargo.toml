@@ -39,6 +39,9 @@ path = "src/bin/reaper-runtime/main.rs"
 name = "containerd-shim-reaper-v2"
 path = "src/bin/containerd-shim-reaper-v2/main.rs"
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+
 [profile.release]
 opt-level = 3
 lto = true

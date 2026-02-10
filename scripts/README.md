@@ -2,6 +2,8 @@
 
 This directory contains helper scripts for testing, development, and Kubernetes integration.
 
+> **Tip:** Most workflows are available via `make` targets in the project root. Run `make help` to see all options. These scripts are called by the Makefile — you rarely need to invoke them directly.
+
 ## Main Entry Point
 
 **[run-integration-tests.sh](run-integration-tests.sh)** — Full integration test harness
@@ -38,12 +40,11 @@ Can also be used manually:
 
 **[docker-coverage.sh](docker-coverage.sh)** — Code coverage in Docker
 
-Generates code coverage using `cargo-tarpaulin` in a Linux container. Useful for:
-- Linux CI parity on macOS
-- Full coverage reports
+Generates code coverage using `cargo-tarpaulin` in a Linux container, matching CI configuration exactly (`tarpaulin.toml`). Uses a Docker volume to cache the cargo registry for faster repeat runs.
 
 ```bash
-./scripts/docker-coverage.sh
+make coverage                 # Preferred
+./scripts/docker-coverage.sh  # Direct invocation
 ```
 
 **[install-hooks.sh](install-hooks.sh)** — Install git hooks

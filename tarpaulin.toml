@@ -1,0 +1,17 @@
+# Tarpaulin coverage configuration
+#
+# Functions requiring root + Linux namespaces (fork, unshare, mount, pivot_root,
+# setns) are tested by the kind-integration suite, not unit tests.
+# Exclude them from unit test coverage to avoid false negatives.
+
+[default]
+timeout = "600s"
+fail-under = 75
+out = ["Xml"]
+
+# Exclude functions that require root + namespace privileges.
+# These are covered by kind-integration tests (scripts/run-integration-tests.sh).
+exclude-files = []
+
+# Skip functions that can only run inside a real Linux namespace with root.
+# Tarpaulin respects #[cfg(not(tarpaulin_include))] on these functions.
