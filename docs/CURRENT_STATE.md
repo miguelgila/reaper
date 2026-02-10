@@ -1,4 +1,4 @@
-# Current State - Reaper OCI Runtime (January 2026)
+# Current State - Reaper OCI Runtime (February 2026)
 
 ## Quick Summary
 
@@ -9,10 +9,13 @@
 - Containerd shim v2 protocol complete
 - Fork-based process monitoring with real exit codes
 - Container stdout/stderr capture via FIFOs (kubectl logs support)
+- PTY/terminal support for interactive containers (kubectl run -it)
+- Exec into running containers (kubectl exec -it)
 - Proper zombie process reaping
 - State persistence and lifecycle management
 - Kubernetes integration via RuntimeClass
 - Pods correctly transition to "Completed" status
+- Overlay filesystem namespace with persistent helper
 
 **Validated:** Pods running `/bin/echo` correctly show `Completed` status with `exitCode: 0`
 
@@ -102,7 +105,7 @@ match unsafe { fork() }? {
 - No orphan processes
 - Clean lifecycle: daemon exits after workload completes
 
-## Critical Bug Fixes (January 2026)
+## Critical Bug Fixes (January-February 2026)
 
 ### 1. Fork Order Bug
 **Problem:** `std::process::Child` handle invalid after fork
@@ -129,6 +132,16 @@ match unsafe { fork() }? {
 **Fix:** Include proper timestamp in all WaitResponse and StateResponse messages
 **File:** `src/bin/containerd-shim-reaper-v2/main.rs:545-552`
 
+### 6. File Descriptor Leak (ContainerCreating Bug)
+**Problem:** Daemon inherited stdout/stderr pipes from parent's `cmd.output()`, keeping parent blocked indefinitely, causing pods stuck in ContainerCreating
+**Fix:** Redirect daemon's stdout/stderr to `/dev/null` immediately after fork using `dup2()`
+**File:** `src/bin/reaper-runtime/main.rs`
+
+### 7. Wait Timeout for Interactive Containers
+**Problem:** 60-second polling timeout in shim's wait() was killing interactive containers (kubectl run -it) after ~1 minute
+**Fix:** Increased timeout from 60s to 1 hour to support long-running interactive sessions
+**File:** `src/bin/containerd-shim-reaper-v2/main.rs`
+
 ## File Structure
 
 ### Binaries
@@ -149,8 +162,8 @@ match unsafe { fork() }? {
 - `docs/NOTES_FUTURE.md` - Future enhancements
 - `docs/CURRENT_STATE.md` - This file
 
-### Deployment
-- `scripts/minikube-setup-runtime.sh` - Build and deploy to minikube
+### Deployment & Testing
+- `scripts/run-integration-tests.sh` - Automated integration test suite (kind-based)
 - `kubernetes/runtimeclass.yaml` - RuntimeClass and example pod
 
 ## State Management
@@ -219,45 +232,12 @@ cargo build --release
 cargo test
 ```
 
-### Build and Deploy to Minikube
+### Run Integration Tests (Recommended)
 ```bash
-./scripts/minikube-setup-runtime.sh
+./scripts/run-integration-tests.sh
 ```
 
-This script:
-1. Starts/restarts minikube with containerd
-2. Builds both binaries for Linux (musl, cross-compiled)
-3. Copies binaries to minikube node
-4. Configures containerd with reaper-v2 runtime
-5. Creates RuntimeClass and example pod
-6. Sets up logging environment variables
-
-### Test Pod Deployment
-```bash
-kubectl apply -f kubernetes/runtimeclass.yaml
-kubectl get pod reaper-example
-# Should show: Completed (0 restarts)
-```
-
-### Expected Output
-```
-NAME             READY   STATUS      RESTARTS   AGE
-reaper-example   0/1     Completed   0          5s
-```
-
-### Check Container State
-```bash
-minikube ssh -- 'sudo cat /run/reaper/<container-id>/state.json'
-```
-
-### View Logs
-```bash
-# Shim logs
-minikube ssh -- 'tail -50 /var/log/reaper-shim.log'
-
-# Runtime logs
-minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
-```
+This creates a kind cluster, builds musl binaries, deploys them, and runs all integration tests including DNS resolution, overlay filesystem, host protection, and more. See [TESTING.md](../TESTING.md) for options and troubleshooting.
 
 ## Testing Checklist
 
@@ -277,6 +257,12 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 - [x] restartPolicy: Never for one-shot tasks
 - [x] Container stdout/stderr capture via FIFOs
 - [x] kubectl logs integration
+- [x] PTY allocation for interactive containers (kubectl run -it)
+- [x] Exec into running containers (kubectl exec)
+- [x] Exec with PTY support (kubectl exec -it)
+- [x] Overlay filesystem namespace (shared writable layer)
+- [x] Overlay namespace persistence via helper process
+- [x] /etc files propagation into overlay namespace
 
 ### 🔄 In Progress
 - [ ] Multi-container pods
@@ -287,7 +273,7 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 ### ⏳ Not Started
 - [ ] User/group ID management (currently disabled)
 - [ ] Signal handling robustness
-- [ ] Exec into running containers
+- [ ] Dynamic PTY resize (ResizePty)
 - [ ] Resource monitoring (stats)
 - [ ] Performance optimization
 
@@ -309,10 +295,6 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
   - State file corruption
   - Concurrent access to state
 
-- **No exec support:** Can't execute commands in running containers
-  - Would require daemon to accept commands
-  - Not critical for current use case
-
 - **500ms startup delay:** Added for timing correctness
   - Required for containerd to observe "running" state
   - May be reducible with better synchronization
@@ -327,9 +309,9 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 5. Clean up debug logging
 
 ### Medium Term
-1. Implement exec support
-2. Add resource monitoring
-3. Enhanced signal handling
+1. Add resource monitoring
+2. Enhanced signal handling
+3. Dynamic PTY resize support
 4. Documentation polish
 5. Example use cases
 
@@ -347,6 +329,7 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 1. **Read context files:**
    - `.github/claude-instructions.md` (for Claude)
    - `docs/CURRENT_STATE.md` (this file)
+   - `TESTING.md` (for test workflows)
 
 2. **Check recent changes:**
    ```bash
@@ -354,10 +337,13 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
    git status
    ```
 
-3. **Deploy and test:**
+3. **Run tests:**
    ```bash
-   ./scripts/minikube-setup-runtime.sh
-   kubectl get pod reaper-example  # Should show Completed
+   # Unit tests (fast)
+   cargo test
+
+   # Integration tests (full suite)
+   ./scripts/run-integration-tests.sh
    ```
 
 ### Key Files to Understand
@@ -369,9 +355,10 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 **For shim changes:**
 - `src/bin/containerd-shim-reaper-v2/main.rs` (especially `Task` trait impl)
 
-**For deployment:**
-- `kubernetes/runtimeclass.yaml`
-- `scripts/minikube-setup-runtime.sh`
+**For deployment & testing:**
+- `kubernetes/runtimeclass.yaml` - RuntimeClass definition
+- `scripts/run-integration-tests.sh` - Integration test harness
+- `TESTING.md` - Complete testing guide
 
 ## References
 
@@ -382,6 +369,6 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 
 ---
 
-**Document Version:** 2.0
-**Last Updated:** January 2026
-**Status:** Core Functionality Complete
+**Document Version:** 2.1
+**Last Updated:** February 2026
+**Status:** Core Functionality Complete with Exec and PTY Support

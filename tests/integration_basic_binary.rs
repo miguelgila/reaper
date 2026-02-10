@@ -33,6 +33,7 @@ fn test_run_echo_hello_world() {
     // Create container
     let create_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-echo")
         .arg("--bundle")
@@ -56,6 +57,7 @@ fn test_run_echo_hello_world() {
     // Start container
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-echo")
         .arg("--bundle")
@@ -92,6 +94,7 @@ fn test_run_echo_hello_world() {
     // We'll poll for a bit to see if it's still running, but accept either "running" or "stopped"
     let state_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("state")
         .arg("test-echo")
         .output()
@@ -129,6 +132,7 @@ fn test_run_echo_hello_world() {
     // Delete container (cleanup)
     let delete_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("delete")
         .arg("test-echo")
         .output()
@@ -175,6 +179,7 @@ fn test_run_shell_script() {
     // Create and start
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-script")
         .arg("--bundle")
@@ -184,6 +189,7 @@ fn test_run_shell_script() {
 
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-script")
         .arg("--bundle")
@@ -196,6 +202,7 @@ fn test_run_shell_script() {
     // Cleanup
     Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("delete")
         .arg("test-script")
         .output()
@@ -214,6 +221,7 @@ fn test_invalid_bundle() {
     // Create should succeed (just stores metadata)
     let _create_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("create")
         .arg("test-invalid")
         .arg("--bundle")
@@ -224,6 +232,7 @@ fn test_invalid_bundle() {
     // But start will fail due to missing config.json
     let start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
         .arg("start")
         .arg("test-invalid")
         .arg("--bundle")

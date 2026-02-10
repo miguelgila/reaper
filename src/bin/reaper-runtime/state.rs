@@ -8,9 +8,12 @@ pub struct ContainerState {
     pub id: String,
     pub bundle: PathBuf,
     pub status: String, // created | running | stopped
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    #[serde(default)]
+    pub terminal: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stdin: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -27,6 +30,7 @@ impl ContainerState {
             status: "created".into(),
             pid: None,
             exit_code: None,
+            terminal: false,
             stdin: None,
             stdout: None,
             stderr: None,
@@ -87,6 +91,57 @@ pub fn delete(id: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// State for an exec process within a container
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecState {
+    pub container_id: String,
+    pub exec_id: String,
+    pub status: String, // created | running | stopped
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub args: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    pub terminal: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stderr: Option<String>,
+}
+
+pub fn exec_state_path(container_id: &str, exec_id: &str) -> PathBuf {
+    container_dir(container_id).join(format!("exec-{}.json", exec_id))
+}
+
+pub fn save_exec_state(state: &ExecState) -> anyhow::Result<()> {
+    let dir = container_dir(&state.container_id);
+    fs::create_dir_all(&dir)?;
+    let json = serde_json::to_vec_pretty(&state)?;
+    fs::write(exec_state_path(&state.container_id, &state.exec_id), json)?;
+    Ok(())
+}
+
+pub fn load_exec_state(container_id: &str, exec_id: &str) -> anyhow::Result<ExecState> {
+    let path = exec_state_path(container_id, exec_id);
+    let data = fs::read(&path)?;
+    let state: ExecState = serde_json::from_slice(&data)?;
+    Ok(state)
+}
+
+// pub fn delete_exec_state(container_id: &str, exec_id: &str) -> anyhow::Result<()> {
+//     let path = exec_state_path(container_id, exec_id);
+//     if path.exists() {
+//         fs::remove_file(path)?;
+//     }
+//     Ok(())
+// }
 
 #[cfg(test)]
 mod tests {
@@ -165,6 +220,7 @@ mod tests {
                 status: "running".to_string(),
                 pid: Some(1234),
                 exit_code: None,
+                terminal: false,
                 stdin: None,
                 stdout: None,
                 stderr: None,
@@ -231,4 +287,89 @@ mod tests {
         assert_eq!(state.status, "created");
         assert_eq!(state.pid, None);
     }
+
+    #[test]
+    #[serial]
+    fn test_exec_state_path() {
+        with_test_root(|_root| {
+            let path = exec_state_path("my-container", "exec1");
+            assert!(path.to_string_lossy().contains("exec-exec1.json"));
+            assert!(path.to_string_lossy().contains("my-container"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_and_load_exec_state() {
+        with_test_root(|_| {
+            let exec_state = ExecState {
+                container_id: "test-container".to_string(),
+                exec_id: "exec1".to_string(),
+                status: "running".to_string(),
+                pid: Some(9999),
+                exit_code: None,
+                args: vec!["/bin/sh".to_string()],
+                env: Some(vec!["PATH=/usr/bin".to_string()]),
+                cwd: Some("/".to_string()),
+                terminal: true,
+                stdin: Some("/path/to/stdin".to_string()),
+                stdout: Some("/path/to/stdout".to_string()),
+                stderr: Some("/path/to/stderr".to_string()),
+            };
+
+            // Save exec state
+            save_exec_state(&exec_state).expect("Failed to save exec state");
+
+            // Load exec state
+            let loaded =
+                load_exec_state("test-container", "exec1").expect("Failed to load exec state");
+            assert_eq!(loaded.container_id, exec_state.container_id);
+            assert_eq!(loaded.exec_id, exec_state.exec_id);
+            assert_eq!(loaded.status, exec_state.status);
+            assert_eq!(loaded.pid, exec_state.pid);
+            assert_eq!(loaded.args, exec_state.args);
+            assert_eq!(loaded.terminal, exec_state.terminal);
+        });
+    }
+
+    // #[test]
+    // #[serial]
+    // fn test_delete_exec_state() {
+    //     with_test_root(|_| {
+    //         let exec_state = ExecState {
+    //             container_id: "test-container".to_string(),
+    //             exec_id: "exec1".to_string(),
+    //             status: "created".to_string(),
+    //             pid: None,
+    //             exit_code: None,
+    //             args: vec!["/bin/echo".to_string(), "hello".to_string()],
+    //             env: None,
+    //             cwd: None,
+    //             terminal: false,
+    //             stdin: None,
+    //             stdout: None,
+    //             stderr: None,
+    //         };
+
+    //         save_exec_state(&exec_state).expect("Failed to save exec state");
+    //         let path = exec_state_path("test-container", "exec1");
+    //         assert!(path.exists(), "Exec state file should exist after save");
+
+    //         delete_exec_state("test-container", "exec1").expect("Failed to delete exec state");
+    //         assert!(
+    //             !path.exists(),
+    //             "Exec state file should not exist after delete"
+    //         );
+    //     });
+    // }
+
+    // #[test]
+    // #[serial]
+    // fn test_delete_nonexistent_exec_state() {
+    //     with_test_root(|_| {
+    //         // Should not error on deleting nonexistent exec state
+    //         delete_exec_state("nonexistent", "exec1")
+    //             .expect("Delete should not fail on nonexistent exec");
+    //     });
+    // }
 }

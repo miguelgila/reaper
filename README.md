@@ -16,15 +16,16 @@ cargo build --release
 cargo run
 ```
 
-Run tests (recommended locally):
+Run tests:
 
 ```bash
-# Fast: run tests natively on your machine
+# Unit tests (fast, recommended locally)
 cargo test
 
-# If you need Linux parity or want to reproduce CI, use the Docker helper (optional)
-chmod +x scripts/docker-test.sh
-./scripts/docker-test.sh
+# Full integration tests (Kubernetes + unit tests)
+./scripts/run-integration-tests.sh
+
+# For complete testing guidance, see TESTING.md
 ```
 
 ## Development setup
@@ -70,28 +71,33 @@ cargo clippy --all-targets --all-features
 
 CI runs formatting and clippy checks; push will fail if they don't pass.
 
-## Docker (Linux development / CI parity)
+## Docker (Optional: Linux development / CI parity)
 
-We include a `Dockerfile` and helper scripts to run coverage and reproduce Linux CI locally. You do not need Docker to develop on macOS; prefer `cargo test` locally for speed. Use Docker when you need:
+A `Dockerfile` and coverage script are available for Linux-specific testing. You do not need Docker to develop on macOS; prefer `cargo test` locally for speed.
 
-- `cargo-tarpaulin` (coverage) which is Linux-first, or
-- to reproduce CI failures that only happen on Linux.
+Use Docker when you need:
+- Code coverage via `cargo-tarpaulin` (Linux-first tool)
+- CI failure reproduction specific to Linux
 
 Run coverage in Docker:
 
 ```bash
-chmod +x scripts/docker-coverage.sh
 ./scripts/docker-coverage.sh
 ```
 
-If you still want to run the test container, the helper exists but is optional:
+For more testing details, see [TESTING.md](TESTING.md).
 
-```bash
-chmod +x scripts/docker-test.sh
-./scripts/docker-test.sh
-```
+## Testing Guide
 
-Note: `docker-coverage.sh` adds `--cap-add=SYS_PTRACE` and `--security-opt seccomp=unconfined` required by `cargo-tarpaulin`.
+Complete information about unit tests, integration tests, and troubleshooting is documented in **[TESTING.md](TESTING.md)**.
+
+Quick reference:
+- **Unit tests**: `cargo test`
+- **Integration tests** (Kubernetes): `./scripts/run-integration-tests.sh`
+- **Integration tests** (K8s only): `./scripts/run-integration-tests.sh --skip-cargo`
+- **Coverage**: `./scripts/docker-coverage.sh`
+
+For usage, options, and troubleshooting, see [TESTING.md](TESTING.md).
 
 ## VS Code
 
@@ -153,16 +159,23 @@ reaper-runtime kill my-app --signal 15
 reaper-runtime delete my-app
 ```
 
+### Testing on Kubernetes
+
+To test the Reaper runtime with Kubernetes (kind cluster):
+
+```bash
+./scripts/run-integration-tests.sh
+```
+
+This runs a complete integration test suite including DNS resolution, overlay filesystem sharing, host protection, and more. See [TESTING.md](TESTING.md) for full details.
+
 ### Testing core binary execution
 
 Integration tests verify that the core functionality works: running host binaries with OCI-like syntax. Tests are located in `tests/integration_basic_binary.rs`:
 
 ```bash
-# Run integration tests explicitly
 cargo test --test integration_basic_binary
-
-# Run all tests (includes unit + integration)
-cargo test
+cargo test  # Run all tests
 ```
 
 Tests cover:
@@ -212,7 +225,7 @@ To test with Kubernetes:
 
 ```bash
 # Recommended: Kind cluster integration (builds static musl binaries, deploys, and tests)
-./scripts/kind-integration.sh
+./scripts/run-integration-tests.sh
 
 # Or build and install shim manually
 cargo build --release --bin containerd-shim-reaper-v2 --bin reaper-runtime
@@ -251,14 +264,32 @@ handler: reaper-v2
 
 ### Implemented features
 
+- ✅ **Overlay filesystem**: Shared mount namespace + overlayfs protects the host filesystem while allowing cross-deployment file sharing. Enabled by default. See `docs/OVERLAY_DESIGN.md`.
 - ✅ **User/Group ID Management**: Parses `process.user.uid`, `process.user.gid`, `process.user.additionalGids`, `process.user.umask` from config.json (currently disabled for debugging — code exists in `do_start()`)
 - ✅ **Containerd shim v2 protocol**: Full Task trait with create/start/delete/wait/kill/state/pids/exec/stats/resize_pty methods
 - ✅ **Sandbox lifecycle**: Pause containers use blocking `wait()` with `kill()` signaling via `tokio::sync::Notify`
 - ✅ **Direct command execution**: Commands run on host nodes (no container isolation by design)
 - ✅ **RuntimeClass support**: Configure via `kubernetes/runtimeclass.yaml`
-- ✅ **End-to-end testing**: Validated with kind cluster (`scripts/kind-integration.sh`)
+- ✅ **End-to-end testing**: Validated with kind cluster (`scripts/run-integration-tests.sh`)
 - ✅ **Container I/O**: stdout/stderr captured via FIFOs for `kubectl logs` integration
 - See `kubernetes/README.md` for complete setup and testing instructions
+
+### Overlay filesystem
+
+All Reaper workloads on a node share a single overlay filesystem. The host root is the read-only lower layer; writes go to a shared upper layer. This means:
+
+- Workload A writes `/etc/config` → Workload B can read it
+- The host's real `/etc/config` is never modified
+- `/proc`, `/sys`, `/dev` remain real host mounts
+- Overlay is ephemeral (clears on reboot)
+
+Configuration:
+```bash
+# Custom overlay location (default: /run/reaper/overlay)
+export REAPER_OVERLAY_BASE=/custom/path
+```
+
+Overlay is mandatory — workloads cannot run without isolation.
 
 ### Next steps
 
@@ -266,7 +297,6 @@ handler: reaper-v2
 - Resource monitoring (stats without cgroups)
 - Performance optimization (reduce 500ms startup delay)
 - Re-enable user/group switching after further validation
-- Optional namespace/cgroup support
 
 
 ## Coverage

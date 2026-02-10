@@ -109,8 +109,8 @@ service Task {
 | Shutdown | ✅ | Triggers shim exit |
 | Pause/Resume | ⚠️ | Returns OK but no-op (no cgroup freezer) |
 | Checkpoint | ⚠️ | Not implemented (no CRIU) |
-| Exec | ⚠️ | Not implemented |
-| ResizePty | ⚠️ | Not implemented |
+| Exec | ✅ | Implemented with PTY support |
+| ResizePty | ⚠️ | Returns OK but no-op (no dynamic resize) |
 | CloseIO | ⚠️ | Not implemented |
 | Update | ⚠️ | Not implemented (no cgroups) |
 
@@ -158,6 +158,10 @@ service Task {
 - [x] Pod status transitions to "Completed"
 - [x] Exit code capture and reporting
 - [x] No zombie processes
+- [x] PTY support for interactive containers
+- [x] Exec implementation with PTY support
+- [x] File descriptor leak fix
+- [x] Overlay namespace improvements
 
 ## Critical Bug Fixes (January 2026)
 
@@ -272,22 +276,14 @@ tracing-subscriber = "0.3"
 
 ## Testing
 
-### Deploy to Minikube
+### Run Integration Tests
 ```bash
-./scripts/minikube-setup-runtime.sh
+./scripts/run-integration-tests.sh
 ```
 
-### Verify Pod Completion
-```bash
-kubectl get pod reaper-example
-# Should show: Completed (0 restarts)
-```
+This orchestrates all testing including Rust unit tests, Kubernetes infrastructure setup, and comprehensive integration tests (DNS, overlay, host protection, zombies, exec, etc.).
 
-### Check Logs
-```bash
-minikube ssh -- 'tail -50 /var/log/reaper-shim.log'
-minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
-```
+For options and troubleshooting, see [TESTING.md](../TESTING.md).
 
 ## Resources
 
@@ -298,6 +294,6 @@ minikube ssh -- 'tail -50 /var/log/reaper-runtime.log'
 
 ---
 
-**Document Version:** 2.0
-**Last Updated:** January 2026
-**Status:** Core Implementation Complete
+**Document Version:** 2.1
+**Last Updated:** February 2026
+**Status:** Core Implementation Complete with Exec and PTY Support
