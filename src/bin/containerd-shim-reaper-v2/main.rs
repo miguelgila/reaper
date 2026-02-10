@@ -237,6 +237,26 @@ fn is_sandbox_container(bundle: &str) -> bool {
     false
 }
 
+/// Build the file path for an exec state file.
+fn build_exec_state_path(container_id: &str, exec_id: &str) -> String {
+    format!(
+        "{}/{}/exec-{}.json",
+        runtime_state_dir(),
+        container_id,
+        exec_id
+    )
+}
+
+/// Map a status string from runtime state JSON to the protobuf Status enum.
+fn parse_container_status(status: &str) -> ::protobuf::EnumOrUnknown<api::Status> {
+    match status {
+        "created" => ::protobuf::EnumOrUnknown::new(api::Status::CREATED),
+        "running" => ::protobuf::EnumOrUnknown::new(api::Status::RUNNING),
+        "stopped" => ::protobuf::EnumOrUnknown::new(api::Status::STOPPED),
+        _ => ::protobuf::EnumOrUnknown::new(api::Status::UNKNOWN),
+    }
+}
+
 impl ReaperTask {
     /// Publish a TaskExit event to containerd
     async fn publish_exit_event(
@@ -456,8 +476,7 @@ impl Task for ReaperTask {
             }
 
             // Poll exec state file for PID
-            let state_dir = runtime_state_dir();
-            let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+            let exec_path = build_exec_state_path(&req.id, &req.exec_id);
             let exec_path_clone = exec_path.clone();
 
             let pid = tokio::task::spawn_blocking(move || {
@@ -593,8 +612,7 @@ impl Task for ReaperTask {
         if !req.exec_id.is_empty() {
             info!("delete() - EXEC process, exec_id={}", req.exec_id);
 
-            let state_dir = runtime_state_dir();
-            let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+            let exec_path = build_exec_state_path(&req.id, &req.exec_id);
             let _ = std::fs::remove_file(&exec_path);
 
             return Ok(api::DeleteResponse {
@@ -693,8 +711,7 @@ impl Task for ReaperTask {
         if !req.exec_id.is_empty() {
             info!("kill() - EXEC process, exec_id={}", req.exec_id);
 
-            let state_dir = runtime_state_dir();
-            let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+            let exec_path = build_exec_state_path(&req.id, &req.exec_id);
 
             if let Ok(data) = std::fs::read_to_string(&exec_path) {
                 if let Ok(state) = serde_json::from_str::<serde_json::Value>(&data) {
@@ -823,8 +840,7 @@ impl Task for ReaperTask {
         if !req.exec_id.is_empty() {
             info!("wait() - EXEC process, exec_id={}", req.exec_id);
 
-            let state_dir = runtime_state_dir();
-            let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+            let exec_path = build_exec_state_path(&req.id, &req.exec_id);
             let container_id = req.id.clone();
             let exec_id_clone = req.exec_id.clone();
 
@@ -964,8 +980,7 @@ impl Task for ReaperTask {
         if !req.exec_id.is_empty() {
             info!("state() - EXEC process, exec_id={}", req.exec_id);
 
-            let state_dir = runtime_state_dir();
-            let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+            let exec_path = build_exec_state_path(&req.id, &req.exec_id);
 
             if let Ok(data) = std::fs::read_to_string(&exec_path) {
                 if let Ok(state) = serde_json::from_str::<serde_json::Value>(&data) {
@@ -973,12 +988,7 @@ impl Task for ReaperTask {
                     resp.id = req.exec_id.clone();
                     resp.pid = state["pid"].as_u64().unwrap_or(0) as u32;
                     let status_str = state["status"].as_str().unwrap_or("unknown");
-                    resp.status = match status_str {
-                        "created" => ::protobuf::EnumOrUnknown::new(api::Status::CREATED),
-                        "running" => ::protobuf::EnumOrUnknown::new(api::Status::RUNNING),
-                        "stopped" => ::protobuf::EnumOrUnknown::new(api::Status::STOPPED),
-                        _ => ::protobuf::EnumOrUnknown::new(api::Status::UNKNOWN),
-                    };
+                    resp.status = parse_container_status(status_str);
                     if status_str == "stopped" {
                         resp.exit_status = state["exit_code"].as_u64().unwrap_or(0) as u32;
                     }
@@ -1063,12 +1073,7 @@ impl Task for ReaperTask {
         resp.pid = state["pid"].as_u64().unwrap_or(0) as u32;
 
         let status_str = state["status"].as_str().unwrap_or("unknown");
-        resp.status = match status_str {
-            "created" => ::protobuf::EnumOrUnknown::new(api::Status::CREATED),
-            "running" => ::protobuf::EnumOrUnknown::new(api::Status::RUNNING),
-            "stopped" => ::protobuf::EnumOrUnknown::new(api::Status::STOPPED),
-            _ => ::protobuf::EnumOrUnknown::new(api::Status::UNKNOWN),
-        };
+        resp.status = parse_container_status(status_str);
 
         // If stopped, include exit status and exited_at timestamp
         if status_str == "stopped" {
@@ -1206,8 +1211,7 @@ impl Task for ReaperTask {
             "stderr": if req.stderr.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(req.stderr.clone()) },
         });
 
-        let state_dir = runtime_state_dir();
-        let exec_path = format!("{}/{}/exec-{}.json", state_dir, req.id, req.exec_id);
+        let exec_path = build_exec_state_path(&req.id, &req.exec_id);
 
         std::fs::write(&exec_path, serde_json::to_vec_pretty(&exec_state).unwrap()).map_err(
             |e| {
@@ -1429,4 +1433,210 @@ async fn main() {
 
     run::<ReaperShim>("io.containerd.reaper.v2", Some(config)).await;
     info!("containerd_shim::run() completed normally");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    // --- runtime_state_dir tests ---
+
+    #[test]
+    #[serial]
+    fn test_runtime_state_dir_default() {
+        std::env::remove_var("REAPER_RUNTIME_ROOT");
+        assert_eq!(runtime_state_dir(), "/run/reaper");
+    }
+
+    #[test]
+    #[serial]
+    fn test_runtime_state_dir_from_env() {
+        std::env::set_var("REAPER_RUNTIME_ROOT", "/custom/state");
+        assert_eq!(runtime_state_dir(), "/custom/state");
+        std::env::remove_var("REAPER_RUNTIME_ROOT");
+    }
+
+    // --- is_sandbox_container tests ---
+
+    #[test]
+    fn test_is_sandbox_pause_command() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": {
+                "args": ["/pause"]
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        assert!(is_sandbox_container(bundle.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_is_sandbox_pause_in_path() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": {
+                "args": ["/usr/bin/pause-amd64"]
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        assert!(is_sandbox_container(bundle.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_is_sandbox_cri_annotation() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": {
+                "args": ["/bin/sh"]
+            },
+            "annotations": {
+                "io.kubernetes.cri.container-type": "sandbox"
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        assert!(is_sandbox_container(bundle.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_is_sandbox_workload_container() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": {
+                "args": ["/bin/echo", "hello"]
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        assert!(!is_sandbox_container(bundle.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_is_sandbox_cri_annotation_container_type() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": {
+                "args": ["/bin/sh"]
+            },
+            "annotations": {
+                "io.kubernetes.cri.container-type": "container"
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        assert!(!is_sandbox_container(bundle.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_is_sandbox_missing_config() {
+        let bundle = TempDir::new().unwrap();
+        // No config.json created
+        assert!(!is_sandbox_container(bundle.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_is_sandbox_malformed_json() {
+        let bundle = TempDir::new().unwrap();
+        std::fs::write(bundle.path().join("config.json"), "not json").unwrap();
+        assert!(!is_sandbox_container(bundle.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_is_sandbox_no_process() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({});
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        assert!(!is_sandbox_container(bundle.path().to_str().unwrap()));
+    }
+
+    #[test]
+    fn test_is_sandbox_empty_args() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": {
+                "args": []
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        assert!(!is_sandbox_container(bundle.path().to_str().unwrap()));
+    }
+
+    // --- parse_container_status tests ---
+
+    #[test]
+    fn test_parse_container_status_created() {
+        let status = parse_container_status("created");
+        assert_eq!(status, ::protobuf::EnumOrUnknown::new(api::Status::CREATED));
+    }
+
+    #[test]
+    fn test_parse_container_status_running() {
+        let status = parse_container_status("running");
+        assert_eq!(status, ::protobuf::EnumOrUnknown::new(api::Status::RUNNING));
+    }
+
+    #[test]
+    fn test_parse_container_status_stopped() {
+        let status = parse_container_status("stopped");
+        assert_eq!(status, ::protobuf::EnumOrUnknown::new(api::Status::STOPPED));
+    }
+
+    #[test]
+    fn test_parse_container_status_unknown() {
+        let status = parse_container_status("garbage");
+        assert_eq!(status, ::protobuf::EnumOrUnknown::new(api::Status::UNKNOWN));
+    }
+
+    #[test]
+    fn test_parse_container_status_empty() {
+        let status = parse_container_status("");
+        assert_eq!(status, ::protobuf::EnumOrUnknown::new(api::Status::UNKNOWN));
+    }
+
+    // --- build_exec_state_path tests ---
+
+    #[test]
+    #[serial]
+    fn test_build_exec_state_path_format() {
+        std::env::set_var("REAPER_RUNTIME_ROOT", "/run/reaper");
+        let path = build_exec_state_path("my-container", "exec-123");
+        assert_eq!(path, "/run/reaper/my-container/exec-exec-123.json");
+        std::env::remove_var("REAPER_RUNTIME_ROOT");
+    }
+
+    #[test]
+    #[serial]
+    fn test_build_exec_state_path_custom_root() {
+        std::env::set_var("REAPER_RUNTIME_ROOT", "/custom/path");
+        let path = build_exec_state_path("ctr-1", "e1");
+        assert_eq!(path, "/custom/path/ctr-1/exec-e1.json");
+        std::env::remove_var("REAPER_RUNTIME_ROOT");
+    }
 }

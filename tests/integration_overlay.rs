@@ -22,6 +22,22 @@ mod overlay_tests {
         nix::unistd::getuid().is_root()
     }
 
+    /// Check if we can actually create mount namespaces (requires CAP_SYS_ADMIN).
+    /// Being root inside a Docker container without --privileged is not enough.
+    fn can_use_overlay() -> bool {
+        if !is_root() {
+            return false;
+        }
+        // Try to unshare a mount namespace — this is the minimal capability test.
+        // If the kernel denies it (e.g. unprivileged Docker container), overlay won't work.
+        use std::process::Command;
+        Command::new("unshare")
+            .args(["--mount", "true"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
     /// Helper: run a workload through reaper-runtime create/start/delete lifecycle.
     /// Returns the state JSON captured from the workload.
     fn run_workload(container_id: &str, command: &[&str]) -> String {
@@ -96,8 +112,10 @@ mod overlay_tests {
     #[test]
     #[serial]
     fn test_overlay_requires_root() {
-        if !is_root() {
-            eprintln!("Skipping test_overlay_requires_root: requires root");
+        if !can_use_overlay() {
+            eprintln!(
+                "Skipping test_overlay_requires_root: requires root + mount namespace support"
+            );
             return;
         }
 
@@ -111,8 +129,10 @@ mod overlay_tests {
     #[test]
     #[serial]
     fn test_overlay_host_protection() {
-        if !is_root() {
-            eprintln!("Skipping test_overlay_host_protection: requires root");
+        if !can_use_overlay() {
+            eprintln!(
+                "Skipping test_overlay_host_protection: requires root + mount namespace support"
+            );
             return;
         }
 
@@ -137,8 +157,10 @@ mod overlay_tests {
     #[test]
     #[serial]
     fn test_overlay_shared_writes() {
-        if !is_root() {
-            eprintln!("Skipping test_overlay_shared_writes: requires root");
+        if !can_use_overlay() {
+            eprintln!(
+                "Skipping test_overlay_shared_writes: requires root + mount namespace support"
+            );
             return;
         }
 
@@ -167,8 +189,8 @@ mod overlay_tests {
     #[test]
     #[serial]
     fn test_special_filesystems_accessible() {
-        if !is_root() {
-            eprintln!("Skipping test_special_filesystems_accessible: requires root");
+        if !can_use_overlay() {
+            eprintln!("Skipping test_special_filesystems_accessible: requires root + mount namespace support");
             return;
         }
 

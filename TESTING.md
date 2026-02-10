@@ -4,14 +4,17 @@ This document consolidates all information about running tests, integration test
 
 ## Quick Reference
 
+All common tasks are available via `make`. Run `make help` for the full list.
+
 | Task | Command |
 |------|---------|
-| **Unit tests** | `cargo test` |
-| **Integration tests** (full suite) | `./scripts/run-integration-tests.sh` |
-| **Integration tests** (K8s only, skip cargo) | `./scripts/run-integration-tests.sh --skip-cargo` |
-| **Integration tests** (keep cluster) | `./scripts/run-integration-tests.sh --no-cleanup` |
-| **Coverage** (Docker) | `./scripts/docker-coverage.sh` |
-| **Containerd config** | `./scripts/configure-containerd.sh` |
+| **Full CI check** (recommended before push) | `make ci` |
+| **Unit tests** | `make test` |
+| **Clippy** (macOS) | `make clippy` |
+| **Clippy** (Linux cross-check) | `make check-linux` |
+| **Coverage** (Docker, CI-parity) | `make coverage` |
+| **Integration tests** (full suite) | `make integration` |
+| **Integration tests** (K8s only, skip cargo) | `make integration-quick` |
 
 ## Unit Tests
 
@@ -138,25 +141,44 @@ This script is automatically run by `run-integration-tests.sh`.
 
 ## Development Workflow
 
-### Local Development (Fast)
+### Before Pushing (CI-parity on macOS)
 
-1. Make code changes
-2. Run unit tests: `cargo test`
-3. Test formatting: `cargo fmt --all -- --check`
-4. Run clippy: `cargo clippy --all-targets --all-features`
-5. Commit and push
-
-### When You Need Linux Parity
-
-If you're on macOS and need to verify Linux behavior:
+Run the full CI-equivalent check locally:
 
 ```bash
-# Run tests in Docker
-./scripts/docker-test.sh
-
-# Generate coverage
-./scripts/docker-coverage.sh
+make ci
 ```
+
+This runs, in order: `fmt` check, `clippy` (macOS), `clippy` (Linux cross-check), `cargo test`, and `coverage` (Docker + tarpaulin). If this passes, CI will pass.
+
+### Quick Iteration
+
+For fast feedback during development:
+
+```bash
+make test              # Unit tests only (seconds)
+make clippy            # macOS clippy
+make check-linux       # Catches #[cfg(linux)] compilation issues
+```
+
+### Linux Cross-Check
+
+The overlay module (`overlay.rs`) is gated by `#[cfg(target_os = "linux")]` and doesn't compile on macOS. `make check-linux` cross-checks clippy against the `x86_64-unknown-linux-gnu` target to catch compilation errors in Linux-only code without leaving macOS.
+
+Requires the target (one-time setup):
+```bash
+rustup target add x86_64-unknown-linux-gnu
+```
+
+### Coverage (CI-parity)
+
+Coverage runs tarpaulin inside Docker to match CI exactly:
+
+```bash
+make coverage
+```
+
+Configuration lives in `tarpaulin.toml`. Functions requiring root + Linux namespaces (tested by kind-integration) are excluded via `#[cfg(not(tarpaulin_include))]` so coverage reflects what unit tests can actually reach.
 
 ### Integration Test Iteration
 

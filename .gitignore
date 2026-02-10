@@ -6,3 +6,4 @@ target-linux/
 *~
 .idea/
 .vscode/local
+cobertura.xml

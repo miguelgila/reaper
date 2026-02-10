@@ -3,8 +3,22 @@ name: Tests
 on:
   push:
     branches: [main, develop]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE*"
+      - ".gitignore"
+      - ".github/copilot-instructions.md"
+      - ".github/claude-instructions.md"
   pull_request:
     branches: [main, develop]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE*"
+      - ".gitignore"
+      - ".github/copilot-instructions.md"
+      - ".github/claude-instructions.md"
 
 env:
   CARGO_TERM_COLOR: always
@@ -90,8 +104,8 @@ jobs:
       - name: Install tarpaulin
         run: cargo install cargo-tarpaulin
 
-      - name: Generate coverage (fail under 75%)
-        run: cargo tarpaulin --out Xml --timeout 600 --fail-under 75
+      - name: Generate coverage
+        run: cargo tarpaulin
 
       - name: Upload coverage to Codecov (fail on error)
         uses: codecov/codecov-action@v3

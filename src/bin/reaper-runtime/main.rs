@@ -201,6 +201,22 @@ fn do_create(
     Ok(())
 }
 
+/// Extract program path and arguments from an OCI config.
+/// Returns (program_path, remaining_argv).
+fn parse_program_and_args(cfg: &OciConfig) -> Result<(PathBuf, Vec<String>)> {
+    let proc = cfg
+        .process
+        .as_ref()
+        .context("config.json missing 'process' section")?;
+    let args = proc.args.as_deref().unwrap_or(&[]);
+    if args.is_empty() {
+        bail!("process.args must contain at least one element (program)");
+    }
+    let program = PathBuf::from(&args[0]);
+    let argv = args[1..].to_vec();
+    Ok((program, argv))
+}
+
 fn do_start(id: &str, bundle: &Path) -> Result<()> {
     info!("do_start() called - id={}, bundle={}", id, bundle.display());
 
@@ -210,19 +226,12 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
     info!("do_start() - using bundle from state: {}", bundle.display());
 
     let cfg = read_oci_config(bundle)?;
+    let (program_path, argv) = parse_program_and_args(&cfg)?;
+    let program = program_path.to_string_lossy().to_string();
     let proc = cfg
         .process
+        .as_ref()
         .context("config.json missing 'process' section")?;
-    let args = proc.args.unwrap_or_default();
-    if args.is_empty() {
-        bail!("process.args must contain at least one element (program)");
-    }
-    let program = args[0].clone();
-    let argv: Vec<String> = args[1..].to_vec();
-
-    // Reaper runs HOST binaries, not container binaries
-    // Both absolute and relative paths are used directly - the shell/OS resolves them
-    let program_path = PathBuf::from(&program);
 
     info!(
         "do_start() - program={}, resolved_path={}, args={:?}, cwd={:?}",
@@ -233,7 +242,7 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
     );
 
     // Handle user/group ID switching before exec
-    let user_config = proc.user;
+    let user_config = &proc.user;
     if let Some(ref user) = user_config {
         info!(
             "do_start() - user config: uid={}, gid={}, additional_gids={:?}, umask={:?}",
@@ -1216,7 +1225,23 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
+
+    fn setup_test_root() -> TempDir {
+        tempfile::tempdir().expect("Failed to create temp dir")
+    }
+
+    fn with_test_root<F>(f: F)
+    where
+        F: FnOnce(String),
+    {
+        let temp = setup_test_root();
+        let root = temp.path().to_string_lossy().to_string();
+        std::env::set_var("REAPER_RUNTIME_ROOT", &root);
+        f(root);
+        std::env::remove_var("REAPER_RUNTIME_ROOT");
+    }
 
     #[test]
     fn test_parse_config_without_user() {
@@ -1348,5 +1373,358 @@ mod tests {
         let user = parsed.process.unwrap().user.unwrap();
         assert!(user.additional_gids.is_empty());
         assert!(user.umask.is_none());
+    }
+
+    // --- read_oci_config edge cases ---
+
+    #[test]
+    fn test_read_oci_config_missing_file() {
+        let bundle_dir = TempDir::new().unwrap();
+        // No config.json created
+        let result = read_oci_config(bundle_dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_oci_config_invalid_json() {
+        let bundle_dir = TempDir::new().unwrap();
+        fs::write(bundle_dir.path().join("config.json"), "not valid json").unwrap();
+        let result = read_oci_config(bundle_dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_oci_config_no_process() {
+        let bundle_dir = TempDir::new().unwrap();
+        let config = serde_json::json!({});
+        fs::write(
+            bundle_dir.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let parsed = read_oci_config(bundle_dir.path()).unwrap();
+        assert!(parsed.process.is_none());
+    }
+
+    #[test]
+    fn test_read_oci_config_empty_args() {
+        let bundle_dir = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": {
+                "args": [],
+                "cwd": "/"
+            }
+        });
+        fs::write(
+            bundle_dir.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let parsed = read_oci_config(bundle_dir.path()).unwrap();
+        let process = parsed.process.unwrap();
+        assert!(process.args.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_read_oci_config_with_env() {
+        let bundle_dir = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": {
+                "args": ["/bin/sh"],
+                "env": ["PATH=/usr/bin", "HOME=/root"]
+            }
+        });
+        fs::write(
+            bundle_dir.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let parsed = read_oci_config(bundle_dir.path()).unwrap();
+        let env = parsed.process.unwrap().env.unwrap();
+        assert_eq!(env.len(), 2);
+        assert_eq!(env[0], "PATH=/usr/bin");
+    }
+
+    // --- parse_program_and_args tests ---
+
+    #[test]
+    fn test_parse_program_and_args_valid() {
+        let cfg = OciConfig {
+            process: Some(OciProcess {
+                args: Some(vec!["/bin/echo".into(), "hello".into(), "world".into()]),
+                env: None,
+                cwd: None,
+                user: None,
+            }),
+        };
+        let (program, argv) = parse_program_and_args(&cfg).unwrap();
+        assert_eq!(program, PathBuf::from("/bin/echo"));
+        assert_eq!(argv, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn test_parse_program_and_args_single_element() {
+        let cfg = OciConfig {
+            process: Some(OciProcess {
+                args: Some(vec!["/bin/true".into()]),
+                env: None,
+                cwd: None,
+                user: None,
+            }),
+        };
+        let (program, argv) = parse_program_and_args(&cfg).unwrap();
+        assert_eq!(program, PathBuf::from("/bin/true"));
+        assert!(argv.is_empty());
+    }
+
+    #[test]
+    fn test_parse_program_and_args_empty_args() {
+        let cfg = OciConfig {
+            process: Some(OciProcess {
+                args: Some(vec![]),
+                env: None,
+                cwd: None,
+                user: None,
+            }),
+        };
+        let result = parse_program_and_args(&cfg);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("at least one element"));
+    }
+
+    #[test]
+    fn test_parse_program_and_args_none_args() {
+        let cfg = OciConfig {
+            process: Some(OciProcess {
+                args: None,
+                env: None,
+                cwd: None,
+                user: None,
+            }),
+        };
+        let result = parse_program_and_args(&cfg);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_program_and_args_no_process() {
+        let cfg = OciConfig { process: None };
+        let result = parse_program_and_args(&cfg);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("missing 'process'"));
+    }
+
+    #[test]
+    fn test_parse_program_and_args_relative_path() {
+        let cfg = OciConfig {
+            process: Some(OciProcess {
+                args: Some(vec!["my-binary".into(), "--flag".into()]),
+                env: None,
+                cwd: None,
+                user: None,
+            }),
+        };
+        let (program, argv) = parse_program_and_args(&cfg).unwrap();
+        assert_eq!(program, PathBuf::from("my-binary"));
+        assert_eq!(argv, vec!["--flag"]);
+    }
+
+    // --- do_create tests ---
+
+    #[test]
+    #[serial]
+    fn test_do_create_basic() {
+        with_test_root(|_| {
+            let bundle = TempDir::new().unwrap();
+            do_create("test-create", bundle.path(), false, None, None, None).unwrap();
+
+            let state = load_state("test-create").unwrap();
+            assert_eq!(state.id, "test-create");
+            assert_eq!(state.status, "created");
+            assert!(!state.terminal);
+            assert!(state.stdin.is_none());
+            assert!(state.stdout.is_none());
+            assert!(state.stderr.is_none());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_do_create_with_terminal() {
+        with_test_root(|_| {
+            let bundle = TempDir::new().unwrap();
+            do_create("test-term", bundle.path(), true, None, None, None).unwrap();
+
+            let state = load_state("test-term").unwrap();
+            assert!(state.terminal);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_do_create_with_io_paths() {
+        with_test_root(|_| {
+            let bundle = TempDir::new().unwrap();
+            do_create(
+                "test-io",
+                bundle.path(),
+                false,
+                Some("/path/stdin".into()),
+                Some("/path/stdout".into()),
+                Some("/path/stderr".into()),
+            )
+            .unwrap();
+
+            let state = load_state("test-io").unwrap();
+            assert_eq!(state.stdin, Some("/path/stdin".into()));
+            assert_eq!(state.stdout, Some("/path/stdout".into()));
+            assert_eq!(state.stderr, Some("/path/stderr".into()));
+        });
+    }
+
+    // --- do_state tests ---
+
+    #[test]
+    #[serial]
+    fn test_do_state_existing_container() {
+        with_test_root(|_| {
+            let bundle = TempDir::new().unwrap();
+            do_create("test-state", bundle.path(), false, None, None, None).unwrap();
+            // do_state prints JSON to stdout — just verify it doesn't error
+            let result = do_state("test-state");
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_do_state_nonexistent() {
+        with_test_root(|_| {
+            let result = do_state("nonexistent-container");
+            assert!(result.is_err());
+        });
+    }
+
+    // --- do_delete tests ---
+
+    #[test]
+    #[serial]
+    fn test_do_delete_existing() {
+        with_test_root(|_| {
+            let bundle = TempDir::new().unwrap();
+            do_create("test-del", bundle.path(), false, None, None, None).unwrap();
+            let result = do_delete("test-del");
+            assert!(result.is_ok());
+            // Verify state is gone
+            assert!(load_state("test-del").is_err());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_do_delete_nonexistent() {
+        with_test_root(|_| {
+            // delete_state currently succeeds for nonexistent containers (remove_dir_all on missing dir)
+            let result = do_delete("no-such-container");
+            // Just verify it doesn't panic; it may succeed or error depending on state module behavior
+            let _ = result;
+        });
+    }
+
+    // --- do_kill tests ---
+
+    #[test]
+    #[serial]
+    fn test_do_kill_no_pid_file() {
+        with_test_root(|_| {
+            // No container state / PID file exists
+            let result = do_kill("nonexistent", Some(15));
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_do_kill_default_signal() {
+        with_test_root(|_| {
+            let bundle = TempDir::new().unwrap();
+            do_create("test-kill", bundle.path(), false, None, None, None).unwrap();
+            // Spawn a real short-lived child so we have a valid PID
+            let child = std::process::Command::new("sleep")
+                .arg("60")
+                .spawn()
+                .unwrap();
+            let pid = child.id() as i32;
+            save_pid("test-kill", pid).unwrap();
+
+            // Kill with default signal (SIGTERM)
+            let result = do_kill("test-kill", None);
+            assert!(result.is_ok());
+
+            // Clean up: wait for child to actually die
+            let mut child = child;
+            let _ = child.kill();
+            let _ = child.wait();
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_do_kill_esrch_already_exited() {
+        with_test_root(|_| {
+            let bundle = TempDir::new().unwrap();
+            do_create("test-esrch", bundle.path(), false, None, None, None).unwrap();
+
+            // Spawn a child and wait for it to exit, then try to kill its (now-dead) PID
+            let child = std::process::Command::new("true").spawn().unwrap();
+            let pid = child.id() as i32;
+            let mut child = child;
+            let _ = child.wait(); // wait for it to finish
+
+            save_pid("test-esrch", pid).unwrap();
+
+            // Kill should succeed (ESRCH is treated as success)
+            let result = do_kill("test-esrch", Some(15));
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_do_kill_invalid_signal() {
+        with_test_root(|_| {
+            let bundle = TempDir::new().unwrap();
+            do_create("test-badsig", bundle.path(), false, None, None, None).unwrap();
+            save_pid("test-badsig", std::process::id() as i32).unwrap();
+
+            // Signal 999 is invalid
+            let result = do_kill("test-badsig", Some(999));
+            assert!(result.is_err());
+            assert!(result.unwrap_err().to_string().contains("invalid signal"));
+        });
+    }
+
+    // --- open_log_file tests ---
+
+    #[test]
+    fn test_open_log_file_regular_file() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("testfile");
+        // Create a regular file first (open_log_file expects it to exist)
+        fs::write(&path, "").unwrap();
+        let result = open_log_file(path.to_str().unwrap());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_open_log_file_nonexistent() {
+        let result = open_log_file("/nonexistent/path/to/fifo");
+        assert!(result.is_err());
     }
 }
