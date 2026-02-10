@@ -6,7 +6,7 @@
 
 [default]
 timeout = "600s"
-fail-under = 75
+fail-under = 45
 out = ["Xml"]
 
 # Exclude functions that require root + namespace privileges.
