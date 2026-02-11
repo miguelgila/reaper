@@ -6,19 +6,61 @@ This directory contains configuration files for integrating the Reaper container
 
 ## Quick Start
 
-The recommended way to test Reaper with Kubernetes is using the automated integration test suite:
+The recommended way to deploy Reaper to any Kubernetes cluster is using the installation script:
+
+```bash
+# For Kind clusters (testing/development)
+./scripts/install-reaper.sh --kind <cluster-name>
+
+# Auto-detect cluster type
+./scripts/install-reaper.sh --auto
+
+# Preview changes without modifying the cluster
+./scripts/install-reaper.sh --dry-run --kind test
+```
+
+For automated testing with the full integration test suite:
 
 ```bash
 ./scripts/run-integration-tests.sh
 ```
 
-This orchestrates everything: building binaries, creating a kind cluster, configuring containerd, and running all tests. See [TESTING.md](../TESTING.md) for full details.
+This orchestrates everything: creating a Kind cluster, installing Reaper, and running all tests. See [TESTING.md](../TESTING.md) for full details.
 
-## Manual Deployment
+## Installation Options
 
-If you need to deploy to an existing Kubernetes cluster:
+### Automated Installation (Recommended)
 
-### 1. Build and Install Binaries
+The `install-reaper.sh` script handles all installation steps automatically:
+
+```bash
+# Install to Kind cluster
+./scripts/install-reaper.sh --kind <cluster-name>
+
+# Use pre-built binaries (faster for CI)
+./scripts/install-reaper.sh --kind test --skip-build --binaries-path ./binaries
+
+# Verify existing installation
+./scripts/install-reaper.sh --verify-only
+
+# Get help
+./scripts/install-reaper.sh --help
+```
+
+The script automatically:
+- Detects node architecture (x86_64, aarch64)
+- Builds static musl binaries (or uses pre-built)
+- Deploys binaries to all cluster nodes
+- Creates overlay filesystem directories
+- Configures containerd
+- Creates RuntimeClass
+- Verifies installation
+
+### Manual Installation
+
+If you need manual control over the installation process:
+
+#### 1. Build and Install Binaries
 
 Build both binaries locally:
 
@@ -34,7 +76,7 @@ scp target/release/reaper-runtime <node>:/usr/local/bin/
 ssh <node> chmod +x /usr/local/bin/{containerd-shim-reaper-v2,reaper-runtime}
 ```
 
-### 2. Configure containerd
+#### 2. Configure containerd
 
 Use the automated configuration script:
 
@@ -58,7 +100,7 @@ sudo systemctl restart containerd
 
 > **Important:** The shim binary must be in `$PATH` at `/usr/local/bin/`. Containerd discovers shims by name convention, not by explicit path. Do NOT use `[options]` sections in the runtime config—this causes cgroup path bugs.
 
-### 3. Create RuntimeClass
+#### 3. Create RuntimeClass
 
 Apply the RuntimeClass:
 
@@ -66,7 +108,7 @@ Apply the RuntimeClass:
 kubectl apply -f kubernetes/runtimeclass.yaml
 ```
 
-### 4. Test a Pod
+#### 4. Test a Pod
 
 The `runtimeclass.yaml` file includes an example pod. After applying the RuntimeClass, you can test:
 

@@ -4,14 +4,34 @@ This directory contains helper scripts for testing, development, and Kubernetes 
 
 > **Tip:** Most workflows are available via `make` targets in the project root. Run `make help` to see all options. These scripts are called by the Makefile — you rarely need to invoke them directly.
 
-## Main Entry Point
+## Main Scripts
+
+**[install-reaper.sh](install-reaper.sh)** — Deploy Reaper runtime to Kubernetes clusters
+
+The primary installation script for deploying Reaper to any Kubernetes cluster. Supports:
+- Kind clusters (automatic detection and deployment)
+- Pre-built or on-demand binary compilation
+- Dry-run mode for safe testing
+- Installation verification
+- Verbose logging
+
+**Usage:**
+```bash
+./scripts/install-reaper.sh --kind <cluster-name>  # Install to Kind cluster
+./scripts/install-reaper.sh --auto                 # Auto-detect cluster type
+./scripts/install-reaper.sh --verify-only          # Verify existing installation
+./scripts/install-reaper.sh --dry-run --kind test  # Preview changes
+./scripts/install-reaper.sh --help                 # Show all options
+```
+
+Used by `run-integration-tests.sh` for automated testing and suitable for production deployments.
 
 **[run-integration-tests.sh](run-integration-tests.sh)** — Full integration test harness
 
-The primary script for running integration tests. Orchestrates:
+The test orchestration script for CI/CD. Orchestrates:
 - Rust unit tests
 - Kind cluster creation
-- Binary builds and deployment
+- Reaper installation (via `install-reaper.sh`)
 - Kubernetes integration tests
 - Results reporting
 

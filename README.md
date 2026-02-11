@@ -159,6 +159,38 @@ reaper-runtime kill my-app --signal 15
 reaper-runtime delete my-app
 ```
 
+## Installation
+
+### Kubernetes Clusters
+
+Deploy Reaper to any Kubernetes cluster using the installation script:
+
+```bash
+# For Kind clusters (recommended for testing)
+./scripts/install-reaper.sh --kind <cluster-name>
+
+# Auto-detect cluster type from kubectl context
+./scripts/install-reaper.sh --auto
+
+# Preview changes without modifying the cluster
+./scripts/install-reaper.sh --dry-run --kind test
+
+# Use pre-built binaries (faster for CI)
+./scripts/install-reaper.sh --kind test --binaries-path ./binaries
+
+# Verify existing installation
+./scripts/install-reaper.sh --verify-only
+```
+
+The script automatically:
+- Detects node architecture and builds static musl binaries
+- Deploys binaries to cluster nodes
+- Configures containerd with the Reaper runtime
+- Creates the RuntimeClass resource
+- Verifies the installation
+
+For complete installation options and manual setup, see [kubernetes/README.md](kubernetes/README.md).
+
 ### Testing on Kubernetes
 
 To test the Reaper runtime with Kubernetes (kind cluster):
@@ -167,7 +199,7 @@ To test the Reaper runtime with Kubernetes (kind cluster):
 ./scripts/run-integration-tests.sh
 ```
 
-This runs a complete integration test suite including DNS resolution, overlay filesystem sharing, host protection, and more. See [TESTING.md](TESTING.md) for full details.
+This runs a complete integration test suite including DNS resolution, overlay filesystem sharing, host protection, and more. The test suite uses `install-reaper.sh` internally. See [TESTING.md](TESTING.md) for full details.
 
 ### Testing core binary execution
 
