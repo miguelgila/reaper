@@ -6,9 +6,9 @@
 
 ## Progress Tracker
 
-- [ ] Phase 1: Core Installation Script
-  - [ ] Create `scripts/install-reaper.sh` with modular structure
-  - [ ] Extract reusable functions from `run-integration-tests.sh`
+- [x] Phase 1: Core Installation Script
+  - [x] Create `scripts/install-reaper.sh` with modular structure
+  - [x] Extract reusable functions from `run-integration-tests.sh`
 - [ ] Phase 2: Deployment Methods
   - [ ] Implement direct deployment (kind/SSH)
   - [ ] Implement DaemonSet deployment
@@ -303,7 +303,26 @@ main "$@"
 
 ## Implementation Notes
 
-*This section will be updated as implementation progresses with notes on decisions, challenges, and solutions.*
+### Phase 1 - Core Script (2026-02-11)
+
+**Created `scripts/install-reaper.sh`** with the following features:
+
+- **Argument parsing**: Support for `--kind`, `--auto`, `--dry-run`, `--verify-only`, `--verbose`, `--skip-build`, `--binaries-path`
+- **Pre-flight checks**: Validates required commands (kubectl, docker, kind, cargo) based on mode
+- **Cluster detection**: Auto-detects Kind clusters from kubectl context
+- **Node discovery**: Finds Kind node containers and detects architecture
+- **Binary building**: Builds static musl binaries using Docker cross-compilation (extracted from run-integration-tests.sh)
+- **Kind deployment**: Copies binaries, creates overlay directories, configures containerd
+- **RuntimeClass creation**: Creates Kubernetes RuntimeClass resource
+- **Verification**: Verifies binaries, containerd config, and RuntimeClass post-install
+- **Colored logging**: Info/success/error/warn levels with optional verbose output
+
+**Key decisions:**
+- Modular function design for easy extension to other cluster types
+- Dry-run mode for safe testing
+- Reuses existing `configure-containerd.sh` script
+- Supports pre-built binaries via `--binaries-path` for CI caching
+- Error handling with clear messages and exit codes
 
 ---
 
