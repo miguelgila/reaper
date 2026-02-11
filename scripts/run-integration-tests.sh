@@ -389,56 +389,16 @@ phase_setup() {
     fi
   fi
 
-  # Detect node
+  # Install Reaper using the installation script
+  log_status "Installing Reaper runtime to Kind cluster..."
+  if $VERBOSE; then
+    ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" --verbose 2>&1 | tee -a "$LOG_FILE"
+  else
+    ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1
+  fi
+
+  # Get node ID for later diagnostic use
   NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
-  local node_arch
-  node_arch=$(docker exec "$NODE_ID" uname -m)
-  log_status "Kind node: $NODE_ID (arch: $node_arch)"
-
-  # Build static musl binaries
-  log_status "Building static musl Linux binaries..."
-  local target_triple musl_image
-  case "$node_arch" in
-    aarch64)
-      target_triple="aarch64-unknown-linux-musl"
-      musl_image="messense/rust-musl-cross:aarch64-musl"
-      ;;
-    x86_64)
-      target_triple="x86_64-unknown-linux-musl"
-      musl_image="messense/rust-musl-cross:x86_64-musl"
-      ;;
-    *)
-      log_error "Unsupported node arch: $node_arch"
-      return 1
-      ;;
-  esac
-
-  docker run --rm \
-    -v "$(pwd)":/work \
-    -w /work \
-    "$musl_image" \
-    cargo build --release --bin "$SHIM_BIN" --bin "$RUNTIME_BIN" --target "$target_triple" >> "$LOG_FILE" 2>&1
-
-  # Deploy binaries to kind node
-  local shim_path
-  shim_path="$(pwd)/target/$target_triple/release/$SHIM_BIN"
-  local runtime_path
-  runtime_path="$(pwd)/target/$target_triple/release/$RUNTIME_BIN"
-
-  log_status "Deploying binaries to kind node..."
-  {
-    docker cp "$shim_path" "$NODE_ID":/usr/local/bin/$SHIM_BIN
-    docker exec "$NODE_ID" chmod +x /usr/local/bin/$SHIM_BIN
-    docker cp "$runtime_path" "$NODE_ID":/usr/local/bin/$RUNTIME_BIN
-    docker exec "$NODE_ID" chmod +x /usr/local/bin/$RUNTIME_BIN
-  } >> "$LOG_FILE" 2>&1
-
-  # Create overlay directories
-  docker exec "$NODE_ID" mkdir -p /run/reaper/overlay/upper /run/reaper/overlay/work >> "$LOG_FILE" 2>&1
-
-  # Configure containerd
-  log_status "Configuring containerd..."
-  ./scripts/configure-containerd.sh kind "$NODE_ID" >> "$LOG_FILE" 2>&1
 
   log_status "Infrastructure setup complete."
   ci_group_end
@@ -461,16 +421,8 @@ phase_readiness() {
   }
   sleep 30  # stability buffer
 
-  # Create RuntimeClass
-  log_status "Creating RuntimeClass..."
-  cat <<'YAML' | retry_kubectl kubectl apply -f - --validate=false >> "$LOG_FILE" 2>&1
-apiVersion: node.k8s.io/v1
-kind: RuntimeClass
-metadata:
-  name: reaper-v2
-handler: reaper-v2
-YAML
-
+  # Verify RuntimeClass was created by install script
+  log_status "Verifying RuntimeClass..."
   for i in $(seq 1 30); do
     if kubectl get runtimeclass reaper-v2 &>/dev/null; then
       log_status "RuntimeClass reaper-v2 ready."
