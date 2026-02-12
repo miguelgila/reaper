@@ -389,8 +389,8 @@ phase_setup() {
     fi
   fi
 
-  # Install Reaper using the installation script
-  log_status "Installing Reaper runtime to Kind cluster..."
+  # Install Reaper using the unified Ansible installer
+  log_status "Installing Reaper runtime to Kind cluster (via Ansible)..."
   if $VERBOSE; then
     ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" --verbose 2>&1 | tee -a "$LOG_FILE"
   else

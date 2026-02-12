@@ -163,25 +163,31 @@ reaper-runtime delete my-app
 
 ### Kubernetes Clusters
 
-**Unified Ansible deployment (recommended for all clusters)**:
+**Unified Ansible-based installer**:
 
-Ansible provides a single, consistent method for deploying to both Kind and production clusters:
+Reaper uses Ansible for deployment to provide a single, consistent method for both Kind and production clusters:
 
 ```bash
 # For Kind clusters (testing/CI)
-./scripts/install-reaper-ansible.sh --kind <cluster-name>
+./scripts/install-reaper.sh --kind <cluster-name>
 
 # For production clusters
-./scripts/install-reaper-ansible.sh --inventory ansible/inventory.ini
+./scripts/install-reaper.sh --inventory ansible/inventory.ini
 
 # Dry run (preview changes)
-./scripts/install-reaper-ansible.sh --kind test --dry-run
+./scripts/install-reaper.sh --kind test --dry-run
 
 # Rollback if needed
 ansible-playbook -i <inventory> ansible/rollback-reaper.yml
 ```
 
-**Why Ansible for everything?**
+**Prerequisites:**
+- Ansible 2.9+ (`pip install ansible` or `brew install ansible`)
+- For Kind: Docker and Kind cluster running
+- For production: SSH access to cluster nodes
+- Reaper binaries built: `cargo build --release`
+
+**Why Ansible?**
 - **Single deployment method**: Same code path for Kind and production
 - **Better tested**: Kind tests validate production deployment
 - **Idempotent**: Safe to re-run without side effects
@@ -191,11 +197,9 @@ ansible-playbook -i <inventory> ansible/rollback-reaper.yml
 **How it works:**
 - **Kind clusters**: Uses Docker connection (`ansible_connection=docker`)
 - **Production clusters**: Uses SSH connection (default)
-- **Same playbook**: Works with both without modification
+- **Same Ansible playbook**: Works with both without modification
 
 For complete installation options, Ansible documentation, and manual setup, see [kubernetes/README.md](kubernetes/README.md) and [ansible/README.md](ansible/README.md).
-
-**Legacy shell script**: The original `install-reaper.sh` is still available for Kind-only deployments but is being phased out in favor of the unified Ansible approach.
 
 ### Testing on Kubernetes
 

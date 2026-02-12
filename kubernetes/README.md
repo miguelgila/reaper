@@ -14,12 +14,12 @@ Use the Ansible-based installer for both Kind and production clusters:
 
 ```bash
 # Install to Kind cluster using Ansible
-./scripts/install-reaper-ansible.sh --kind <cluster-name>
+./scripts/install-reaper.sh --kind <cluster-name>
 
 # Dry run (preview changes)
-./scripts/install-reaper-ansible.sh --kind test --dry-run
+./scripts/install-reaper.sh --kind test --dry-run
 
-# Or run full integration test suite (uses legacy shell script)
+# Or run full integration test suite
 ./scripts/run-integration-tests.sh
 ```
 
@@ -36,7 +36,7 @@ cp ansible/inventory.ini.example ansible/inventory.ini
 ansible -i ansible/inventory.ini k8s_nodes -m ping
 
 # 3. Install using wrapper script
-./scripts/install-reaper-ansible.sh --inventory ansible/inventory.ini
+./scripts/install-reaper.sh --inventory ansible/inventory.ini
 
 # Or call Ansible directly
 # ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
@@ -63,10 +63,10 @@ See [ansible/README.md](../ansible/README.md) for complete Ansible documentation
 **Quick usage:**
 ```bash
 # Kind clusters
-./scripts/install-reaper-ansible.sh --kind <cluster-name>
+./scripts/install-reaper.sh --kind <cluster-name>
 
 # Production clusters
-./scripts/install-reaper-ansible.sh --inventory ansible/inventory.ini
+./scripts/install-reaper.sh --inventory ansible/inventory.ini
 ```
 
 See [ansible/README.md](../ansible/README.md) for:
@@ -76,21 +76,7 @@ See [ansible/README.md](../ansible/README.md) for:
 - Rollback procedures
 - Troubleshooting
 
-### Option 2: Legacy Shell Script (Kind Only - Being Phased Out)
-
-The original `install-reaper.sh` script is still available but being replaced by the unified Ansible approach:
-
-```bash
-# Install to Kind cluster
-./scripts/install-reaper.sh --kind <cluster-name>
-
-# Use pre-built binaries (faster for CI)
-./scripts/install-reaper.sh --kind test --skip-build --binaries-path ./binaries
-```
-
-**Note**: New deployments should use the Ansible-based installer above.
-
-### Option 3: Manual Installation
+### Option 2: Manual Installation
 
 If you need manual control over the installation process:
 
