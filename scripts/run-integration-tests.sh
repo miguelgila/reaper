@@ -389,9 +389,9 @@ phase_setup() {
     fi
   fi
 
-  # Build binaries before installation
+  # Build binaries before installation (using Makefile for consistency with CI)
   log_status "Building Reaper binaries..."
-  cargo build --release --bin containerd-shim-reaper-v2 --bin reaper-runtime >> "$LOG_FILE" 2>&1
+  make build-release >> "$LOG_FILE" 2>&1
 
   # Install Reaper using the unified Ansible installer
   log_status "Installing Reaper runtime to Kind cluster (via Ansible)..."
