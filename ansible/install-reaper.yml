@@ -79,10 +79,10 @@
         group: root
 
     - name: Verify binaries are executable
-      command: "{{ install_path }}/{{ item }} --help"
+      stat:
+        path: "{{ install_path }}/{{ item }}"
       register: binary_check
-      failed_when: binary_check.rc != 0
-      changed_when: false
+      failed_when: not binary_check.stat.exists or not binary_check.stat.executable
       loop:
         - "{{ reaper_shim_binary }}"
         - "{{ reaper_runtime_binary }}"
@@ -113,15 +113,30 @@
         mode: '0644'
       when: not containerd_config_stat.stat.exists
 
+    - name: Check if Reaper runtime already configured
+      shell: grep -q 'runtimes.reaper-v2' {{ containerd_config }}
+      register: reaper_configured
+      changed_when: false
+      failed_when: false
+
+    - name: Backup containerd config before modification
+      copy:
+        src: "{{ containerd_config }}"
+        dest: "{{ containerd_config }}.pre-reaper"
+        remote_src: yes
+      when: reaper_configured.rc != 0
+
     - name: Add Reaper runtime configuration to containerd
-      blockinfile:
-        path: "{{ containerd_config }}"
-        marker: "# {mark} ANSIBLE MANAGED BLOCK - Reaper Runtime"
-        block: |
-          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
-            runtime_type = "io.containerd.reaper.v2"
-            sandbox_mode = "podsandbox"
-        backup: yes
+      shell: |
+        cat >> {{ containerd_config }} << 'EOF'
+
+                  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
+                    runtime_type = "io.containerd.reaper.v2"
+                    sandbox_mode = "podsandbox"
+        EOF
+      args:
+        executable: /bin/bash
+      when: reaper_configured.rc != 0
 
     - name: Validate containerd configuration
       command: containerd config dump

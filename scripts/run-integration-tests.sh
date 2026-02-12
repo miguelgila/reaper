@@ -696,7 +696,11 @@ test_shim_cleanup_after_delete() {
     | grep -v grep || true)
 
   local shim_count
-  shim_count=$(echo "$shim_pids" | grep -c . 2>/dev/null || echo 0)
+  if [[ -z "$shim_pids" ]]; then
+    shim_count=0
+  else
+    shim_count=$(echo "$shim_pids" | wc -l | tr -d ' ')
+  fi
 
   # Count how many reaper pods are still actually running
   local running_pods
