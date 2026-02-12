@@ -224,6 +224,10 @@ run_ansible_playbook() {
   # Use our ansible.cfg for cross-version compatibility
   export ANSIBLE_CONFIG="$ANSIBLE_DIR/ansible.cfg"
 
+  # Override any environment variables that might use removed plugins
+  export ANSIBLE_STDOUT_CALLBACK=default
+  export ANSIBLE_LOAD_CALLBACK_PLUGINS=false
+
   if $VERBOSE; then
     ansible_args+=("-vv")
   fi
