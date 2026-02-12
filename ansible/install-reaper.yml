@@ -41,9 +41,9 @@
         msg: "Target architecture: {{ ansible_architecture }}"
 
     - name: Check if binaries exist locally
-      local_action:
-        module: stat
+      stat:
         path: "{{ local_binary_dir }}/{{ reaper_shim_binary }}"
+      delegate_to: localhost
       register: local_shim_binary
       become: no
       run_once: true

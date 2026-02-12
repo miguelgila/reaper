@@ -389,20 +389,61 @@ phase_setup() {
     fi
   fi
 
-  # Build binaries before installation (using Makefile for consistency with CI)
-  log_status "Building Reaper binaries..."
-  make build-release >> "$LOG_FILE" 2>&1
+  # Build static musl binaries for Kind (Linux containers)
+  # We must use static musl binaries to avoid glibc version mismatches
+  log_status "Detecting Kind node architecture..."
+  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
+  NODE_ARCH=$(docker exec "$NODE_ID" uname -m 2>&1) || {
+    log_error "Failed to detect node architecture"
+    exit 1
+  }
+  log_status "Node architecture: $NODE_ARCH"
+
+  log_status "Building static musl Linux binaries via Docker..."
+  case "$NODE_ARCH" in
+    aarch64)
+      TARGET_TRIPLE="aarch64-unknown-linux-musl"
+      MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
+      ;;
+    x86_64)
+      TARGET_TRIPLE="x86_64-unknown-linux-musl"
+      MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
+      ;;
+    *)
+      log_error "Unsupported node architecture: $NODE_ARCH"
+      exit 1
+      ;;
+  esac
+
+  docker run --rm \
+    -v "$(pwd)":/work \
+    -w /work \
+    "$MUSL_IMAGE" \
+    cargo build --release --bin containerd-shim-reaper-v2 --bin reaper-runtime --target "$TARGET_TRIPLE" \
+    >> "$LOG_FILE" 2>&1 || {
+      log_error "Failed to build binaries"
+      tail -50 "$LOG_FILE" >&2
+      exit 1
+    }
+
+  # Copy binaries to expected location for Ansible installer
+  log_status "Copying binaries to target/release/ for installer..."
+  mkdir -p target/release
+  cp "target/$TARGET_TRIPLE/release/containerd-shim-reaper-v2" target/release/ 2>&1 | tee -a "$LOG_FILE"
+  cp "target/$TARGET_TRIPLE/release/reaper-runtime" target/release/ 2>&1 | tee -a "$LOG_FILE"
 
   # Install Reaper using the unified Ansible installer
   log_status "Installing Reaper runtime to Kind cluster (via Ansible)..."
   if $VERBOSE; then
     ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" --verbose 2>&1 | tee -a "$LOG_FILE"
   else
-    ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1
+    # Show errors on stderr even in non-verbose mode
+    ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" 2>&1 | tee -a "$LOG_FILE" || {
+      log_error "Ansible installer failed"
+      tail -100 "$LOG_FILE" >&2
+      exit 1
+    }
   fi
-
-  # Get node ID for later diagnostic use
-  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
 
   log_status "Infrastructure setup complete."
   ci_group_end
