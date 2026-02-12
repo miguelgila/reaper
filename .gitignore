@@ -7,3 +7,8 @@ target-linux/
 .idea/
 .vscode/local
 cobertura.xml
+
+# Ansible temporary files
+*.retry
+.ansible/
+ansible/.ansible/

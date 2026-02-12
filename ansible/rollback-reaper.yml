@@ -1,0 +1,145 @@
+---
+# Ansible playbook for rolling back Reaper runtime installation
+#
+# Usage:
+#   ansible-playbook -i inventory.ini ansible/rollback-reaper.yml
+#
+# This playbook:
+# - Removes Reaper binaries from /usr/local/bin/
+# - Restores containerd configuration from backup
+# - Restarts containerd service
+# - Cleans up overlay filesystem directories
+#
+# WARNING: This will restart containerd, which may temporarily disrupt running pods.
+# Plan this operation during a maintenance window.
+
+- name: Rollback Reaper Runtime Installation
+  hosts: k8s_nodes
+  become: yes
+  gather_facts: no
+
+  vars:
+    reaper_shim_binary: "containerd-shim-reaper-v2"
+    reaper_runtime_binary: "reaper-runtime"
+    install_path: "/usr/local/bin"
+    containerd_config: "/etc/containerd/config.toml"
+    containerd_config_backup: "/etc/containerd/config.toml.backup"
+    overlay_base: "/run/reaper/overlay"
+
+  tasks:
+    - name: Check if backup configuration exists
+      stat:
+        path: "{{ containerd_config_backup }}"
+      register: backup_stat
+
+    - name: Display rollback plan
+      debug:
+        msg:
+          - "Rollback plan for {{ inventory_hostname }}:"
+          - "- Remove {{ install_path }}/{{ reaper_shim_binary }}"
+          - "- Remove {{ install_path }}/{{ reaper_runtime_binary }}"
+          - "- Restore containerd config from {{ containerd_config_backup if backup_stat.stat.exists else 'N/A (will remove Reaper block)' }}"
+          - "- Restart containerd service"
+          - "- Clean up {{ overlay_base }}"
+
+    - name: Confirm rollback
+      pause:
+        prompt: "Press Enter to continue with rollback, or Ctrl+C to abort"
+      when: ansible_check_mode is not defined
+      run_once: true
+      delegate_to: localhost
+
+    - name: Remove Reaper shim binary
+      file:
+        path: "{{ install_path }}/{{ reaper_shim_binary }}"
+        state: absent
+      register: shim_removed
+
+    - name: Remove Reaper runtime binary
+      file:
+        path: "{{ install_path }}/{{ reaper_runtime_binary }}"
+        state: absent
+      register: runtime_removed
+
+    - name: Restore containerd configuration from backup
+      copy:
+        src: "{{ containerd_config_backup }}"
+        dest: "{{ containerd_config }}"
+        remote_src: yes
+        backup: yes
+      when: backup_stat.stat.exists
+      register: config_restored
+
+    - name: Remove Reaper runtime configuration block (if no backup)
+      blockinfile:
+        path: "{{ containerd_config }}"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - Reaper Runtime"
+        state: absent
+        backup: yes
+      when: not backup_stat.stat.exists
+      register: config_cleaned
+
+    - name: Validate containerd configuration
+      command: containerd config dump
+      register: containerd_config_dump
+      changed_when: false
+      failed_when: containerd_config_dump.rc != 0
+
+    - name: Verify Reaper runtime is removed from config
+      assert:
+        that:
+          - "'reaper-v2' not in containerd_config_dump.stdout"
+        fail_msg: "Reaper runtime configuration still present in containerd config"
+        success_msg: "Reaper runtime configuration successfully removed"
+
+    - name: Restart containerd service
+      systemd:
+        name: containerd
+        state: restarted
+      when: config_restored.changed or config_cleaned.changed
+      register: containerd_restart
+
+    - name: Wait for containerd to be ready
+      wait_for:
+        timeout: 10
+      when: containerd_restart.changed
+
+    - name: Verify containerd is running
+      systemd:
+        name: containerd
+      register: containerd_status
+      failed_when: containerd_status.status.ActiveState != "active"
+
+    - name: Clean up overlay filesystem directories
+      file:
+        path: "{{ overlay_base }}"
+        state: absent
+      register: overlay_cleaned
+
+    - name: Display rollback summary
+      debug:
+        msg:
+          - "Rollback completed successfully on {{ inventory_hostname }}"
+          - "Shim binary removed: {{ shim_removed.changed }}"
+          - "Runtime binary removed: {{ runtime_removed.changed }}"
+          - "Config restored: {{ config_restored.changed if backup_stat.stat.exists else config_cleaned.changed }}"
+          - "Containerd restarted: {{ containerd_restart.changed }}"
+          - "Overlay directories cleaned: {{ overlay_cleaned.changed }}"
+
+- name: Post-Rollback Summary
+  hosts: localhost
+  gather_facts: no
+  become: no
+
+  tasks:
+    - name: Display rollback completion
+      debug:
+        msg:
+          - "Reaper runtime rollback complete on all nodes!"
+          - ""
+          - "Next steps:"
+          - "1. Remove RuntimeClass: kubectl delete runtimeclass reaper-v2"
+          - "2. Verify no pods using Reaper runtime"
+          - "3. Clean up any remaining test pods"
+          - ""
+          - "To reinstall: ansible-playbook -i inventory.ini ansible/install-reaper.yml"

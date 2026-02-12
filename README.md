@@ -159,6 +159,48 @@ reaper-runtime kill my-app --signal 15
 reaper-runtime delete my-app
 ```
 
+## Installation
+
+### Kubernetes Clusters
+
+**Unified Ansible-based installer**:
+
+Reaper uses Ansible for deployment to provide a single, consistent method for both Kind and production clusters:
+
+```bash
+# For Kind clusters (testing/CI)
+./scripts/install-reaper.sh --kind <cluster-name>
+
+# For production clusters
+./scripts/install-reaper.sh --inventory ansible/inventory.ini
+
+# Dry run (preview changes)
+./scripts/install-reaper.sh --kind test --dry-run
+
+# Rollback if needed
+ansible-playbook -i <inventory> ansible/rollback-reaper.yml
+```
+
+**Prerequisites:**
+- Ansible 2.9+ (`pip install ansible` or `brew install ansible`)
+- For Kind: Docker and Kind cluster running
+- For production: SSH access to cluster nodes
+- Reaper binaries built: `cargo build --release`
+
+**Why Ansible?**
+- **Single deployment method**: Same code path for Kind and production
+- **Better tested**: Kind tests validate production deployment
+- **Idempotent**: Safe to re-run without side effects
+- **Rollback support**: Built-in rollback playbook
+- **External orchestration**: No containerd circular dependencies
+
+**How it works:**
+- **Kind clusters**: Uses Docker connection (`ansible_connection=docker`)
+- **Production clusters**: Uses SSH connection (default)
+- **Same Ansible playbook**: Works with both without modification
+
+For complete installation options, Ansible documentation, and manual setup, see [kubernetes/README.md](kubernetes/README.md) and [ansible/README.md](ansible/README.md).
+
 ### Testing on Kubernetes
 
 To test the Reaper runtime with Kubernetes (kind cluster):
@@ -167,7 +209,7 @@ To test the Reaper runtime with Kubernetes (kind cluster):
 ./scripts/run-integration-tests.sh
 ```
 
-This runs a complete integration test suite including DNS resolution, overlay filesystem sharing, host protection, and more. See [TESTING.md](TESTING.md) for full details.
+This runs a complete integration test suite including DNS resolution, overlay filesystem sharing, host protection, and more. The test suite uses `install-reaper.sh` internally. See [TESTING.md](TESTING.md) for full details.
 
 ### Testing core binary execution
 

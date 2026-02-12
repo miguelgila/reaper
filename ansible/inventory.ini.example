@@ -1,0 +1,47 @@
+# Ansible inventory for Reaper runtime deployment
+#
+# Copy this file to inventory.ini and customize for your cluster:
+#   cp ansible/inventory.ini.example ansible/inventory.ini
+#
+# Then run the playbook:
+#   ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
+
+[k8s_nodes]
+# List your Kubernetes nodes here with SSH connection details
+# Use either IP addresses or hostnames that are SSH-accessible
+
+# Example: Direct IP addresses
+# node1 ansible_host=192.168.1.10 ansible_user=ubuntu
+# node2 ansible_host=192.168.1.11 ansible_user=ubuntu
+# node3 ansible_host=192.168.1.12 ansible_user=ubuntu
+
+# Example: Hostnames (requires DNS resolution)
+# k8s-master ansible_host=k8s-master.example.com ansible_user=admin
+# k8s-worker-1 ansible_host=k8s-worker-1.example.com ansible_user=admin
+# k8s-worker-2 ansible_host=k8s-worker-2.example.com ansible_user=admin
+
+# Example: Cloud provider with bastion/jump host
+# node1 ansible_host=10.0.1.10 ansible_user=ubuntu ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p bastion.example.com"'
+# node2 ansible_host=10.0.1.11 ansible_user=ubuntu ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p bastion.example.com"'
+
+[k8s_nodes:vars]
+# Global variables for all nodes
+ansible_user=ubuntu
+ansible_ssh_private_key_file=~/.ssh/id_rsa
+ansible_become=yes
+ansible_become_method=sudo
+ansible_python_interpreter=/usr/bin/python3
+
+# Uncomment if you need to use a specific SSH port
+# ansible_port=22
+
+# Uncomment if you need to disable host key checking (not recommended for production)
+# ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+
+# Example: GKE nodes (requires gcloud CLI configured)
+# ansible_ssh_common_args='-o ProxyCommand="gcloud compute ssh %h --tunnel-through-iap"'
+
+# Example: EKS nodes (requires AWS SSM Session Manager)
+# ansible_connection=aws_ssm
+# ansible_aws_ssm_bucket_name=my-ssm-bucket
+# ansible_aws_ssm_region=us-east-1

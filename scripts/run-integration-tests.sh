@@ -389,56 +389,71 @@ phase_setup() {
     fi
   fi
 
-  # Detect node
+  # Build static musl binaries for Kind (Linux containers)
+  # We must use static musl binaries to avoid glibc version mismatches
+  log_status "Detecting Kind node architecture..."
   NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
-  local node_arch
-  node_arch=$(docker exec "$NODE_ID" uname -m)
-  log_status "Kind node: $NODE_ID (arch: $node_arch)"
+  NODE_ARCH=$(docker exec "$NODE_ID" uname -m 2>&1) || {
+    log_error "Failed to detect node architecture"
+    exit 1
+  }
+  log_status "Node architecture: $NODE_ARCH"
 
-  # Build static musl binaries
-  log_status "Building static musl Linux binaries..."
-  local target_triple musl_image
-  case "$node_arch" in
+  log_status "Building static musl Linux binaries via Docker..."
+  case "$NODE_ARCH" in
     aarch64)
-      target_triple="aarch64-unknown-linux-musl"
-      musl_image="messense/rust-musl-cross:aarch64-musl"
+      TARGET_TRIPLE="aarch64-unknown-linux-musl"
+      MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
       ;;
     x86_64)
-      target_triple="x86_64-unknown-linux-musl"
-      musl_image="messense/rust-musl-cross:x86_64-musl"
+      TARGET_TRIPLE="x86_64-unknown-linux-musl"
+      MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
       ;;
     *)
-      log_error "Unsupported node arch: $node_arch"
-      return 1
+      log_error "Unsupported node architecture: $NODE_ARCH"
+      exit 1
       ;;
   esac
 
   docker run --rm \
     -v "$(pwd)":/work \
     -w /work \
-    "$musl_image" \
-    cargo build --release --bin "$SHIM_BIN" --bin "$RUNTIME_BIN" --target "$target_triple" >> "$LOG_FILE" 2>&1
+    "$MUSL_IMAGE" \
+    cargo build --release --bin containerd-shim-reaper-v2 --bin reaper-runtime --target "$TARGET_TRIPLE" \
+    >> "$LOG_FILE" 2>&1 || {
+      log_error "Failed to build binaries"
+      tail -50 "$LOG_FILE" >&2
+      exit 1
+    }
 
-  # Deploy binaries to kind node
-  local shim_path
-  shim_path="$(pwd)/target/$target_triple/release/$SHIM_BIN"
-  local runtime_path
-  runtime_path="$(pwd)/target/$target_triple/release/$RUNTIME_BIN"
+  # Set binary directory for Ansible installer
+  # In CI, target/release may be owned by a different user (from cache), so we use the
+  # target-specific directory directly without copying
+  if [[ -n "${CI:-}" ]]; then
+    # CI mode: Use binaries directly from target/<triple>/release to avoid permission issues
+    export REAPER_BINARY_DIR="$(pwd)/target/$TARGET_TRIPLE/release"
+    log_status "Using binaries from $REAPER_BINARY_DIR (CI mode)..."
+  else
+    # Local mode: Copy to target/release for convenience
+    log_status "Copying binaries to target/release/ for installer..."
+    mkdir -p target/release
+    cp "target/$TARGET_TRIPLE/release/containerd-shim-reaper-v2" target/release/ 2>&1 | tee -a "$LOG_FILE"
+    cp "target/$TARGET_TRIPLE/release/reaper-runtime" target/release/ 2>&1 | tee -a "$LOG_FILE"
+    # REAPER_BINARY_DIR not needed in local mode (uses default)
+  fi
 
-  log_status "Deploying binaries to kind node..."
-  {
-    docker cp "$shim_path" "$NODE_ID":/usr/local/bin/$SHIM_BIN
-    docker exec "$NODE_ID" chmod +x /usr/local/bin/$SHIM_BIN
-    docker cp "$runtime_path" "$NODE_ID":/usr/local/bin/$RUNTIME_BIN
-    docker exec "$NODE_ID" chmod +x /usr/local/bin/$RUNTIME_BIN
-  } >> "$LOG_FILE" 2>&1
-
-  # Create overlay directories
-  docker exec "$NODE_ID" mkdir -p /run/reaper/overlay/upper /run/reaper/overlay/work >> "$LOG_FILE" 2>&1
-
-  # Configure containerd
-  log_status "Configuring containerd..."
-  ./scripts/configure-containerd.sh kind "$NODE_ID" >> "$LOG_FILE" 2>&1
+  # Install Reaper using the unified Ansible installer
+  log_status "Installing Reaper runtime to Kind cluster (via Ansible)..."
+  if $VERBOSE; then
+    ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" --verbose 2>&1 | tee -a "$LOG_FILE"
+  else
+    # Show errors on stderr even in non-verbose mode
+    ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" 2>&1 | tee -a "$LOG_FILE" || {
+      log_error "Ansible installer failed"
+      tail -100 "$LOG_FILE" >&2
+      exit 1
+    }
+  fi
 
   log_status "Infrastructure setup complete."
   ci_group_end
@@ -461,16 +476,8 @@ phase_readiness() {
   }
   sleep 30  # stability buffer
 
-  # Create RuntimeClass
-  log_status "Creating RuntimeClass..."
-  cat <<'YAML' | retry_kubectl kubectl apply -f - --validate=false >> "$LOG_FILE" 2>&1
-apiVersion: node.k8s.io/v1
-kind: RuntimeClass
-metadata:
-  name: reaper-v2
-handler: reaper-v2
-YAML
-
+  # Verify RuntimeClass was created by install script
+  log_status "Verifying RuntimeClass..."
   for i in $(seq 1 30); do
     if kubectl get runtimeclass reaper-v2 &>/dev/null; then
       log_status "RuntimeClass reaper-v2 ready."
@@ -699,7 +706,11 @@ test_shim_cleanup_after_delete() {
     | grep -v grep || true)
 
   local shim_count
-  shim_count=$(echo "$shim_pids" | grep -c . 2>/dev/null || echo 0)
+  if [[ -z "$shim_pids" ]]; then
+    shim_count=0
+  else
+    shim_count=$(echo "$shim_pids" | wc -l | tr -d ' ')
+  fi
 
   # Count how many reaper pods are still actually running
   local running_pods

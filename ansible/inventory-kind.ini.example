@@ -1,0 +1,35 @@
+# Ansible inventory for Kind clusters using Docker connection
+#
+# For Kind clusters, Ansible uses the Docker connection plugin to access
+# nodes via 'docker exec' instead of SSH. This is faster and doesn't require
+# SSH to be installed in the Kind node containers.
+#
+# AUTOMATIC GENERATION (Recommended):
+#   Use the helper script to auto-generate inventory from a running cluster:
+#   ./scripts/generate-kind-inventory.sh <cluster-name> ansible/inventory-kind.ini
+#
+# MANUAL CONFIGURATION:
+#   If you prefer to create the inventory manually, use the format below.
+
+[k8s_nodes]
+# List Kind node containers here
+# Format: <container-name> ansible_connection=docker ansible_host=<container-name>
+#
+# Example for a single-node Kind cluster:
+# kind-control-plane ansible_connection=docker ansible_host=kind-control-plane
+#
+# Example for a multi-node Kind cluster:
+# kind-control-plane ansible_connection=docker ansible_host=kind-control-plane
+# kind-worker ansible_connection=docker ansible_host=kind-worker
+# kind-worker2 ansible_connection=docker ansible_host=kind-worker2
+
+[k8s_nodes:vars]
+# Docker connection settings
+ansible_connection=docker
+ansible_user=root
+ansible_become=no
+ansible_python_interpreter=/usr/bin/python3
+
+# Note: Docker connection doesn't use SSH
+# SSH-related variables (ansible_ssh_private_key_file, ansible_port, etc.)
+# are ignored when using ansible_connection=docker

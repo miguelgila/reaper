@@ -6,19 +6,81 @@ This directory contains configuration files for integrating the Reaper container
 
 ## Quick Start
 
-The recommended way to test Reaper with Kubernetes is using the automated integration test suite:
+**Unified Ansible deployment (recommended)**:
+
+Use the Ansible-based installer for both Kind and production clusters:
+
+### For Kind Clusters (Testing/CI)
 
 ```bash
+# Install to Kind cluster using Ansible
+./scripts/install-reaper.sh --kind <cluster-name>
+
+# Dry run (preview changes)
+./scripts/install-reaper.sh --kind test --dry-run
+
+# Or run full integration test suite
 ./scripts/run-integration-tests.sh
 ```
 
-This orchestrates everything: building binaries, creating a kind cluster, configuring containerd, and running all tests. See [TESTING.md](../TESTING.md) for full details.
+See [TESTING.md](../TESTING.md) for full details.
 
-## Manual Deployment
+### For Production Clusters
 
-If you need to deploy to an existing Kubernetes cluster:
+```bash
+# 1. Create inventory
+cp ansible/inventory.ini.example ansible/inventory.ini
+# Edit ansible/inventory.ini with your nodes
 
-### 1. Build and Install Binaries
+# 2. Test connectivity
+ansible -i ansible/inventory.ini k8s_nodes -m ping
+
+# 3. Install using wrapper script
+./scripts/install-reaper.sh --inventory ansible/inventory.ini
+
+# Or call Ansible directly
+# ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
+```
+
+See [ansible/README.md](../ansible/README.md) for complete Ansible documentation.
+
+## Installation Options
+
+### Option 1: Unified Ansible Installer (Recommended)
+
+**Why use Ansible for everything?**
+- **Single deployment method**: Same code path for Kind and production
+- **Better tested**: Kind tests validate production deployment
+- **Idempotent**: Safe to re-run without side effects
+- **Rollback support**: Built-in rollback playbook
+- **External orchestration**: No containerd circular dependencies
+
+**How it works:**
+- **Kind clusters**: Uses Docker connection (`ansible_connection=docker`)
+- **Production clusters**: Uses SSH connection (default)
+- **Same playbook**: Works with both without modification
+
+**Quick usage:**
+```bash
+# Kind clusters
+./scripts/install-reaper.sh --kind <cluster-name>
+
+# Production clusters
+./scripts/install-reaper.sh --inventory ansible/inventory.ini
+```
+
+See [ansible/README.md](../ansible/README.md) for:
+- Inventory configuration examples (Kind and production)
+- Cloud provider setup (GKE, EKS, AKS)
+- Rolling updates and parallel deployment
+- Rollback procedures
+- Troubleshooting
+
+### Option 2: Manual Installation
+
+If you need manual control over the installation process:
+
+#### 1. Build and Install Binaries
 
 Build both binaries locally:
 
@@ -34,7 +96,7 @@ scp target/release/reaper-runtime <node>:/usr/local/bin/
 ssh <node> chmod +x /usr/local/bin/{containerd-shim-reaper-v2,reaper-runtime}
 ```
 
-### 2. Configure containerd
+#### 2. Configure containerd
 
 Use the automated configuration script:
 
@@ -58,7 +120,7 @@ sudo systemctl restart containerd
 
 > **Important:** The shim binary must be in `$PATH` at `/usr/local/bin/`. Containerd discovers shims by name convention, not by explicit path. Do NOT use `[options]` sections in the runtime config—this causes cgroup path bugs.
 
-### 3. Create RuntimeClass
+#### 3. Create RuntimeClass
 
 Apply the RuntimeClass:
 
@@ -66,7 +128,7 @@ Apply the RuntimeClass:
 kubectl apply -f kubernetes/runtimeclass.yaml
 ```
 
-### 4. Test a Pod
+#### 4. Test a Pod
 
 The `runtimeclass.yaml` file includes an example pod. After applying the RuntimeClass, you can test:
 
