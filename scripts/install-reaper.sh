@@ -221,6 +221,9 @@ run_ansible_playbook() {
   local ansible_args=()
   ansible_args+=("-i" "$inventory")
 
+  # Use our ansible.cfg for cross-version compatibility
+  export ANSIBLE_CONFIG="$ANSIBLE_DIR/ansible.cfg"
+
   if $VERBOSE; then
     ansible_args+=("-vv")
   fi
