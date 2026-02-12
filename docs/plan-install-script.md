@@ -50,6 +50,29 @@ Create a production-ready installation script (`scripts/install-reaper.sh`) that
 
 A unified installation script supporting multiple deployment modes.
 
+### Why Ansible for Production (Not DaemonSet)?
+
+**DaemonSet approach has fundamental issues:**
+1. **Circular dependency**: DaemonSet runs through containerd, but needs to restart containerd after config changes
+2. **Containerd restart timing**: Restarting containerd while it's managing the installer pod creates race conditions
+3. **No guarantee of completion**: If containerd restarts before DaemonSet finishes, the installation may be incomplete
+4. **Complexity**: Requires privileged containers, hostPath mounts, complex lifecycle management
+
+**Ansible approach is superior:**
+1. **External orchestration**: Runs outside the cluster, no circular dependencies
+2. **Idempotent**: Can safely re-run, will only change what's needed
+3. **Rollback support**: Built-in rollback via separate playbook
+4. **Standard practice**: Ansible is the de facto standard for cluster node configuration
+5. **Verification**: Can verify each step before proceeding to the next node
+6. **Rolling updates**: Can deploy to nodes one at a time to minimize impact
+7. **Cloud-agnostic**: Works with any cluster where nodes are SSH-accessible
+
+**Alternative for SSH-less environments:**
+- Cloud provider APIs (gcloud compute ssh, aws ssm start-session, az vm run-command)
+- Node image customization (bake Reaper into base images)
+- Cloud-init/user-data scripts
+- Terraform provisioners
+
 ### Modes of Operation
 
 1. **Kind cluster** (default for CI/testing)
@@ -57,9 +80,9 @@ A unified installation script supporting multiple deployment modes.
    ./scripts/install-reaper.sh --kind <cluster-name>
    ```
 
-2. **Real Kubernetes cluster** (production)
+2. **Real Kubernetes cluster via SSH** (production)
    ```bash
-   ./scripts/install-reaper.sh --cluster --nodes node1,node2,node3
+   ./scripts/install-reaper.sh --ssh --nodes node1,node2,node3
    ```
 
 3. **Auto-detect** (inspects current kubectl context)
@@ -67,9 +90,9 @@ A unified installation script supporting multiple deployment modes.
    ./scripts/install-reaper.sh --auto
    ```
 
-4. **DaemonSet deployment** (Kubernetes-native, for production clusters)
+4. **Ansible playbook** (recommended for production clusters)
    ```bash
-   ./scripts/install-reaper.sh --daemonset
+   ansible-playbook ansible/install-reaper.yml -i inventory.ini
    ```
 
 ### Features
@@ -82,9 +105,9 @@ A unified installation script supporting multiple deployment modes.
 - Option to use pre-built binaries (for CI caching)
 
 **Deployment Methods:**
-- **Direct deploy**: Copy binaries via SSH/docker exec to each node
-- **DaemonSet**: Kubernetes-native installation using privileged DaemonSet (for production)
-- **ConfigMap/Initcontainer**: Bundle binaries in ConfigMap, extract via init container
+- **Direct deploy (Kind)**: Copy binaries via `docker cp` and `docker exec` to each node container
+- **SSH-based deploy**: Direct SSH to cluster nodes with parallel execution
+- **Ansible playbook**: Configuration management approach with idempotent deployment (recommended for production)
 
 **Configuration:**
 - Automatically configure containerd on all nodes
@@ -120,18 +143,26 @@ A unified installation script supporting multiple deployment modes.
    - RuntimeClass creation (lines 466-472)
 
 ### Phase 2: Deployment Methods
-3. **Implement direct deployment** (kind/SSH):
-   - Kind node deployment via `docker cp` and `docker exec`
-   - SSH-based deployment for real clusters
-   - Node connectivity pre-checks
-   - Parallel deployment to multiple nodes
+3. **Implement SSH-based deployment** (real clusters):
+   - SSH connectivity pre-checks (key-based auth, sudo access)
+   - Parallel deployment to multiple nodes using GNU parallel or xargs
+   - Node discovery via kubectl (get nodes, extract IPs/hostnames)
+   - Support for bastion/jump host scenarios
+   - Cloud provider helpers (gcloud compute ssh, aws ssm, az vm run-command)
 
-4. **Implement DaemonSet deployment**:
-   - Create DaemonSet YAML template (`kubernetes/installer-daemonset.yaml`)
-   - Bundle binaries as ConfigMap or use init container with HTTP download
-   - Privileged DaemonSet to copy binaries to host `/usr/local/bin/`
-   - Configure containerd from DaemonSet
-   - Self-cleanup after installation
+4. **Implement Ansible playbook** (production-ready approach):
+   - Create `ansible/install-reaper.yml` playbook
+   - Create `ansible/inventory.ini.example` template
+   - Tasks:
+     - Detect node architecture
+     - Copy binaries to `/usr/local/bin/`
+     - Backup existing containerd config
+     - Merge reaper-v2 runtime configuration
+     - Restart containerd service
+     - Verify installation
+   - Support for both static inventory and dynamic inventory (cloud providers)
+   - Idempotent design (safe to re-run)
+   - Rollback playbook (`ansible/rollback-reaper.yml`)
 
 ### Phase 3: Verification & Safety
 5. **Add verification suite**:
@@ -255,7 +286,9 @@ main "$@"
 
 **New files:**
 - `scripts/install-reaper.sh` - Main installation script
-- `kubernetes/installer-daemonset.yaml` - DaemonSet template (Phase 2)
+- `ansible/install-reaper.yml` - Ansible playbook for production (Phase 2)
+- `ansible/inventory.ini.example` - Example Ansible inventory (Phase 2)
+- `ansible/rollback-reaper.yml` - Rollback playbook (Phase 2)
 - `scripts/uninstall-reaper.sh` - Uninstallation script (Phase 5)
 
 **Modified files:**
@@ -298,8 +331,10 @@ main "$@"
 | Breaking existing test suite | High | Incremental refactor, maintain backward compat |
 | Different containerd versions | Medium | Test against 1.x and 2.x, version detection |
 | Cross-architecture complexity | Medium | Use Docker for cross-compilation, verify binaries |
-| Production cluster failures | High | Dry-run mode, rollback, extensive validation |
-| SSH access issues | Low | Provide alternative DaemonSet method |
+| Production cluster failures | High | Dry-run mode, rollback via Ansible, extensive validation |
+| SSH access issues | Medium | Provide cloud provider-specific helpers (gcloud, aws ssm) |
+| Ansible not installed | Low | Document installation, provide shell script alternative |
+| Containerd restart impact | Medium | Ansible rolling restart strategy, maintenance windows |
 
 ## Implementation Notes
 
@@ -354,8 +389,9 @@ main "$@"
 - ✅ Phase 4: Integration with test suite and documentation updates
 
 **Not implemented (future work):**
-- Phase 2: DaemonSet deployment method (production clusters)
-- Phase 3: Safety features (rollback, backup/restore)
+- Phase 2: SSH-based deployment (real clusters with direct node access)
+- Phase 2: Ansible playbook (recommended for production)
+- Phase 3: Safety features (rollback playbook, backup/restore)
 - Phase 5: Production enhancements (Helm, multi-cluster, uninstall)
 
 The core functionality is complete and ready for use. The installation script successfully:
