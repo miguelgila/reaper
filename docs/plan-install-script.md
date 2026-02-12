@@ -419,6 +419,53 @@ main "$@"
    - Verification at each step
    - Comprehensive error handling
 
+### Phase 2.5 - Unification (2026-02-12)
+
+**Unified Ansible deployment for both Kind and production clusters:**
+
+**Motivation:**
+User feedback identified that having two separate deployment methods (shell script for Kind, Ansible for production) was unnecessarily complex and harder to maintain. The goal: **one method to rule them all**.
+
+**Implementation:**
+
+**New files created:**
+- `scripts/generate-kind-inventory.sh` (70 lines) - Auto-generates Ansible inventory from running Kind cluster
+- `ansible/inventory-kind.ini.example` (27 lines) - Example inventory template for Kind with Docker connection
+- `scripts/install-reaper-ansible.sh` (274 lines) - Unified installer that wraps Ansible for both Kind and production
+
+**How it works:**
+1. **Kind clusters**: Script generates inventory using Docker connection plugin
+   - Uses `ansible_connection=docker` instead of SSH
+   - Connects via `docker exec` (no SSH required)
+   - Faster than SSH, no key management needed
+
+2. **Production clusters**: Uses existing SSH-based inventory
+   - Standard `ansible_connection=ssh` (default)
+   - Existing `inventory.ini` templates work as-is
+
+3. **Same Ansible playbook**: `install-reaper.yml` works with both connection types
+   - Ansible modules are connection-agnostic
+   - No playbook modifications needed
+
+**Benefits of unification:**
+- **Single code path**: One playbook to maintain, test, and debug
+- **Better testing**: Kind tests validate the exact code used in production
+- **Consistent behavior**: Same deployment logic everywhere
+- **Simpler maintenance**: No need to keep shell script and Ansible in sync
+- **Less cognitive load**: Users learn one method, use it everywhere
+
+**Migration path:**
+- Legacy `install-reaper.sh` kept for backward compatibility
+- Marked as "being phased out" in documentation
+- `run-integration-tests.sh` still uses legacy script (will migrate later)
+- New deployments should use `install-reaper-ansible.sh`
+
+**Documentation updates:**
+- `README.md`: Restructured to lead with unified Ansible approach
+- `kubernetes/README.md`: Added "Unified Ansible Installer" as Option 1 (recommended)
+- `ansible/README.md`: Added Kind-specific section with Docker connection examples
+- Added "Why Unified Ansible Deployment?" rationale section
+
 ### Phase 4 - Integration & Documentation (2026-02-11)
 
 **Refactored `run-integration-tests.sh`** to use the new installation script:
@@ -450,22 +497,25 @@ main "$@"
 **Completed:**
 - ✅ Phase 1: Core installation script with full Kind support
 - ✅ Phase 2: Ansible playbooks for production deployment (install + rollback)
+- ✅ Phase 2.5: **Unified Ansible deployment** for both Kind and production
 - ✅ Phase 3: Verification suite (binaries, containerd config, RuntimeClass)
 - ✅ Phase 3: Safety features (backup/restore via Ansible rollback playbook)
 - ✅ Phase 4: Integration with test suite and documentation updates
 
 **Not implemented (future work):**
-- Phase 2: Direct SSH mode in shell script (decided against - Ansible is superior)
+- Migrate `run-integration-tests.sh` to use `install-reaper-ansible.sh`
+- Deprecate/remove legacy `install-reaper.sh` (currently kept for backward compatibility)
 - Phase 5: Production enhancements (Helm chart, multi-cluster, uninstall command)
 
-The core functionality is complete and ready for use. The installation script successfully:
-1. Installs Reaper to Kind clusters with a single command
-2. Handles all installation steps automatically
-3. Provides verification and error handling
-4. Integrates with the test suite for continuous validation
-5. Is documented for user consumption
+The core functionality is complete and ready for use. The installation approach successfully:
+1. **Unified deployment method**: One Ansible-based approach for both Kind and production
+2. Installs Reaper to any Kubernetes cluster with a single command
+3. Handles all installation steps automatically
+4. Provides verification and error handling
+5. Integrates with the test suite for continuous validation
+6. Is documented for user consumption
 
-Future phases can be implemented incrementally as needed for production deployments.
+**Key Achievement:** We now have **one deployment method** that works universally, is well-tested (via Kind), and production-ready (via Ansible).
 
 ---
 

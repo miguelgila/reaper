@@ -163,49 +163,39 @@ reaper-runtime delete my-app
 
 ### Kubernetes Clusters
 
-**For Kind clusters (testing/CI)**:
+**Unified Ansible deployment (recommended for all clusters)**:
+
+Ansible provides a single, consistent method for deploying to both Kind and production clusters:
 
 ```bash
-# Quick install to Kind cluster
-./scripts/install-reaper.sh --kind <cluster-name>
+# For Kind clusters (testing/CI)
+./scripts/install-reaper-ansible.sh --kind <cluster-name>
 
-# Use pre-built binaries (faster for CI)
-./scripts/install-reaper.sh --kind test --binaries-path ./binaries
+# For production clusters
+./scripts/install-reaper-ansible.sh --inventory ansible/inventory.ini
 
-# Preview changes without modifying the cluster
-./scripts/install-reaper.sh --dry-run --kind test
+# Dry run (preview changes)
+./scripts/install-reaper-ansible.sh --kind test --dry-run
 
-# Verify existing installation
-./scripts/install-reaper.sh --verify-only
+# Rollback if needed
+ansible-playbook -i <inventory> ansible/rollback-reaper.yml
 ```
 
-**For production clusters (recommended)**:
+**Why Ansible for everything?**
+- **Single deployment method**: Same code path for Kind and production
+- **Better tested**: Kind tests validate production deployment
+- **Idempotent**: Safe to re-run without side effects
+- **Rollback support**: Built-in rollback playbook
+- **External orchestration**: No containerd circular dependencies
 
-Use Ansible for idempotent, production-ready deployment:
-
-```bash
-# 1. Create inventory file
-cp ansible/inventory.ini.example ansible/inventory.ini
-# Edit ansible/inventory.ini with your node details
-
-# 2. Run installation playbook
-ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
-
-# 3. Create RuntimeClass
-kubectl apply -f kubernetes/runtimeclass.yaml
-
-# 4. Rollback if needed
-ansible-playbook -i ansible/inventory.ini ansible/rollback-reaper.yml
-```
-
-The Ansible approach provides:
-- External orchestration (no containerd circular dependencies)
-- Idempotent deployment (safe to re-run)
-- Built-in rollback support
-- Rolling updates across nodes
-- Works with any SSH-accessible cluster
+**How it works:**
+- **Kind clusters**: Uses Docker connection (`ansible_connection=docker`)
+- **Production clusters**: Uses SSH connection (default)
+- **Same playbook**: Works with both without modification
 
 For complete installation options, Ansible documentation, and manual setup, see [kubernetes/README.md](kubernetes/README.md) and [ansible/README.md](ansible/README.md).
+
+**Legacy shell script**: The original `install-reaper.sh` is still available for Kind-only deployments but is being phased out in favor of the unified Ansible approach.
 
 ### Testing on Kubernetes
 

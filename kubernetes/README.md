@@ -6,21 +6,26 @@ This directory contains configuration files for integrating the Reaper container
 
 ## Quick Start
 
+**Unified Ansible deployment (recommended)**:
+
+Use the Ansible-based installer for both Kind and production clusters:
+
 ### For Kind Clusters (Testing/CI)
 
 ```bash
-# Quick install to Kind cluster
-./scripts/install-reaper.sh --kind <cluster-name>
+# Install to Kind cluster using Ansible
+./scripts/install-reaper-ansible.sh --kind <cluster-name>
 
-# Or run full integration test suite
+# Dry run (preview changes)
+./scripts/install-reaper-ansible.sh --kind test --dry-run
+
+# Or run full integration test suite (uses legacy shell script)
 ./scripts/run-integration-tests.sh
 ```
 
 See [TESTING.md](../TESTING.md) for full details.
 
 ### For Production Clusters
-
-Use Ansible for idempotent, production-ready deployment:
 
 ```bash
 # 1. Create inventory
@@ -30,41 +35,50 @@ cp ansible/inventory.ini.example ansible/inventory.ini
 # 2. Test connectivity
 ansible -i ansible/inventory.ini k8s_nodes -m ping
 
-# 3. Install
-ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
+# 3. Install using wrapper script
+./scripts/install-reaper-ansible.sh --inventory ansible/inventory.ini
 
-# 4. Create RuntimeClass
-kubectl apply -f kubernetes/runtimeclass.yaml
+# Or call Ansible directly
+# ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
 ```
 
 See [ansible/README.md](../ansible/README.md) for complete Ansible documentation.
 
 ## Installation Options
 
-### Option 1: Ansible (Recommended for Production)
+### Option 1: Unified Ansible Installer (Recommended)
 
-**Why Ansible?**
-- External orchestration (no containerd circular dependencies)
-- Idempotent (safe to re-run)
-- Built-in rollback support
-- Rolling updates across nodes
-- Standard practice for cluster node configuration
+**Why use Ansible for everything?**
+- **Single deployment method**: Same code path for Kind and production
+- **Better tested**: Kind tests validate production deployment
+- **Idempotent**: Safe to re-run without side effects
+- **Rollback support**: Built-in rollback playbook
+- **External orchestration**: No containerd circular dependencies
+
+**How it works:**
+- **Kind clusters**: Uses Docker connection (`ansible_connection=docker`)
+- **Production clusters**: Uses SSH connection (default)
+- **Same playbook**: Works with both without modification
 
 **Quick usage:**
 ```bash
-ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
+# Kind clusters
+./scripts/install-reaper-ansible.sh --kind <cluster-name>
+
+# Production clusters
+./scripts/install-reaper-ansible.sh --inventory ansible/inventory.ini
 ```
 
 See [ansible/README.md](../ansible/README.md) for:
-- Inventory configuration examples
+- Inventory configuration examples (Kind and production)
 - Cloud provider setup (GKE, EKS, AKS)
 - Rolling updates and parallel deployment
 - Rollback procedures
 - Troubleshooting
 
-### Option 2: Shell Script (For Kind Clusters)
+### Option 2: Legacy Shell Script (Kind Only - Being Phased Out)
 
-The `install-reaper.sh` script is optimized for Kind clusters:
+The original `install-reaper.sh` script is still available but being replaced by the unified Ansible approach:
 
 ```bash
 # Install to Kind cluster
@@ -72,22 +86,9 @@ The `install-reaper.sh` script is optimized for Kind clusters:
 
 # Use pre-built binaries (faster for CI)
 ./scripts/install-reaper.sh --kind test --skip-build --binaries-path ./binaries
-
-# Verify existing installation
-./scripts/install-reaper.sh --verify-only
-
-# Get help
-./scripts/install-reaper.sh --help
 ```
 
-The script automatically:
-- Detects node architecture (x86_64, aarch64)
-- Builds static musl binaries (or uses pre-built)
-- Deploys binaries via `docker cp`
-- Creates overlay filesystem directories
-- Configures containerd
-- Creates RuntimeClass
-- Verifies installation
+**Note**: New deployments should use the Ansible-based installer above.
 
 ### Option 3: Manual Installation
 

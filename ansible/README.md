@@ -4,31 +4,68 @@ This directory contains Ansible playbooks for deploying and managing Reaper runt
 
 ## Overview
 
-Ansible provides a production-ready, idempotent approach to installing Reaper across multiple nodes:
+Ansible provides a unified, production-ready deployment method for both Kind and production clusters:
 
 - **External orchestration**: No circular dependencies with containerd
 - **Idempotent**: Safe to re-run without side effects
 - **Rollback support**: Built-in rollback playbook
 - **Rolling updates**: Deploy to nodes one at a time to minimize impact
-- **Cloud-agnostic**: Works with any cluster where nodes are SSH-accessible
+- **Universal**: Works with Kind (Docker) and production clusters (SSH)
 
 ## Prerequisites
 
 ### Local Machine
 
 - Ansible 2.9+ installed (`pip install ansible` or `brew install ansible`)
-- SSH key-based authentication configured for all target nodes
+- For production clusters: SSH key-based authentication configured
+- For Kind clusters: Docker installed and Kind cluster running
 - Reaper binaries built: `cargo build --release`
 - `kubectl` access to create RuntimeClass (post-installation)
 
 ### Target Nodes
 
+**For Production Clusters:**
 - SSH access with sudo privileges
 - containerd installed and running
 - Python 3 installed (for Ansible)
 - `/usr/local/bin` in PATH
 
+**For Kind Clusters:**
+- Kind cluster must be running
+- Docker accessible from your machine
+- containerd runs inside Kind node containers (pre-installed)
+
 ## Quick Start
+
+### For Kind Clusters (Testing/CI)
+
+1. **Generate inventory automatically**:
+   ```bash
+   ./scripts/generate-kind-inventory.sh <cluster-name> ansible/inventory-kind.ini
+   ```
+
+2. **Test connectivity**:
+   ```bash
+   ansible -i ansible/inventory-kind.ini k8s_nodes -m ping
+   ```
+
+3. **Run installation playbook**:
+   ```bash
+   ansible-playbook -i ansible/inventory-kind.ini ansible/install-reaper.yml
+   ```
+
+4. **Create RuntimeClass**:
+   ```bash
+   kubectl apply -f kubernetes/runtimeclass.yaml
+   ```
+
+5. **Verify**:
+   ```bash
+   kubectl apply -f kubernetes/runtimeclass.yaml  # deploys test pod
+   kubectl logs reaper-example
+   ```
+
+### For Production Clusters
 
 1. **Create inventory file**:
    ```bash
@@ -106,9 +143,40 @@ ansible-playbook -i ansible/inventory.ini ansible/rollback-reaper.yml --limit no
 
 ## Inventory Configuration
 
+### Kind Clusters (Docker Connection)
+
+For Kind clusters, use the Docker connection plugin instead of SSH:
+
+```bash
+# Auto-generate inventory (recommended)
+./scripts/generate-kind-inventory.sh my-cluster ansible/inventory-kind.ini
+```
+
+Or create manually:
+```ini
+[k8s_nodes]
+kind-control-plane ansible_connection=docker ansible_host=kind-control-plane
+kind-worker ansible_connection=docker ansible_host=kind-worker
+kind-worker2 ansible_connection=docker ansible_host=kind-worker2
+
+[k8s_nodes:vars]
+ansible_user=root
+ansible_become=no
+ansible_python_interpreter=/usr/bin/python3
+```
+
+**Key differences for Kind:**
+- `ansible_connection=docker` instead of default (SSH)
+- `ansible_host` is the Docker container name
+- `ansible_user=root` (Kind containers run as root)
+- `ansible_become=no` (already root, no sudo needed)
+- No SSH keys or ports needed
+
+### Production Clusters (SSH Connection)
+
 The inventory file (`inventory.ini`) defines your cluster nodes and SSH connection details.
 
-### Basic Example
+**Basic Example:**
 
 ```ini
 [k8s_nodes]
@@ -230,11 +298,29 @@ Manually check containerd config on a node:
 ansible -i ansible/inventory.ini k8s_nodes -m shell -a "containerd config dump | grep reaper" --become
 ```
 
+## Why Unified Ansible Deployment?
+
+We use Ansible for **both** Kind and production clusters to maintain a single, well-tested deployment method:
+
+**Benefits of unification:**
+- **Single code path**: One playbook to maintain and test
+- **Consistent behavior**: Same deployment logic everywhere
+- **Better testing**: Kind tests validate production deployment
+- **Simpler maintenance**: No need to keep shell script and Ansible in sync
+
+**How it works:**
+- **Kind clusters**: Ansible uses Docker connection plugin (`ansible_connection=docker`)
+- **Production clusters**: Ansible uses SSH connection (default)
+- **Same playbook**: Works with both connection types without modification
+
+The playbooks are connection-agnostic - they use Ansible modules that work equally well over Docker exec or SSH.
+
 ## Files
 
-- `install-reaper.yml` - Main installation playbook
-- `rollback-reaper.yml` - Rollback playbook
-- `inventory.ini.example` - Example inventory template
+- `install-reaper.yml` - Main installation playbook (works with both Kind and production)
+- `rollback-reaper.yml` - Rollback playbook (works with both Kind and production)
+- `inventory.ini.example` - Example SSH inventory for production clusters
+- `inventory-kind.ini.example` - Example Docker inventory for Kind clusters
 - `README.md` - This file
 
 ## See Also
