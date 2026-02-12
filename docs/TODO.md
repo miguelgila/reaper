@@ -7,5 +7,5 @@ List of tasks to do, not ordered in any specific way.
 [x] Evaluate creating a CRD similar to pods/deployments/daemonsets to avoid code that is built for containers (images)
 [ ] Ensure volumes are mounted and visible (at least `hostPath()`)
 [ ] Ensure uid and gid changes are validated in the integration tests
-[ ] Filter out sensitive host files when mounting the overlay
+[x] Filter out sensitive host files when mounting the overlay
 [ ] Add testing on a real kubernetes cluster (look at GKE, EKS, something free)

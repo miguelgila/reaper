@@ -37,6 +37,29 @@ pub struct OverlayConfig {
     pub lock_path: PathBuf,
 }
 
+/// Filter configuration for sensitive file filtering.
+pub struct FilterConfig {
+    /// Whether filtering is enabled (default: true)
+    pub enabled: bool,
+    /// Filter mode: append to defaults or replace them
+    pub mode: FilterMode,
+    /// Custom paths to filter (from REAPER_FILTER_PATHS)
+    pub custom_paths: Vec<PathBuf>,
+    /// Allowlist: paths to exclude from filtering (from REAPER_FILTER_ALLOWLIST)
+    pub allowlist: Vec<PathBuf>,
+    /// Directory to store empty placeholder files (default: /run/reaper/overlay-filters)
+    pub filter_dir: PathBuf,
+}
+
+/// Filter mode: append to default filters or replace them entirely.
+#[derive(Debug, PartialEq)]
+pub enum FilterMode {
+    /// Apply default filters + custom paths
+    Append,
+    /// Only apply custom paths (ignore defaults)
+    Replace,
+}
+
 /// Read overlay configuration from environment variables.
 ///
 /// - `REAPER_OVERLAY_BASE`: base dir for overlay (default: "/run/reaper/overlay")
@@ -60,6 +83,72 @@ pub fn read_config() -> OverlayConfig {
         ns_path,
         lock_path,
     }
+}
+
+/// Read filter configuration from environment variables.
+///
+/// - `REAPER_FILTER_ENABLED`: enable/disable filtering (default: true)
+/// - `REAPER_FILTER_MODE`: "append" or "replace" (default: append)
+/// - `REAPER_FILTER_PATHS`: colon-separated custom paths to filter
+/// - `REAPER_FILTER_ALLOWLIST`: colon-separated paths to exclude from filtering
+/// - `REAPER_FILTER_DIR`: directory for placeholder files (default: /run/reaper/overlay-filters)
+pub fn read_filter_config() -> FilterConfig {
+    let enabled = std::env::var("REAPER_FILTER_ENABLED")
+        .map(|v| v != "false" && v != "0")
+        .unwrap_or(true);
+
+    let mode = std::env::var("REAPER_FILTER_MODE")
+        .map(|v| match v.as_str() {
+            "replace" => FilterMode::Replace,
+            _ => FilterMode::Append,
+        })
+        .unwrap_or(FilterMode::Append);
+
+    let custom_paths = std::env::var("REAPER_FILTER_PATHS")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+
+    let allowlist = std::env::var("REAPER_FILTER_ALLOWLIST")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect();
+
+    let filter_dir = std::env::var("REAPER_FILTER_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/run/reaper/overlay-filters"));
+
+    FilterConfig {
+        enabled,
+        mode,
+        custom_paths,
+        allowlist,
+        filter_dir,
+    }
+}
+
+/// Returns the default list of sensitive paths to filter.
+fn get_default_filters() -> Vec<PathBuf> {
+    vec![
+        // Authentication & Credentials
+        PathBuf::from("/root/.ssh"),
+        PathBuf::from("/etc/shadow"),
+        PathBuf::from("/etc/gshadow"),
+        PathBuf::from("/etc/ssh/ssh_host_rsa_key"),
+        PathBuf::from("/etc/ssh/ssh_host_ecdsa_key"),
+        PathBuf::from("/etc/ssh/ssh_host_ed25519_key"),
+        // System Secrets
+        PathBuf::from("/etc/ssl/private"),
+        PathBuf::from("/var/lib/docker"),
+        PathBuf::from("/run/secrets"),
+        // Sensitive Configuration
+        PathBuf::from("/etc/sudoers"),
+        PathBuf::from("/etc/sudoers.d"),
+    ]
 }
 
 /// Join or create the shared overlay namespace.
@@ -254,6 +343,13 @@ fn inner_child_setup(config: &OverlayConfig, merged_dir: &Path, write_fd: OwnedF
     umount2("/old_root", MntFlags::MNT_DETACH).context("unmounting old root")?;
     fs::remove_dir("/old_root").ok();
 
+    // 7.5. Filter sensitive host paths
+    let filter_config = read_filter_config();
+    if let Err(e) = filter_sensitive_paths(&filter_config) {
+        tracing::error!("filter: failed to filter sensitive paths: {:#}", e);
+        // Non-fatal: log error but continue (graceful degradation)
+    }
+
     // 8. Signal parent that namespace is ready
     let _ = nix::unistd::write(&write_fd, b"R");
     drop(write_fd);
@@ -313,6 +409,92 @@ fn inner_parent_persist(
 
     // 4. Join the namespace ourselves
     join_namespace(&config.ns_path)?;
+
+    Ok(())
+}
+
+/// Filter sensitive host paths by bind-mounting empty placeholders over them.
+/// Called AFTER pivot_root, in the new mount namespace.
+///
+/// Tested by kind-integration tests (requires root + Linux namespaces).
+#[cfg(not(tarpaulin_include))]
+fn filter_sensitive_paths(config: &FilterConfig) -> Result<()> {
+    if !config.enabled {
+        info!("filter: sensitive file filtering disabled");
+        return Ok(());
+    }
+
+    // Build filter list
+    let mut paths = match config.mode {
+        FilterMode::Append => {
+            let mut p = get_default_filters();
+            p.extend(config.custom_paths.clone());
+            p
+        }
+        FilterMode::Replace => config.custom_paths.clone(),
+    };
+
+    // Apply allowlist (remove paths in allowlist)
+    paths.retain(|p| !config.allowlist.contains(p));
+
+    if paths.is_empty() {
+        info!("filter: no paths to filter");
+        return Ok(());
+    }
+
+    // Create filter directory
+    fs::create_dir_all(&config.filter_dir).context("creating filter directory")?;
+
+    // Filter each path
+    let mut filtered_count = 0;
+    for path in &paths {
+        match filter_single_path(path, &config.filter_dir) {
+            Ok(_) => {
+                filtered_count += 1;
+                tracing::debug!("filter: filtered {}", path.display());
+            }
+            Err(e) => {
+                tracing::warn!("filter: failed to filter {}: {}", path.display(), e);
+            }
+        }
+    }
+
+    info!("filter: filtered {} sensitive paths", filtered_count);
+    Ok(())
+}
+
+/// Filter a single path by bind-mounting an empty placeholder over it.
+///
+/// Tested by kind-integration tests (requires root + Linux namespaces).
+#[cfg(not(tarpaulin_include))]
+fn filter_single_path(path: &Path, filter_dir: &Path) -> Result<()> {
+    // Skip if path doesn't exist on host
+    if !path.exists() {
+        tracing::debug!("filter: {} does not exist, skipping", path.display());
+        return Ok(());
+    }
+
+    // Create placeholder (file or directory)
+    let sanitized = path.to_string_lossy().replace('/', "_");
+    let placeholder = filter_dir.join(sanitized);
+
+    if path.is_dir() {
+        fs::create_dir_all(&placeholder)
+            .with_context(|| format!("creating placeholder dir for {}", path.display()))?;
+    } else {
+        fs::write(&placeholder, b"")
+            .with_context(|| format!("creating placeholder file for {}", path.display()))?;
+    }
+
+    // Bind-mount placeholder over sensitive path
+    mount(
+        Some(&placeholder),
+        path,
+        None::<&str>,
+        MsFlags::MS_BIND,
+        None::<&str>,
+    )
+    .with_context(|| format!("bind-mounting filter over {}", path.display()))?;
 
     Ok(())
 }
@@ -572,5 +754,90 @@ mod tests {
             fs::read_to_string(etc.join("hosts")).unwrap(),
             "existing content\n"
         );
+    }
+
+    #[test]
+    fn test_read_filter_config_defaults() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::remove_var("REAPER_FILTER_ENABLED");
+        std::env::remove_var("REAPER_FILTER_MODE");
+        std::env::remove_var("REAPER_FILTER_PATHS");
+        std::env::remove_var("REAPER_FILTER_ALLOWLIST");
+        std::env::remove_var("REAPER_FILTER_DIR");
+
+        let config = super::read_filter_config();
+        assert!(config.enabled);
+        assert_eq!(config.mode, super::FilterMode::Append);
+        assert!(config.custom_paths.is_empty());
+        assert!(config.allowlist.is_empty());
+        assert_eq!(
+            config.filter_dir,
+            PathBuf::from("/run/reaper/overlay-filters")
+        );
+    }
+
+    #[test]
+    fn test_read_filter_config_disabled() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("REAPER_FILTER_ENABLED", "false");
+        let config = super::read_filter_config();
+        assert!(!config.enabled);
+
+        std::env::set_var("REAPER_FILTER_ENABLED", "0");
+        let config = super::read_filter_config();
+        assert!(!config.enabled);
+
+        std::env::remove_var("REAPER_FILTER_ENABLED");
+    }
+
+    #[test]
+    fn test_read_filter_config_custom_paths() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("REAPER_FILTER_PATHS", "/custom/path:/another/path");
+
+        let config = super::read_filter_config();
+        assert_eq!(config.custom_paths.len(), 2);
+        assert_eq!(config.custom_paths[0], PathBuf::from("/custom/path"));
+        assert_eq!(config.custom_paths[1], PathBuf::from("/another/path"));
+
+        std::env::remove_var("REAPER_FILTER_PATHS");
+    }
+
+    #[test]
+    fn test_read_filter_config_replace_mode() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("REAPER_FILTER_MODE", "replace");
+
+        let config = super::read_filter_config();
+        assert_eq!(config.mode, super::FilterMode::Replace);
+
+        std::env::remove_var("REAPER_FILTER_MODE");
+    }
+
+    #[test]
+    fn test_read_filter_config_allowlist() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("REAPER_FILTER_ALLOWLIST", "/etc/shadow:/root/.ssh");
+
+        let config = super::read_filter_config();
+        assert_eq!(config.allowlist.len(), 2);
+        assert_eq!(config.allowlist[0], PathBuf::from("/etc/shadow"));
+        assert_eq!(config.allowlist[1], PathBuf::from("/root/.ssh"));
+
+        std::env::remove_var("REAPER_FILTER_ALLOWLIST");
+    }
+
+    #[test]
+    fn test_get_default_filters_not_empty() {
+        let filters = super::get_default_filters();
+        assert!(!filters.is_empty());
+        assert!(filters.contains(&PathBuf::from("/etc/shadow")));
+        assert!(filters.contains(&PathBuf::from("/root/.ssh")));
+        assert!(filters.contains(&PathBuf::from("/etc/ssh/ssh_host_rsa_key")));
     }
 }

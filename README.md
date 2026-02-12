@@ -20,6 +20,7 @@ Reaper is a containerd shim that runs processes directly on the host system whil
 - ✅ Standard Kubernetes API (Pods, kubectl logs, kubectl exec)
 - ✅ Process lifecycle management (start, stop, restart)
 - ✅ Shared overlay filesystem for workload isolation from host changes
+- ✅ Filters sensitive host files (SSH keys, passwords, SSL keys)
 - ✅ Direct command execution on cluster nodes
 - ✅ Integration with kubectl (logs, exec, describe)
 

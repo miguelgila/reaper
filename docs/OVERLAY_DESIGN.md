@@ -143,6 +143,72 @@ updates the container state to `stopped`.
 - Reaper runtime runs as root on the node (standard for container runtimes)
 - Not available on macOS (code gated with `#[cfg(target_os = "linux")]`)
 
+## Sensitive File Filtering
+
+Reaper automatically filters sensitive host files to prevent workloads from
+accessing credentials, SSH keys, and other sensitive data. Filtering is
+implemented by bind-mounting empty placeholders over sensitive paths after
+pivot_root.
+
+### Default Filtered Paths
+
+- `/root/.ssh` - root user SSH keys
+- `/etc/shadow`, `/etc/gshadow` - password hashes
+- `/etc/ssh/ssh_host_*_key` - SSH host private keys
+- `/etc/ssl/private` - SSL/TLS private keys
+- `/etc/sudoers`, `/etc/sudoers.d` - sudo configuration
+- `/var/lib/docker` - Docker internal state
+- `/run/secrets` - container secrets
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REAPER_FILTER_ENABLED` | `true` | Enable/disable filtering |
+| `REAPER_FILTER_PATHS` | `""` | Colon-separated custom paths |
+| `REAPER_FILTER_MODE` | `append` | `append` or `replace` |
+| `REAPER_FILTER_ALLOWLIST` | `""` | Paths to exclude from filtering |
+| `REAPER_FILTER_DIR` | `/run/reaper/overlay-filters` | Placeholder directory |
+
+**Example**: Add custom paths while keeping defaults:
+```bash
+REAPER_FILTER_PATHS="/custom/secret:/home/user/.aws/credentials"
+```
+
+**Example**: Replace default list entirely:
+```bash
+REAPER_FILTER_MODE=replace
+REAPER_FILTER_PATHS="/etc/shadow:/etc/gshadow"
+```
+
+**Example**: Disable a specific default filter:
+```bash
+REAPER_FILTER_ALLOWLIST="/etc/shadow"
+```
+
+### Security Guarantees
+
+- Filters are immutable (workloads cannot unmount them)
+- Applied once during namespace creation
+- Inherited by all workloads joining the namespace
+- Non-existent paths are silently skipped
+- Individual filter failures are logged but non-fatal
+
+### How It Works
+
+After `pivot_root` completes in the shared namespace:
+
+1. Read filter configuration from environment variables
+2. Build filter list (defaults + custom, minus allowlist)
+3. Create empty placeholder files/directories in `/run/reaper/overlay-filters/`
+4. For each sensitive path:
+   - If path exists, create matching placeholder (file or directory)
+   - Bind-mount placeholder over the sensitive path
+   - Log success/failure
+
+This makes sensitive files appear empty or missing to workloads, while the
+actual host files remain untouched.
+
 ## Limitations
 
 - `/run` is typically a small tmpfs; for write-heavy workloads, configure
@@ -151,3 +217,4 @@ updates the container state to `stopped`.
   (by design, for cross-deployment file sharing)
 - Overlay does not protect against processes that directly modify kernel
   state via `/proc` or `/sys` writes
+- Sensitive file filtering does not support glob patterns (use explicit paths)
