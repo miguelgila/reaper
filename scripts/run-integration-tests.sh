@@ -426,11 +426,21 @@ phase_setup() {
       exit 1
     }
 
-  # Copy binaries to expected location for Ansible installer
-  log_status "Copying binaries to target/release/ for installer..."
-  mkdir -p target/release
-  cp "target/$TARGET_TRIPLE/release/containerd-shim-reaper-v2" target/release/ 2>&1 | tee -a "$LOG_FILE"
-  cp "target/$TARGET_TRIPLE/release/reaper-runtime" target/release/ 2>&1 | tee -a "$LOG_FILE"
+  # Set binary directory for Ansible installer
+  # In CI, target/release may be owned by a different user (from cache), so we use the
+  # target-specific directory directly without copying
+  if [[ -n "${CI:-}" ]]; then
+    # CI mode: Use binaries directly from target/<triple>/release to avoid permission issues
+    export REAPER_BINARY_DIR="$(pwd)/target/$TARGET_TRIPLE/release"
+    log_status "Using binaries from $REAPER_BINARY_DIR (CI mode)..."
+  else
+    # Local mode: Copy to target/release for convenience
+    log_status "Copying binaries to target/release/ for installer..."
+    mkdir -p target/release
+    cp "target/$TARGET_TRIPLE/release/containerd-shim-reaper-v2" target/release/ 2>&1 | tee -a "$LOG_FILE"
+    cp "target/$TARGET_TRIPLE/release/reaper-runtime" target/release/ 2>&1 | tee -a "$LOG_FILE"
+    # REAPER_BINARY_DIR not needed in local mode (uses default)
+  fi
 
   # Install Reaper using the unified Ansible installer
   log_status "Installing Reaper runtime to Kind cluster (via Ansible)..."

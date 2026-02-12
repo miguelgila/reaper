@@ -170,8 +170,11 @@ check_kind_cluster() {
 }
 
 check_binaries() {
-  if [[ ! -f "$PROJECT_ROOT/target/release/containerd-shim-reaper-v2" ]]; then
-    log_error "Binaries not built. Run: cargo build --release"
+  # Allow override via REAPER_BINARY_DIR for CI/integration tests
+  local binary_dir="${REAPER_BINARY_DIR:-$PROJECT_ROOT/target/release}"
+  if [[ ! -f "$binary_dir/containerd-shim-reaper-v2" ]]; then
+    log_error "Binaries not found at $binary_dir"
+    log_error "Run: cargo build --release"
     exit 1
   fi
 }
@@ -238,6 +241,11 @@ run_ansible_playbook() {
   fi
 
   log_info "Running Ansible playbook..."
+
+  # Pass binary directory to Ansible (override default if REAPER_BINARY_DIR is set)
+  local binary_dir="${REAPER_BINARY_DIR:-$PROJECT_ROOT/target/release}"
+  ansible_args+=("-e" "local_binary_dir=$binary_dir")
+
   if ! ansible-playbook "${ansible_args[@]}" "$ANSIBLE_DIR/install-reaper.yml"; then
     log_error "Ansible playbook failed"
     exit 1
