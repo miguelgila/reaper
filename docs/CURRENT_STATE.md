@@ -226,18 +226,7 @@ Reaper integrates with Kubernetes logging via FIFO redirection:
 
 ## Building and Testing
 
-### Build for Local Testing
-```bash
-cargo build --release
-cargo test
-```
-
-### Run Integration Tests (Recommended)
-```bash
-./scripts/run-integration-tests.sh
-```
-
-This creates a kind cluster, builds musl binaries, deploys them, and runs all integration tests including DNS resolution, overlay filesystem, host protection, and more. See [TESTING.md](../TESTING.md) for options and troubleshooting.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for development setup and [TESTING.md](../TESTING.md) for comprehensive testing documentation.
 
 ## Testing Checklist
 
@@ -322,35 +311,12 @@ This creates a kind cluster, builds musl binaries, deploys them, and runs all in
 4. Production deployment guides
 5. Community feedback integration
 
-## How to Continue Development
-
-### Starting a New Session
-
-1. **Read context files:**
-   - `.github/claude-instructions.md` (for Claude)
-   - `docs/CURRENT_STATE.md` (this file)
-   - `TESTING.md` (for test workflows)
-
-2. **Check recent changes:**
-   ```bash
-   git log --oneline -10
-   git status
-   ```
-
-3. **Run tests:**
-   ```bash
-   # Unit tests (fast)
-   cargo test
-
-   # Integration tests (full suite)
-   ./scripts/run-integration-tests.sh
-   ```
-
-### Key Files to Understand
+## Key Files
 
 **For runtime changes:**
 - `src/bin/reaper-runtime/main.rs` (especially `do_start()` and `do_kill()`)
 - `src/bin/reaper-runtime/state.rs`
+- `src/bin/reaper-runtime/overlay.rs`
 
 **For shim changes:**
 - `src/bin/containerd-shim-reaper-v2/main.rs` (especially `Task` trait impl)
@@ -358,7 +324,7 @@ This creates a kind cluster, builds musl binaries, deploys them, and runs all in
 **For deployment & testing:**
 - `kubernetes/runtimeclass.yaml` - RuntimeClass definition
 - `scripts/run-integration-tests.sh` - Integration test harness
-- `TESTING.md` - Complete testing guide
+- See [TESTING.md](../TESTING.md) and [DEVELOPMENT.md](DEVELOPMENT.md)
 
 ## References
 
