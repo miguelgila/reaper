@@ -2,24 +2,26 @@
 
 **Status**: In Progress
 **Started**: 2026-02-11
-**Last Updated**: 2026-02-11
+**Last Updated**: 2026-02-12
 
 ## Progress Tracker
 
 - [x] Phase 1: Core Installation Script
   - [x] Create `scripts/install-reaper.sh` with modular structure
   - [x] Extract reusable functions from `run-integration-tests.sh`
+  - [x] Kind cluster deployment implementation
 - [ ] Phase 2: Deployment Methods
-  - [ ] Implement direct deployment (kind/SSH)
-  - [ ] Implement DaemonSet deployment
+  - [ ] Implement SSH-based deployment for real clusters
+  - [ ] Implement Ansible playbook for production
+  - [ ] Create rollback playbook
 - [ ] Phase 3: Verification & Safety
-  - [ ] Add verification suite
-  - [ ] Add safety features (backup, rollback, dry-run)
+  - [x] Add verification suite (binaries, containerd config, RuntimeClass)
+  - [ ] Add safety features (backup/restore via Ansible)
 - [x] Phase 4: Integration with Test Suite
   - [x] Refactor `run-integration-tests.sh` to use `install-reaper.sh`
   - [x] Update documentation
 - [ ] Phase 5: Production Features (Optional)
-  - [ ] Add production enhancements
+  - [ ] Add production enhancements (Helm, multi-cluster, uninstall)
 
 ---
 
