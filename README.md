@@ -163,33 +163,49 @@ reaper-runtime delete my-app
 
 ### Kubernetes Clusters
 
-Deploy Reaper to any Kubernetes cluster using the installation script:
+**For Kind clusters (testing/CI)**:
 
 ```bash
-# For Kind clusters (recommended for testing)
+# Quick install to Kind cluster
 ./scripts/install-reaper.sh --kind <cluster-name>
-
-# Auto-detect cluster type from kubectl context
-./scripts/install-reaper.sh --auto
-
-# Preview changes without modifying the cluster
-./scripts/install-reaper.sh --dry-run --kind test
 
 # Use pre-built binaries (faster for CI)
 ./scripts/install-reaper.sh --kind test --binaries-path ./binaries
+
+# Preview changes without modifying the cluster
+./scripts/install-reaper.sh --dry-run --kind test
 
 # Verify existing installation
 ./scripts/install-reaper.sh --verify-only
 ```
 
-The script automatically:
-- Detects node architecture and builds static musl binaries
-- Deploys binaries to cluster nodes
-- Configures containerd with the Reaper runtime
-- Creates the RuntimeClass resource
-- Verifies the installation
+**For production clusters (recommended)**:
 
-For complete installation options and manual setup, see [kubernetes/README.md](kubernetes/README.md).
+Use Ansible for idempotent, production-ready deployment:
+
+```bash
+# 1. Create inventory file
+cp ansible/inventory.ini.example ansible/inventory.ini
+# Edit ansible/inventory.ini with your node details
+
+# 2. Run installation playbook
+ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
+
+# 3. Create RuntimeClass
+kubectl apply -f kubernetes/runtimeclass.yaml
+
+# 4. Rollback if needed
+ansible-playbook -i ansible/inventory.ini ansible/rollback-reaper.yml
+```
+
+The Ansible approach provides:
+- External orchestration (no containerd circular dependencies)
+- Idempotent deployment (safe to re-run)
+- Built-in rollback support
+- Rolling updates across nodes
+- Works with any SSH-accessible cluster
+
+For complete installation options, Ansible documentation, and manual setup, see [kubernetes/README.md](kubernetes/README.md) and [ansible/README.md](ansible/README.md).
 
 ### Testing on Kubernetes
 

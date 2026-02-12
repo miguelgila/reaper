@@ -10,16 +10,17 @@
   - [x] Create `scripts/install-reaper.sh` with modular structure
   - [x] Extract reusable functions from `run-integration-tests.sh`
   - [x] Kind cluster deployment implementation
-- [ ] Phase 2: Deployment Methods
-  - [ ] Implement SSH-based deployment for real clusters
-  - [ ] Implement Ansible playbook for production
-  - [ ] Create rollback playbook
-- [ ] Phase 3: Verification & Safety
+- [x] Phase 2: Deployment Methods
+  - [x] Implement Ansible playbook for production (install-reaper.yml)
+  - [x] Create rollback playbook (rollback-reaper.yml)
+  - [x] Create inventory examples and documentation
+  - [N/A] Implement SSH-based deployment in shell script (decided against - use Ansible instead)
+- [x] Phase 3: Verification & Safety
   - [x] Add verification suite (binaries, containerd config, RuntimeClass)
-  - [ ] Add safety features (backup/restore via Ansible)
+  - [x] Add safety features (backup/restore via Ansible rollback playbook)
 - [x] Phase 4: Integration with Test Suite
   - [x] Refactor `run-integration-tests.sh` to use `install-reaper.sh`
-  - [x] Update documentation
+  - [x] Update documentation (Phase 1 and Phase 2)
 - [ ] Phase 5: Production Features (Optional)
   - [ ] Add production enhancements (Helm, multi-cluster, uninstall)
 
@@ -361,6 +362,63 @@ main "$@"
 - Supports pre-built binaries via `--binaries-path` for CI caching
 - Error handling with clear messages and exit codes
 
+### Phase 2 - Ansible Playbooks (2026-02-12)
+
+**Created Ansible playbooks for production cluster deployment:**
+
+**Files created:**
+- `ansible/install-reaper.yml` (175 lines) - Main installation playbook
+- `ansible/rollback-reaper.yml` (142 lines) - Rollback playbook
+- `ansible/inventory.ini.example` (59 lines) - Inventory template with examples
+- `ansible/README.md` (355 lines) - Comprehensive Ansible documentation
+
+**install-reaper.yml features:**
+- Architecture detection via Ansible facts
+- Binary validation before deployment
+- Automatic containerd config backup
+- Idempotent configuration merging using blockinfile
+- Containerd restart with readiness checks
+- Post-install verification suite
+- Detailed installation summary per node
+
+**rollback-reaper.yml features:**
+- Interactive confirmation prompt
+- Binary removal from `/usr/local/bin/`
+- Config restoration from backup
+- Containerd restart and validation
+- Overlay filesystem cleanup
+- Verification that Reaper runtime is fully removed
+
+**Inventory examples provided for:**
+- Direct IP-based SSH
+- DNS hostname-based SSH
+- Bastion/jump host scenarios (cloud providers)
+- GKE with gcloud tunneling
+- EKS with AWS SSM Session Manager
+- AKS with Azure bastion
+
+**Key architectural decisions:**
+1. **Separation of concerns**: Shell script for Kind, Ansible for production
+   - Avoids adding SSH complexity to shell script
+   - Leverages Ansible's strengths (idempotency, rollback, inventory management)
+   - Cleaner codebase with specialized tools
+
+2. **Idempotent design**: Safe to re-run installation playbook
+   - Uses blockinfile with markers for config management
+   - Checks existing state before making changes
+   - Backup before every modification
+
+3. **External orchestration**: No circular dependencies
+   - Runs outside cluster, no containerd restart issues
+   - Can safely restart containerd on each node
+   - Full control over deployment sequence
+
+4. **Production-ready features**:
+   - Rolling updates support (--forks parameter)
+   - Parallel deployment capability
+   - Verification at each step
+   - Comprehensive error handling
+
 ### Phase 4 - Integration & Documentation (2026-02-11)
 
 **Refactored `run-integration-tests.sh`** to use the new installation script:
@@ -371,11 +429,16 @@ main "$@"
 - Maintained backward compatibility with `--verbose` flag
 - Kept Node ID detection for diagnostic output
 
-**Updated documentation:**
+**Updated documentation (Phase 4):**
 - `README.md`: Added dedicated Installation section with usage examples
 - `kubernetes/README.md`: Restructured with automated installation as recommended approach
 - `scripts/README.md`: Added install-reaper.sh as main script with full feature list
 - `docs/TODO.md`: Marked task #6 as complete
+
+**Updated documentation (Phase 2):**
+- `README.md`: Added Ansible deployment section with clear separation between Kind and production
+- `kubernetes/README.md`: Restructured to present three options (Ansible, shell script, manual) with Ansible as recommended for production
+- `ansible/README.md`: Comprehensive guide covering quick start, inventory configuration, cloud providers, advanced usage, and troubleshooting
 
 **Testing validation:**
 - Tested help output and dry-run mode
@@ -386,15 +449,14 @@ main "$@"
 
 **Completed:**
 - ✅ Phase 1: Core installation script with full Kind support
-- ✅ Phase 2: Direct deployment method for Kind clusters (extraction complete)
+- ✅ Phase 2: Ansible playbooks for production deployment (install + rollback)
 - ✅ Phase 3: Verification suite (binaries, containerd config, RuntimeClass)
+- ✅ Phase 3: Safety features (backup/restore via Ansible rollback playbook)
 - ✅ Phase 4: Integration with test suite and documentation updates
 
 **Not implemented (future work):**
-- Phase 2: SSH-based deployment (real clusters with direct node access)
-- Phase 2: Ansible playbook (recommended for production)
-- Phase 3: Safety features (rollback playbook, backup/restore)
-- Phase 5: Production enhancements (Helm, multi-cluster, uninstall)
+- Phase 2: Direct SSH mode in shell script (decided against - Ansible is superior)
+- Phase 5: Production enhancements (Helm chart, multi-cluster, uninstall command)
 
 The core functionality is complete and ready for use. The installation script successfully:
 1. Installs Reaper to Kind clusters with a single command

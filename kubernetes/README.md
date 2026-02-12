@@ -6,32 +6,65 @@ This directory contains configuration files for integrating the Reaper container
 
 ## Quick Start
 
-The recommended way to deploy Reaper to any Kubernetes cluster is using the installation script:
+### For Kind Clusters (Testing/CI)
 
 ```bash
-# For Kind clusters (testing/development)
+# Quick install to Kind cluster
 ./scripts/install-reaper.sh --kind <cluster-name>
 
-# Auto-detect cluster type
-./scripts/install-reaper.sh --auto
-
-# Preview changes without modifying the cluster
-./scripts/install-reaper.sh --dry-run --kind test
-```
-
-For automated testing with the full integration test suite:
-
-```bash
+# Or run full integration test suite
 ./scripts/run-integration-tests.sh
 ```
 
-This orchestrates everything: creating a Kind cluster, installing Reaper, and running all tests. See [TESTING.md](../TESTING.md) for full details.
+See [TESTING.md](../TESTING.md) for full details.
+
+### For Production Clusters
+
+Use Ansible for idempotent, production-ready deployment:
+
+```bash
+# 1. Create inventory
+cp ansible/inventory.ini.example ansible/inventory.ini
+# Edit ansible/inventory.ini with your nodes
+
+# 2. Test connectivity
+ansible -i ansible/inventory.ini k8s_nodes -m ping
+
+# 3. Install
+ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
+
+# 4. Create RuntimeClass
+kubectl apply -f kubernetes/runtimeclass.yaml
+```
+
+See [ansible/README.md](../ansible/README.md) for complete Ansible documentation.
 
 ## Installation Options
 
-### Automated Installation (Recommended)
+### Option 1: Ansible (Recommended for Production)
 
-The `install-reaper.sh` script handles all installation steps automatically:
+**Why Ansible?**
+- External orchestration (no containerd circular dependencies)
+- Idempotent (safe to re-run)
+- Built-in rollback support
+- Rolling updates across nodes
+- Standard practice for cluster node configuration
+
+**Quick usage:**
+```bash
+ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
+```
+
+See [ansible/README.md](../ansible/README.md) for:
+- Inventory configuration examples
+- Cloud provider setup (GKE, EKS, AKS)
+- Rolling updates and parallel deployment
+- Rollback procedures
+- Troubleshooting
+
+### Option 2: Shell Script (For Kind Clusters)
+
+The `install-reaper.sh` script is optimized for Kind clusters:
 
 ```bash
 # Install to Kind cluster
@@ -50,13 +83,13 @@ The `install-reaper.sh` script handles all installation steps automatically:
 The script automatically:
 - Detects node architecture (x86_64, aarch64)
 - Builds static musl binaries (or uses pre-built)
-- Deploys binaries to all cluster nodes
+- Deploys binaries via `docker cp`
 - Creates overlay filesystem directories
 - Configures containerd
 - Creates RuntimeClass
 - Verifies installation
 
-### Manual Installation
+### Option 3: Manual Installation
 
 If you need manual control over the installation process:
 

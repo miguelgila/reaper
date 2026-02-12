@@ -1,0 +1,190 @@
+---
+# Ansible playbook for deploying Reaper runtime to Kubernetes cluster nodes
+#
+# Usage:
+#   ansible-playbook -i inventory.ini ansible/install-reaper.yml
+#
+# This playbook:
+# - Detects node architecture
+# - Copies Reaper binaries to /usr/local/bin/
+# - Backs up existing containerd configuration
+# - Merges Reaper runtime configuration
+# - Restarts containerd service
+# - Verifies installation
+#
+# Requirements:
+# - SSH access to all nodes with sudo privileges
+# - Binaries built at ./target/release/ (run build-binaries.yml first if needed)
+# - containerd installed and running on target nodes
+
+- name: Install Reaper Runtime on Kubernetes Nodes
+  hosts: k8s_nodes
+  become: yes
+  gather_facts: yes
+
+  vars:
+    reaper_shim_binary: "containerd-shim-reaper-v2"
+    reaper_runtime_binary: "reaper-runtime"
+    local_binary_dir: "../target/release"
+    install_path: "/usr/local/bin"
+    containerd_config: "/etc/containerd/config.toml"
+    containerd_config_backup: "/etc/containerd/config.toml.backup"
+    overlay_base: "/run/reaper/overlay"
+
+  tasks:
+    - name: Gather system facts
+      setup:
+        filter: ansible_architecture
+
+    - name: Display target architecture
+      debug:
+        msg: "Target architecture: {{ ansible_architecture }}"
+
+    - name: Check if binaries exist locally
+      local_action:
+        module: stat
+        path: "{{ local_binary_dir }}/{{ reaper_shim_binary }}"
+      register: local_shim_binary
+      become: no
+      run_once: true
+
+    - name: Fail if binaries not found
+      fail:
+        msg: "Binaries not found at {{ local_binary_dir }}. Run 'cargo build --release' first."
+      when: not local_shim_binary.stat.exists
+      run_once: true
+
+    - name: Backup existing containerd configuration
+      copy:
+        src: "{{ containerd_config }}"
+        dest: "{{ containerd_config_backup }}"
+        remote_src: yes
+        backup: yes
+      when: ansible_facts.services['containerd.service'] is defined
+
+    - name: Copy shim binary to node
+      copy:
+        src: "{{ local_binary_dir }}/{{ reaper_shim_binary }}"
+        dest: "{{ install_path }}/{{ reaper_shim_binary }}"
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Copy runtime binary to node
+      copy:
+        src: "{{ local_binary_dir }}/{{ reaper_runtime_binary }}"
+        dest: "{{ install_path }}/{{ reaper_runtime_binary }}"
+        mode: '0755'
+        owner: root
+        group: root
+
+    - name: Verify binaries are executable
+      command: "{{ install_path }}/{{ item }} --help"
+      register: binary_check
+      failed_when: binary_check.rc != 0
+      changed_when: false
+      loop:
+        - "{{ reaper_shim_binary }}"
+        - "{{ reaper_runtime_binary }}"
+
+    - name: Create overlay filesystem directories
+      file:
+        path: "{{ overlay_base }}/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - upper
+        - work
+
+    - name: Check if containerd config exists
+      stat:
+        path: "{{ containerd_config }}"
+      register: containerd_config_stat
+
+    - name: Create minimal containerd config if missing
+      copy:
+        dest: "{{ containerd_config }}"
+        content: |
+          version = 2
+          [plugins]
+            [plugins."io.containerd.grpc.v1.cri"]
+              [plugins."io.containerd.grpc.v1.cri".containerd]
+                [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+        mode: '0644'
+      when: not containerd_config_stat.stat.exists
+
+    - name: Add Reaper runtime configuration to containerd
+      blockinfile:
+        path: "{{ containerd_config }}"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - Reaper Runtime"
+        block: |
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
+            runtime_type = "io.containerd.reaper.v2"
+            sandbox_mode = "podsandbox"
+        backup: yes
+
+    - name: Validate containerd configuration
+      command: containerd config dump
+      register: containerd_config_dump
+      changed_when: false
+      failed_when: containerd_config_dump.rc != 0
+
+    - name: Verify Reaper runtime is in config
+      assert:
+        that:
+          - "'reaper-v2' in containerd_config_dump.stdout"
+        fail_msg: "Reaper runtime configuration not found in containerd config"
+        success_msg: "Reaper runtime configuration verified"
+
+    - name: Restart containerd service
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+      register: containerd_restart
+
+    - name: Wait for containerd to be ready
+      wait_for:
+        timeout: 10
+      when: containerd_restart.changed
+
+    - name: Verify containerd is running
+      systemd:
+        name: containerd
+      register: containerd_status
+      failed_when: containerd_status.status.ActiveState != "active"
+
+    - name: Verify shim binary is in PATH
+      command: which {{ reaper_shim_binary }}
+      register: shim_path
+      changed_when: false
+      failed_when: shim_path.rc != 0
+
+    - name: Display installation summary
+      debug:
+        msg:
+          - "Reaper runtime installed successfully on {{ inventory_hostname }}"
+          - "Architecture: {{ ansible_architecture }}"
+          - "Shim binary: {{ shim_path.stdout }}"
+          - "Runtime binary: {{ install_path }}/{{ reaper_runtime_binary }}"
+          - "Overlay base: {{ overlay_base }}"
+          - "Containerd config: {{ containerd_config }}"
+          - "Backup saved: {{ containerd_config_backup }}"
+
+- name: Post-Installation Summary
+  hosts: localhost
+  gather_facts: no
+  become: no
+
+  tasks:
+    - name: Display next steps
+      debug:
+        msg:
+          - "Reaper runtime installation complete on all nodes!"
+          - ""
+          - "Next steps:"
+          - "1. Create RuntimeClass: kubectl apply -f kubernetes/runtimeclass.yaml"
+          - "2. Deploy test pod: kubectl apply -f kubernetes/runtimeclass.yaml"
+          - "3. Verify: kubectl logs reaper-example"
+          - ""
+          - "To rollback: ansible-playbook -i inventory.ini ansible/rollback-reaper.yml"
