@@ -3,23 +3,176 @@
 [![Tests](https://github.com/miguelgi/reaper/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/miguelgi/reaper/actions/workflows/test.yml)
 [![Build](https://github.com/miguelgi/reaper/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/miguelgi/reaper/actions/workflows/build.yml)
 [![Coverage](https://codecov.io/gh/miguelgi/reaper/branch/main/graph/badge.svg)](https://codecov.io/gh/miguelgi/reaper)
-[![Security](https://github.com/miguelgi/reaper/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/miguelgi/reaper/actions/workflows/build.yml)
 
-A Rust project.
+**Reaper is a lightweight Kubernetes container runtime that executes commands directly on cluster nodes without traditional container isolation.** Think of it as a way to run host-native processes through Kubernetes' orchestration layer.
 
-## Quick start
+## What is Reaper?
 
-Build and run locally:
+Reaper is a containerd shim that runs processes directly on the host system while integrating with Kubernetes' workload management. Unlike traditional container runtimes that provide isolation through namespaces and cgroups, Reaper intentionally runs processes with full host access.
 
+**Use cases:**
+- Running privileged system utilities that need direct hardware access
+- Cluster maintenance tasks that operate across the host filesystem
+- Legacy applications that require host-level access
+- Development and debugging workflows
+
+**What Reaper provides:**
+- ✅ Standard Kubernetes API (Pods, kubectl logs, kubectl exec)
+- ✅ Process lifecycle management (start, stop, restart)
+- ✅ Shared overlay filesystem for workload isolation from host changes
+- ✅ Direct command execution on cluster nodes
+- ✅ Integration with kubectl (logs, exec, describe)
+
+**What Reaper does NOT provide:**
+- ❌ Container isolation (namespaces, cgroups)
+- ❌ Resource limits (CPU, memory)
+- ❌ Network isolation (uses host networking)
+- ❌ Container image pulling
+
+## Quick Start
+
+### 1. Install Reaper on a Kubernetes Cluster
+
+**For Kind clusters (testing/CI):**
 ```bash
-cargo build --release
-cargo run
+# Install Ansible if not already installed
+pip install ansible  # or: brew install ansible
+
+# Install to Kind cluster
+./scripts/install-reaper.sh --kind <cluster-name>
 ```
 
-Run tests:
+**For production clusters:**
+```bash
+# Create inventory file (see ansible/inventory.ini.example)
+vim inventory.ini
+
+# Install via Ansible
+ansible-playbook -i inventory.ini ansible/install-reaper.yml
+```
+
+See [kubernetes/README.md](kubernetes/README.md) for detailed installation instructions.
+
+### 2. Run a Command on the Host
+
+Create a Pod with `runtimeClassName: reaper-v2`:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-task
+spec:
+  runtimeClassName: reaper-v2  # Use Reaper runtime
+  restartPolicy: Never
+  containers:
+    - name: task
+      image: placeholder  # Image field is ignored by Reaper
+      command: ["/bin/sh", "-c"]
+      args: ["echo Hello from host && uname -a"]
+      env:
+        - name: MY_VAR
+          value: "example"
+```
+
+Apply and check results:
 
 ```bash
-# Unit tests (fast, recommended locally)
+kubectl apply -f my-task.yaml
+kubectl logs my-task
+kubectl get pod my-task  # Status: Completed
+```
+
+### 3. Interactive Sessions
+
+Reaper supports interactive containers:
+
+```bash
+# Run interactive shell
+kubectl run -it debug --rm --image=placeholder --restart=Never \
+  --overrides='{"spec":{"runtimeClassName":"reaper-v2"}}' \
+  -- /bin/bash
+
+# Exec into running containers
+kubectl exec -it my-pod -- /bin/sh
+```
+
+## Important: Pod Field Compatibility
+
+Reaper implements the Kubernetes Pod API but **ignores or doesn't support certain container-specific fields**:
+
+| Pod Field | Behavior |
+|-----------|----------|
+| `spec.containers[].image` | **Ignored** — Set to `placeholder` for clarity. Reaper doesn't pull images. |
+| `spec.containers[].resources.limits` | **Ignored** — No cgroup enforcement; processes use host resources. |
+| `spec.containers[].resources.requests` | **Ignored** — Scheduling hints not used. |
+| `spec.containers[].volumeMounts` | **Not implemented** — No volume mounting support currently. |
+| `spec.containers[].securityContext.capabilities` | **Ignored** — Processes run with host-level capabilities. |
+| `spec.containers[].livenessProbe` | **Ignored** — No health checking. |
+| `spec.containers[].readinessProbe` | **Ignored** — No readiness checks. |
+| `spec.containers[].command` | ✅ **Supported** — Program path on host (must exist). |
+| `spec.containers[].args` | ✅ **Supported** — Arguments to the command. |
+| `spec.containers[].env` | ✅ **Supported** — Environment variables. |
+| `spec.containers[].workingDir` | ✅ **Supported** — Working directory for the process. |
+| `spec.runtimeClassName` | ✅ **Required** — Must be set to `reaper-v2`. |
+
+**Best practice:** Set `image: placeholder` to make it explicit that the image field is not used.
+
+## Architecture Overview
+
+Reaper consists of three components:
+
+```
+Kubernetes/containerd
+        ↓ (ttrpc)
+containerd-shim-reaper-v2  (shim binary)
+        ↓ (exec: create/start/state/delete)
+reaper-runtime  (OCI runtime binary)
+        ↓ (fork + spawn)
+monitoring daemon → workload process
+```
+
+**Key features:**
+- **Fork-first architecture**: Daemon monitors workload, captures real exit codes
+- **Shared overlay filesystem**: All Reaper workloads share a writable overlay layer (host root is read-only)
+- **PTY support**: Interactive containers work with `kubectl run -it` and `kubectl exec -it`
+- **State persistence**: Process lifecycle state stored in `/run/reaper/<container-id>/`
+
+For architecture details, see [docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md) and [docs/OVERLAY_DESIGN.md](docs/OVERLAY_DESIGN.md).
+
+## Features
+
+- ✅ **Full OCI runtime implementation** (create, start, state, kill, delete)
+- ✅ **Containerd shim v2 protocol** (Task trait with all lifecycle methods)
+- ✅ **Kubernetes integration** via RuntimeClass
+- ✅ **Overlay filesystem namespace** (protects host from modifications)
+- ✅ **Container I/O capture** (stdout/stderr via FIFOs for `kubectl logs`)
+- ✅ **Interactive sessions** (PTY support for `kubectl run -it` and `kubectl exec -it`)
+- ✅ **Process monitoring** (fork-based with real exit code capture)
+- ✅ **Zombie process reaping** (proper process cleanup)
+- ✅ **End-to-end testing** (validated with kind cluster integration tests)
+
+## Documentation
+
+- **[kubernetes/README.md](kubernetes/README.md)** - Installation and Kubernetes integration
+- **[TESTING.md](TESTING.md)** - Testing guide (unit tests, integration tests, coverage)
+- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup, tooling, and contributing
+- **[docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md)** - Shim v2 protocol implementation details
+- **[docs/OVERLAY_DESIGN.md](docs/OVERLAY_DESIGN.md)** - Overlay filesystem design and architecture
+- **[docs/CURRENT_STATE.md](docs/CURRENT_STATE.md)** - Current implementation status and known issues
+
+## Requirements
+
+- **Linux kernel** with overlayfs support (standard since 3.18)
+- **Kubernetes cluster** with containerd runtime
+- **Root access** on cluster nodes (required for containerd shim installation)
+
+**Note:** Overlay filesystem is Linux-only. On macOS, the runtime compiles but overlay features are disabled.
+
+## Testing
+
+```bash
+# Unit tests (fast, runs locally)
 cargo test
 
 # Full integration tests (Kubernetes + unit tests)
@@ -28,334 +181,37 @@ cargo test
 # For complete testing guidance, see TESTING.md
 ```
 
-## Development setup
+## Configuration
 
-Prerequisites:
+### Overlay Filesystem
 
-- Rust toolchain (we pin `stable` via `rust-toolchain.toml`)
-- Docker (optional, for Linux-like CI runs on macOS)
+All Reaper workloads share a single overlay filesystem:
 
-Clone and build:
-
-```bash
-git clone https://github.com/miguelgi/reaper
-cd reaper
-cargo build
-```
-
-### Toolchain
-
-The repository includes `rust-toolchain.toml` to pin the toolchain and enable `rustfmt` and `clippy` components.
-
-### Git hooks
-
-We provide a repository git hooks directory and an install script to enable them locally. The pre-commit hook runs `cargo fmt --all` and stages formatting changes.
-
-Enable hooks locally:
-
-```bash
-chmod +x .githooks/pre-commit
-./scripts/install-hooks.sh
-```
-
-If you prefer the hook to fail instead of auto-staging, edit `.githooks/pre-commit` to use `cargo fmt --all -- --check` and exit non-zero on mismatch.
-
-### Formatting & linting
-
-Use the toolchain components:
-
-```bash
-cargo fmt --all
-cargo clippy --all-targets --all-features
-```
-
-CI runs formatting and clippy checks; push will fail if they don't pass.
-
-## Docker (Optional: Linux development / CI parity)
-
-A `Dockerfile` and coverage script are available for Linux-specific testing. You do not need Docker to develop on macOS; prefer `cargo test` locally for speed.
-
-Use Docker when you need:
-- Code coverage via `cargo-tarpaulin` (Linux-first tool)
-- CI failure reproduction specific to Linux
-
-Run coverage in Docker:
-
-```bash
-./scripts/docker-coverage.sh
-```
-
-For more testing details, see [TESTING.md](TESTING.md).
-
-## Testing Guide
-
-Complete information about unit tests, integration tests, and troubleshooting is documented in **[TESTING.md](TESTING.md)**.
-
-Quick reference:
-- **Unit tests**: `cargo test`
-- **Integration tests** (Kubernetes): `./scripts/run-integration-tests.sh`
-- **Integration tests** (K8s only): `./scripts/run-integration-tests.sh --skip-cargo`
-- **Coverage**: `./scripts/docker-coverage.sh`
-
-For usage, options, and troubleshooting, see [TESTING.md](TESTING.md).
-
-## VS Code
-
-Recommended extensions (workspace recommends them automatically):
-
-- `rust-analyzer` — main Rust language support
-- `CodeLLDB` (vadimcn.vscode-lldb) — debug adapter for Rust
-- `Test Explorer UI` — unified test UI
-
-Workspace settings enable CodeLens and configure rust-analyzer to run clippy on save; a `launch.json` is provided for debugging tests and binaries.
-
-## CI
-
-GitHub Actions are configured to run the following workflows:
-
-- `Tests` — runs `cargo test`
-- `Build` — builds across OS/rust matrix, checks formatting, runs clippy, and builds release
-- `Coverage` — runs `cargo-tarpaulin` and uploads to Codecov
-
-- `Security` — CI also runs `cargo-audit` to scan the dependency tree for known advisories and yanked crates.
-
-## Runtime engine (containerd/Kubernetes)
-
-This repository includes an initial runtime binary `reaper-runtime` that exposes an OCI-like CLI for running native binaries directly on the host.
-
-### Quick start: Running binaries with reaper-runtime
-
-**Create a bundle with config.json:**
-
-```bash
-mkdir -p /tmp/my-bundle
-cat > /tmp/my-bundle/config.json <<'EOF'
-{
-  "process": {
-    "args": ["/bin/sh", "-c", "echo Hello from reaper && sleep 2"],
-    "cwd": "/tmp",
-    "env": ["PATH=/usr/bin:/bin:/usr/local/bin"]
-  }
-}
-EOF
-```
-
-**Create, start, and manage the container:**
-
-```bash
-# Create metadata
-reaper-runtime create my-app --bundle /tmp/my-bundle
-
-# Start the process (runs immediately)
-reaper-runtime start my-app --bundle /tmp/my-bundle
-
-# Check status
-reaper-runtime state my-app
-
-# Kill if needed
-reaper-runtime kill my-app --signal 15
-
-# Cleanup
-reaper-runtime delete my-app
-```
-
-## Installation
-
-### Kubernetes Clusters
-
-**Unified Ansible-based installer**:
-
-Reaper uses Ansible for deployment to provide a single, consistent method for both Kind and production clusters:
-
-```bash
-# For Kind clusters (testing/CI)
-./scripts/install-reaper.sh --kind <cluster-name>
-
-# For production clusters
-./scripts/install-reaper.sh --inventory ansible/inventory.ini
-
-# Dry run (preview changes)
-./scripts/install-reaper.sh --kind test --dry-run
-
-# Rollback if needed
-ansible-playbook -i <inventory> ansible/rollback-reaper.yml
-```
-
-**Prerequisites:**
-- Ansible 2.9+ (`pip install ansible` or `brew install ansible`)
-- For Kind: Docker and Kind cluster running
-- For production: SSH access to cluster nodes
-- Reaper binaries built: `cargo build --release`
-
-**Why Ansible?**
-- **Single deployment method**: Same code path for Kind and production
-- **Better tested**: Kind tests validate production deployment
-- **Idempotent**: Safe to re-run without side effects
-- **Rollback support**: Built-in rollback playbook
-- **External orchestration**: No containerd circular dependencies
-
-**How it works:**
-- **Kind clusters**: Uses Docker connection (`ansible_connection=docker`)
-- **Production clusters**: Uses SSH connection (default)
-- **Same Ansible playbook**: Works with both without modification
-
-For complete installation options, Ansible documentation, and manual setup, see [kubernetes/README.md](kubernetes/README.md) and [ansible/README.md](ansible/README.md).
-
-### Testing on Kubernetes
-
-To test the Reaper runtime with Kubernetes (kind cluster):
-
-```bash
-./scripts/run-integration-tests.sh
-```
-
-This runs a complete integration test suite including DNS resolution, overlay filesystem sharing, host protection, and more. The test suite uses `install-reaper.sh` internally. See [TESTING.md](TESTING.md) for full details.
-
-### Testing core binary execution
-
-Integration tests verify that the core functionality works: running host binaries with OCI-like syntax. Tests are located in `tests/integration_basic_binary.rs`:
-
-```bash
-cargo test --test integration_basic_binary
-cargo test  # Run all tests
-```
-
-Tests cover:
-1. **`test_run_echo_hello_world`** — Full lifecycle (create → start → state → delete) for `echo "hello world"`
-2. **`test_run_shell_script`** — Multi-line shell command execution with output capture
-3. **`test_invalid_bundle`** — Error handling for missing `config.json`
-
-Additional test suites:
-- **`integration_io`** — FIFO stdout/stderr redirection, fallback behavior, multiline output
-- **`integration_user_management`** — uid/gid handling, additional groups, umask
-- **`integration_shim`** — Shim binary existence, bundle creation, config parsing
-
-All tests use isolated temporary directories to avoid state pollution.
-
-### Process output (stdout/stderr)
-
-Container stdout and stderr are captured via FIFOs provided by containerd:
-- Output is automatically captured when running in Kubernetes and available via `kubectl logs <pod>`
-- The runtime connects container processes to FIFOs (named pipes) provided by containerd in the CreateTask request
-- No manual redirection is needed in production environments
-
-For local testing or debugging:
-- Run reaper-runtime directly without containerd (inherits parent's stdio)
-- Or redirect at the shell level: `reaper-runtime start my-app --bundle /tmp/my-bundle > /tmp/my-app.out 2> /tmp/my-app.err`
-- To debug the runtime itself (not container output), use environment variables:
-  - `REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log` — Runtime internals
-  - `REAPER_SHIM_LOG=/var/log/reaper-shim.log` — Shim internals
-
-### CLI Commands
-
-Commands implemented:
-- `create <id> [--bundle PATH]` — records container metadata from the bundle's `config.json`.
-- `start <id> [--bundle PATH]` — spawns the process defined in `config.json.process.args` and persists the PID.
-- `state <id>` — prints JSON with `id`, `status`, `pid`, `bundle`.
-- `kill <id> [--signal N]` — sends a Unix signal to the process.
-- `delete <id> [--force]` — removes runtime state.
-
-Accepted global flags for compatibility (ignored): `--root`, `--log`, `--log-format`.
-
-State directory: defaults to `/run/reaper` and can be overridden via `REAPER_RUNTIME_ROOT`.
-
-### Kubernetes Integration (Experimental)
-
-✅ **Current Status**: Full containerd shim v2 protocol implemented! Reaper now supports Kubernetes integration via direct command execution on host nodes. See `docs/SHIMV2_DESIGN.md` for implementation details and `kubernetes/` for configuration examples.
-
-To test with Kubernetes:
-
-```bash
-# Recommended: Kind cluster integration (builds static musl binaries, deploys, and tests)
-./scripts/run-integration-tests.sh
-
-# Or build and install shim manually
-cargo build --release --bin containerd-shim-reaper-v2 --bin reaper-runtime
-sudo cp target/release/containerd-shim-reaper-v2 /usr/local/bin/
-sudo cp target/release/reaper-runtime /usr/local/bin/
-
-# Manual setup (see kubernetes/README.md)
-kubectl apply -f kubernetes/runtimeclass.yaml
-kubectl logs -f reaper-example
-```
-
-#### Configure containerd to use reaper-v2
-
-Add a runtime entry in `/etc/containerd/config.toml`:
-
-```toml
-[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
-  runtime_type = "io.containerd.reaper.v2"
-  sandbox_mode = "podsandbox"
-```
-
-Restart containerd:
-```bash
-sudo systemctl restart containerd
-```
-
-#### Kubernetes RuntimeClass example
-
-```yaml
-apiVersion: node.k8s.io/v1
-kind: RuntimeClass
-metadata:
-  name: reaper-v2
-handler: reaper-v2
-```
-
-### Implemented features
-
-- ✅ **Overlay filesystem**: Shared mount namespace + overlayfs protects the host filesystem while allowing cross-deployment file sharing. Enabled by default. See `docs/OVERLAY_DESIGN.md`.
-- ✅ **User/Group ID Management**: Parses `process.user.uid`, `process.user.gid`, `process.user.additionalGids`, `process.user.umask` from config.json (currently disabled for debugging — code exists in `do_start()`)
-- ✅ **Containerd shim v2 protocol**: Full Task trait with create/start/delete/wait/kill/state/pids/exec/stats/resize_pty methods
-- ✅ **Sandbox lifecycle**: Pause containers use blocking `wait()` with `kill()` signaling via `tokio::sync::Notify`
-- ✅ **Direct command execution**: Commands run on host nodes (no container isolation by design)
-- ✅ **RuntimeClass support**: Configure via `kubernetes/runtimeclass.yaml`
-- ✅ **End-to-end testing**: Validated with kind cluster (`scripts/run-integration-tests.sh`)
-- ✅ **Container I/O**: stdout/stderr captured via FIFOs for `kubectl logs` integration
-- See `kubernetes/README.md` for complete setup and testing instructions
-
-### Overlay filesystem
-
-All Reaper workloads on a node share a single overlay filesystem. The host root is the read-only lower layer; writes go to a shared upper layer. This means:
-
-- Workload A writes `/etc/config` → Workload B can read it
-- The host's real `/etc/config` is never modified
-- `/proc`, `/sys`, `/dev` remain real host mounts
-- Overlay is ephemeral (clears on reboot)
-
-Configuration:
 ```bash
 # Custom overlay location (default: /run/reaper/overlay)
 export REAPER_OVERLAY_BASE=/custom/path
 ```
 
-Overlay is mandatory — workloads cannot run without isolation.
+The host root is the read-only lower layer; writes go to a shared upper layer. This means workloads can share files with each other while protecting the host from modifications.
 
-### Next steps
+For details, see [docs/OVERLAY_DESIGN.md](docs/OVERLAY_DESIGN.md).
 
-- Exec into running containers (requires daemon protocol)
-- Resource monitoring (stats without cgroups)
-- Performance optimization (reduce 500ms startup delay)
-- Re-enable user/group switching after further validation
+### Runtime Logging
 
-
-## Coverage
-
-Local coverage (Linux) with tarpaulin:
+Enable runtime logging for debugging:
 
 ```bash
-cargo install cargo-tarpaulin
-cargo tarpaulin --out Xml --timeout 600
+export REAPER_SHIM_LOG=/var/log/reaper-shim.log
+export REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log
 ```
-
-On macOS run the included Docker coverage script instead.
 
 ## Contributing
 
-- Run `cargo fmt` and `cargo clippy` before opening PRs.
-- Install git hooks to auto-format on commit.
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for:
+- Development environment setup
+- Code formatting and linting
+- Git hooks and pre-commit checks
+- CI/CD workflows
 
 ## License
 
