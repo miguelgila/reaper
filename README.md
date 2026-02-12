@@ -1,8 +1,8 @@
 # Reaper
 
-[![Tests](https://github.com/miguelgi/reaper/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/miguelgi/reaper/actions/workflows/test.yml)
-[![Build](https://github.com/miguelgi/reaper/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/miguelgi/reaper/actions/workflows/build.yml)
-[![Coverage](https://codecov.io/gh/miguelgi/reaper/branch/main/graph/badge.svg)](https://codecov.io/gh/miguelgi/reaper)
+[![Tests](https://github.com/miguelgila/reaper/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/miguelgila/reaper/actions/workflows/test.yml)
+[![Build](https://github.com/miguelgila/reaper/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/miguelgila/reaper/actions/workflows/build.yml)
+[![Coverage](https://codecov.io/gh/miguelgila/reaper/branch/main/graph/badge.svg)](https://codecov.io/gh/miguelgila/reaper)
 
 **Reaper is a lightweight Kubernetes container runtime that executes commands directly on cluster nodes without traditional container isolation.** Think of it as a way to run host-native processes through Kubernetes' orchestration layer.
 
