@@ -11,7 +11,7 @@ use tracing_subscriber::EnvFilter;
 mod state;
 use state::{
     delete as delete_state, load_exec_state, load_pid, load_state, save_exec_state, save_pid,
-    save_state, ContainerState,
+    save_state, ContainerState, OciUser,
 };
 
 #[cfg(target_os = "linux")]
@@ -102,15 +102,6 @@ enum Commands {
 }
 
 #[derive(Debug, Deserialize)]
-struct OciUser {
-    uid: u32,
-    gid: u32,
-    #[serde(default, alias = "additionalGids")]
-    additional_gids: Vec<u32>,
-    umask: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
 struct OciProcess {
     args: Option<Vec<String>>, // command and args
     env: Option<Vec<String>>,  // key=value
@@ -140,6 +131,26 @@ fn read_oci_config(bundle: &Path) -> Result<OciConfig> {
             .unwrap_or(0)
     );
     Ok(cfg)
+}
+
+/// Platform-specific wrapper for setgroups syscall.
+/// Linux uses size_t (usize), macOS/BSD uses c_int (i32).
+#[cfg(target_os = "linux")]
+unsafe fn safe_setgroups(gids: &[nix::libc::gid_t]) -> std::io::Result<()> {
+    if nix::libc::setgroups(gids.len(), gids.as_ptr()) != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+unsafe fn safe_setgroups(gids: &[nix::libc::gid_t]) -> std::io::Result<()> {
+    if nix::libc::setgroups(gids.len() as nix::libc::c_int, gids.as_ptr()) != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Open a FIFO for writing. FIFOs are created by containerd and we open them for writing.
@@ -393,6 +404,9 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
             let io_state = load_state(&container_id).ok();
             let use_terminal = io_state.as_ref().is_some_and(|s| s.terminal);
 
+            // Clone user config for use in pre_exec closures (both PTY and non-PTY modes)
+            let user_cfg_for_exec = user_config.clone();
+
             if use_terminal {
                 // Terminal mode: allocate a PTY so the shell sees isatty()=true.
                 // Relay between containerd FIFOs and the PTY master.
@@ -456,6 +470,30 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                         if slave_raw_fd > 2 {
                             nix::libc::close(slave_raw_fd);
                         }
+
+                        // Apply user/group configuration if present
+                        if let Some(ref user) = user_cfg_for_exec {
+                            // Set supplementary groups first (must be done while privileged)
+                            if !user.additional_gids.is_empty() {
+                                safe_setgroups(&user.additional_gids)?;
+                            }
+
+                            // Set GID before UID (privilege dropping order matters)
+                            if nix::libc::setgid(user.gid) != 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+
+                            // Set UID (this must be last - irreversible privilege drop)
+                            if nix::libc::setuid(user.uid) != 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+
+                            // Apply umask if specified
+                            if let Some(mask) = user.umask {
+                                nix::libc::umask(mask as nix::libc::mode_t);
+                            }
+                        }
+
                         Ok(())
                     });
                 }
@@ -683,6 +721,40 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                     cmd.stderr(Stdio::inherit());
                 }
 
+                // Apply user/group configuration if present
+                if let Some(ref user) = user_config {
+                    let uid_val = user.uid;
+                    let gid_val = user.gid;
+                    let groups = user.additional_gids.clone();
+                    let umask_val = user.umask;
+
+                    unsafe {
+                        cmd.pre_exec(move || {
+                            // Set supplementary groups first (must be done while privileged)
+                            if !groups.is_empty() {
+                                safe_setgroups(&groups)?;
+                            }
+
+                            // Set GID before UID (privilege dropping order matters)
+                            if nix::libc::setgid(gid_val) != 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+
+                            // Set UID (this must be last - irreversible privilege drop)
+                            if nix::libc::setuid(uid_val) != 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+
+                            // Apply umask if specified
+                            if let Some(mask) = umask_val {
+                                nix::libc::umask(mask as nix::libc::mode_t);
+                            }
+
+                            Ok(())
+                        });
+                    }
+                }
+
                 match cmd.spawn() {
                     Ok(mut child) => {
                         let workload_pid = child.id() as i32;
@@ -794,6 +866,7 @@ fn exec_with_pty(
     env_vars: Option<Vec<String>>,
     stdin_path: Option<String>,
     stdout_path: Option<String>,
+    user_config: Option<OciUser>,
     container_id: &str,
     exec_id: &str,
 ) -> i32 {
@@ -853,6 +926,30 @@ fn exec_with_pty(
             if slave_raw_fd > 2 {
                 nix::libc::close(slave_raw_fd);
             }
+
+            // Apply user/group configuration if present
+            if let Some(ref user) = user_config {
+                // Set supplementary groups first (must be done while privileged)
+                if !user.additional_gids.is_empty() {
+                    safe_setgroups(&user.additional_gids)?;
+                }
+
+                // Set GID before UID (privilege dropping order matters)
+                if nix::libc::setgid(user.gid) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+
+                // Set UID (this must be last - irreversible privilege drop)
+                if nix::libc::setuid(user.uid) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+
+                // Apply umask if specified
+                if let Some(mask) = user.umask {
+                    nix::libc::umask(mask as nix::libc::mode_t);
+                }
+            }
+
             Ok(())
         });
     }
@@ -951,6 +1048,7 @@ fn exec_without_pty(
     stdin_path: Option<String>,
     stdout_path: Option<String>,
     stderr_path: Option<String>,
+    user_config: Option<OciUser>,
     container_id: &str,
     exec_id: &str,
 ) -> i32 {
@@ -1008,6 +1106,40 @@ fn exec_without_pty(
         cmd.stderr(Stdio::inherit());
     }
 
+    // Apply user/group configuration if present
+    if let Some(ref user) = user_config {
+        let uid_val = user.uid;
+        let gid_val = user.gid;
+        let groups = user.additional_gids.clone();
+        let umask_val = user.umask;
+
+        unsafe {
+            cmd.pre_exec(move || {
+                // Set supplementary groups first (must be done while privileged)
+                if !groups.is_empty() {
+                    safe_setgroups(&groups)?;
+                }
+
+                // Set GID before UID (privilege dropping order matters)
+                if nix::libc::setgid(gid_val) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+
+                // Set UID (this must be last - irreversible privilege drop)
+                if nix::libc::setuid(uid_val) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+
+                // Apply umask if specified
+                if let Some(mask) = umask_val {
+                    nix::libc::umask(mask as nix::libc::mode_t);
+                }
+
+                Ok(())
+            });
+        }
+    }
+
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -1052,6 +1184,7 @@ fn do_exec(container_id: &str, exec_id: &str) -> Result<()> {
     let stdin_path = exec_state.stdin.clone();
     let stdout_path = exec_state.stdout.clone();
     let stderr_path = exec_state.stderr.clone();
+    let user_cfg = exec_state.user.clone();
 
     let container_id = container_id.to_string();
     let exec_id = exec_id.to_string();
@@ -1119,6 +1252,7 @@ fn do_exec(container_id: &str, exec_id: &str) -> Result<()> {
                     env_vars,
                     stdin_path,
                     stdout_path,
+                    user_cfg,
                     &container_id,
                     &exec_id,
                 )
@@ -1131,6 +1265,7 @@ fn do_exec(container_id: &str, exec_id: &str) -> Result<()> {
                     stdin_path,
                     stdout_path,
                     stderr_path,
+                    user_cfg,
                     &container_id,
                     &exec_id,
                 )

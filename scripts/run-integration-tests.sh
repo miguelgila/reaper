@@ -737,6 +737,125 @@ test_shim_cleanup_after_delete() {
   return 0
 }
 
+test_uid_gid_switching() {
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-uid-gid-test
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+  containers:
+  - name: test
+    image: busybox
+    command: ["/bin/sh", "-c", "id -u && id -g && echo 'uid-gid-ok'"]
+YAML
+
+  wait_for_pod_phase reaper-uid-gid-test Succeeded 60 2 || {
+    log_error "UID/GID test pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-uid-gid-test
+    return 1
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-uid-gid-test 2>&1 || echo "(failed to retrieve logs)")
+  log_verbose "UID/GID test logs: $logs"
+
+  # Parse output: should be "1000\n1000\nuid-gid-ok"
+  local uid_line
+  uid_line=$(echo "$logs" | sed -n '1p' | tr -d '[:space:]')
+  local gid_line
+  gid_line=$(echo "$logs" | sed -n '2p' | tr -d '[:space:]')
+
+  if [[ "$uid_line" != "1000" ]]; then
+    log_error "Expected UID 1000, got: '$uid_line'"
+    log_error "Full pod logs:"
+    echo "$logs" | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    dump_pod_diagnostics reaper-uid-gid-test
+    return 1
+  fi
+
+  if [[ "$gid_line" != "1000" ]]; then
+    log_error "Expected GID 1000, got: '$gid_line'"
+    log_error "Full pod logs:"
+    echo "$logs" | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    dump_pod_diagnostics reaper-uid-gid-test
+    return 1
+  fi
+
+  if [[ "$logs" != *"uid-gid-ok"* ]]; then
+    log_error "UID/GID test did not produce expected 'uid-gid-ok' marker"
+    log_error "Full pod logs:"
+    echo "$logs" | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    dump_pod_diagnostics reaper-uid-gid-test
+    return 1
+  fi
+
+  log_verbose "UID/GID switching verified: UID=$uid_line, GID=$gid_line"
+}
+
+test_privilege_drop() {
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-privdrop-test
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 1001  # unprivileged user
+    runAsGroup: 1001
+  containers:
+  - name: test
+    image: busybox
+    command: ["/bin/sh", "-c", "id -u; id -g; echo 'privilege-drop-ok'"]
+YAML
+
+  wait_for_pod_phase reaper-privdrop-test Succeeded 60 2 || {
+    log_error "Privilege drop test pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-privdrop-test
+    return 1
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-privdrop-test 2>&1 || echo "(failed to retrieve logs)")
+  log_verbose "Privilege drop test logs: $logs"
+
+  # Should output "1001" (UID), "1001" (GID), and "privilege-drop-ok"
+  if [[ "$logs" != *"1001"* ]]; then
+    log_error "Expected UID/GID 1001, but not found in output"
+    log_error "Full pod logs:"
+    echo "$logs" | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    dump_pod_diagnostics reaper-privdrop-test
+    return 1
+  fi
+
+  if [[ "$logs" != *"privilege-drop-ok"* ]]; then
+    log_error "Privilege drop verification failed"
+    log_error "Full pod logs:"
+    echo "$logs" | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    dump_pod_diagnostics reaper-privdrop-test
+    return 1
+  fi
+
+  log_verbose "Privilege drop verified: process runs as UID/GID 1001"
+}
+
 test_exec_support() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -778,11 +897,14 @@ phase_integration_tests() {
   run_test test_echo_command     "Echo command execution"        --hard-fail
   run_test test_overlay_sharing  "Overlay filesystem sharing"    --hard-fail
   run_test test_host_protection  "Host filesystem protection"    --hard-fail
+  run_test test_uid_gid_switching "UID/GID switching with securityContext" --hard-fail
+  run_test test_privilege_drop   "Privilege drop to non-root user" --hard-fail
   run_test test_exec_support     "kubectl exec support"          --soft-fail
 
   # Cleanup test pods (before defunct check so pods are terminated)
   kubectl delete pod reaper-dns-check reaper-integration-test \
-    reaper-overlay-writer reaper-overlay-reader reaper-exec-test \
+    reaper-overlay-writer reaper-overlay-reader reaper-uid-gid-test \
+    reaper-privdrop-test reaper-exec-test \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
 
   # Wait for all pods to fully terminate before checking for zombies

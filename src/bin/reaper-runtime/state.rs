@@ -3,6 +3,16 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
+/// OCI User specification for UID/GID switching
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct OciUser {
+    pub uid: u32,
+    pub gid: u32,
+    #[serde(default, alias = "additionalGids")]
+    pub additional_gids: Vec<u32>,
+    pub umask: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContainerState {
     pub id: String,
@@ -114,6 +124,8 @@ pub struct ExecState {
     pub stdout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<OciUser>,
 }
 
 pub fn exec_state_path(container_id: &str, exec_id: &str) -> PathBuf {
@@ -315,6 +327,7 @@ mod tests {
                 stdin: Some("/path/to/stdin".to_string()),
                 stdout: Some("/path/to/stdout".to_string()),
                 stderr: Some("/path/to/stderr".to_string()),
+                user: None,
             };
 
             // Save exec state
