@@ -222,13 +222,13 @@ cargo clippy --target x86_64-unknown-linux-gnu --all-targets
 - FIFO-based I/O capture (kubectl logs)
 - PTY support (kubectl run -it, kubectl exec -it)
 - Overlay filesystem namespace with persistent helper
+- UID/GID switching with privilege dropping (setgroups → setgid → setuid → umask)
 - State persistence and lifecycle management
 - Kubernetes integration via RuntimeClass
 - End-to-end validation with Kind cluster
 
 ### 🔄 Known Limitations
 - Multi-container pods not fully tested
-- User/group switching currently disabled (code exists, commented out)
 - ResizePty returns OK but is no-op (no dynamic PTY resize)
 - No cgroup resource limits (by design)
 - No namespace isolation (by design)
@@ -236,7 +236,6 @@ cargo clippy --target x86_64-unknown-linux-gnu --all-targets
 ### ⏳ Future Work
 See [docs/TODO.md](docs/TODO.md) for planned enhancements:
 - Volume mounting (`hostPath` support)
-- UID/GID validation in integration tests
 - Sensitive host file filtering in overlay
 - Real Kubernetes cluster testing (GKE, EKS)
 

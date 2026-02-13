@@ -611,7 +611,7 @@ fn test_non_root_cannot_switch_user() {
         .expect("Failed to run create command");
 
     // Start should fail with permission error
-    let start_output = Command::new(reaper_bin)
+    let _start_output = Command::new(reaper_bin)
         .env("REAPER_RUNTIME_ROOT", &state_root)
         .env("REAPER_NO_OVERLAY", "1")
         .arg("start")

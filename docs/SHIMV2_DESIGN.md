@@ -281,9 +281,85 @@ tracing-subscriber = "0.3"
 ./scripts/run-integration-tests.sh
 ```
 
-This orchestrates all testing including Rust unit tests, Kubernetes infrastructure setup, and comprehensive integration tests (DNS, overlay, host protection, zombies, exec, etc.).
+This orchestrates all testing including Rust unit tests, Kubernetes infrastructure setup, and comprehensive integration tests (DNS, overlay, host protection, UID/GID switching, privilege dropping, zombies, exec, etc.).
 
 For options and troubleshooting, see [TESTING.md](../TESTING.md).
+
+## Security Features
+
+### UID/GID Switching and Privilege Dropping
+
+**Implemented:** February 2026
+
+The runtime supports OCI user specification for credential switching, allowing workloads to run as non-root users. This integrates with Kubernetes `securityContext`:
+
+```yaml
+spec:
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  containers:
+  - name: app
+    securityContext:
+      runAsUser: 1001
+```
+
+#### Implementation
+
+**File:** `src/bin/reaper-runtime/main.rs`
+
+Privilege dropping follows the standard Unix sequence in `pre_exec` hooks:
+
+```rust
+// 1. Set supplementary groups (requires CAP_SETGID)
+if !user.additional_gids.is_empty() {
+    let gids: Vec<gid_t> = user.additional_gids.iter().map(|&g| g).collect();
+    safe_setgroups(&gids)?;
+}
+
+// 2. Set GID (requires CAP_SETGID)
+if setgid(user.gid) != 0 {
+    return Err(std::io::Error::last_os_error());
+}
+
+// 3. Set UID (irreversible privilege drop)
+if setuid(user.uid) != 0 {
+    return Err(std::io::Error::last_os_error());
+}
+
+// 4. Apply umask (if specified)
+if let Some(mask) = user.umask {
+    umask(mask as mode_t);
+}
+```
+
+**Platform Compatibility:** The `setgroups()` syscall signature differs across platforms. We provide a platform-specific wrapper:
+- **Linux**: `size_t` (usize) for length parameter
+- **macOS/BSD**: `c_int` (i32) for length parameter
+
+#### Execution Paths
+
+User switching is implemented in all four execution paths:
+1. **PTY mode** (interactive containers): `do_start()` with terminal=true
+2. **Non-PTY mode** (batch containers): `do_start()` with terminal=false
+3. **Exec with PTY** (kubectl exec -it): `do_exec()` with terminal=true
+4. **Exec without PTY** (kubectl exec): `do_exec()` with terminal=false
+
+#### Integration Tests
+
+**Unit Tests** (`tests/integration_user_management.rs`):
+- `test_run_with_current_user` - Validates UID/GID from config
+- `test_privilege_drop_root_to_user` - Tests root → non-root transition
+- `test_non_root_cannot_switch_user` - Permission denial for non-root
+- `test_supplementary_groups_validation` - additionalGids support
+- `test_umask_affects_file_permissions` - umask application
+
+**Kubernetes Integration Tests** (`scripts/run-integration-tests.sh`):
+- `test_uid_gid_switching` - securityContext UID/GID (runAsUser: 1000)
+- `test_privilege_drop` - Unprivileged execution (runAsUser: 1001)
+
+All tests validate actual runtime credentials (not just config parsing) via `id -u` and `id -g` commands in the container.
 
 ## Resources
 
