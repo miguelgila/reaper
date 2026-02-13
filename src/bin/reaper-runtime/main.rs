@@ -475,9 +475,7 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                         if let Some(ref user) = user_cfg_for_exec {
                             // Set supplementary groups first (must be done while privileged)
                             if !user.additional_gids.is_empty() {
-                                let gids: Vec<nix::libc::gid_t> =
-                                    user.additional_gids.iter().map(|&g| g).collect();
-                                safe_setgroups(&gids)?;
+                                safe_setgroups(&user.additional_gids)?;
                             }
 
                             // Set GID before UID (privilege dropping order matters)
@@ -734,9 +732,7 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                         cmd.pre_exec(move || {
                             // Set supplementary groups first (must be done while privileged)
                             if !groups.is_empty() {
-                                let gids: Vec<nix::libc::gid_t> =
-                                    groups.iter().map(|&g| g).collect();
-                                safe_setgroups(&gids)?;
+                                safe_setgroups(&groups)?;
                             }
 
                             // Set GID before UID (privilege dropping order matters)
@@ -935,9 +931,7 @@ fn exec_with_pty(
             if let Some(ref user) = user_config {
                 // Set supplementary groups first (must be done while privileged)
                 if !user.additional_gids.is_empty() {
-                    let gids: Vec<nix::libc::gid_t> =
-                        user.additional_gids.iter().map(|&g| g).collect();
-                    safe_setgroups(&gids)?;
+                    safe_setgroups(&user.additional_gids)?;
                 }
 
                 // Set GID before UID (privilege dropping order matters)
@@ -1123,8 +1117,7 @@ fn exec_without_pty(
             cmd.pre_exec(move || {
                 // Set supplementary groups first (must be done while privileged)
                 if !groups.is_empty() {
-                    let gids: Vec<nix::libc::gid_t> = groups.iter().map(|&g| g).collect();
-                    safe_setgroups(&gids)?;
+                    safe_setgroups(&groups)?;
                 }
 
                 // Set GID before UID (privilege dropping order matters)
