@@ -227,12 +227,11 @@ kubectl get runtimeclass reaper-v2 &>/dev/null || fail "RuntimeClass reaper-v2 n
 info "Ensuring socat is available on worker nodes"
 
 for worker in "${WORKERS[@]}"; do
-  worker_id=$(docker ps --filter "name=$worker" --format '{{.ID}}')
-  if docker exec "$worker_id" which socat >/dev/null 2>&1; then
+  if docker exec "$worker" which socat >/dev/null 2>&1; then
     ok "$worker already has socat"
   else
     echo "  Installing socat on $worker..."
-    docker exec "$worker_id" sh -c "apt-get update -qq && apt-get install -y -qq socat" >> "$LOG_FILE" 2>&1 || {
+    docker exec "$worker" sh -c "apt-get update -qq && apt-get install -y -qq socat" >> "$LOG_FILE" 2>&1 || {
       fail "Failed to install socat on $worker. See $LOG_FILE"
     }
     ok "$worker socat installed"
