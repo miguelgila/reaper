@@ -1,0 +1,49 @@
+# TCP client that connects to the demo server every 5 seconds.
+# Runs on nodes labeled role=client (multiple nodes in the demo cluster).
+#
+# Reads the server address from the server-config ConfigMap, which is
+# created by setup.sh with the server node's internal IP.
+#
+# Usage:
+#   kubectl apply -f client-daemonset.yaml
+#   kubectl logs -l app=demo-client --all-containers --prefix -f
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: demo-client
+  labels:
+    app: demo-client
+spec:
+  selector:
+    matchLabels:
+      app: demo-client
+  template:
+    metadata:
+      labels:
+        app: demo-client
+    spec:
+      runtimeClassName: reaper-v2
+      nodeSelector:
+        role: client
+      containers:
+        - name: client
+          image: busybox
+          env:
+            - name: SERVER_IP
+              valueFrom:
+                configMapKeyRef:
+                  name: server-config
+                  key: SERVER_IP
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Client starting on $(hostname), server at $SERVER_IP:9090"
+              while true; do
+                response=$(echo "" | socat -T2 - TCP:$SERVER_IP:9090 2>&1)
+                if [ $? -eq 0 ]; then
+                  echo "[$(hostname)] $(date -u +%H:%M:%S) <- $response"
+                else
+                  echo "[$(hostname)] $(date -u +%H:%M:%S) ERROR: $response"
+                fi
+                sleep 5
+              done
