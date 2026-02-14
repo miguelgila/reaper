@@ -222,16 +222,20 @@ done
 kubectl get runtimeclass reaper-v2 &>/dev/null || fail "RuntimeClass reaper-v2 not found"
 
 # ---------------------------------------------------------------------------
-# Verify socat is available on worker nodes
+# Ensure socat is available on worker nodes
 # ---------------------------------------------------------------------------
-info "Verifying socat on worker nodes"
+info "Ensuring socat is available on worker nodes"
 
 for worker in "${WORKERS[@]}"; do
   worker_id=$(docker ps --filter "name=$worker" --format '{{.ID}}')
   if docker exec "$worker_id" which socat >/dev/null 2>&1; then
-    ok "$worker has socat"
+    ok "$worker already has socat"
   else
-    fail "$worker does not have socat. Kind node image may be too minimal."
+    echo "  Installing socat on $worker..."
+    docker exec "$worker_id" sh -c "apt-get update -qq && apt-get install -y -qq socat" >> "$LOG_FILE" 2>&1 || {
+      fail "Failed to install socat on $worker. See $LOG_FILE"
+    }
+    ok "$worker socat installed"
   fi
 done
 
