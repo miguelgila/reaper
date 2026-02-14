@@ -29,7 +29,7 @@ Tests run in a few seconds and provide immediate feedback. Use this for developm
 ### Test Modules
 
 - `integration_basic_binary` - Basic runtime functionality
-- `integration_user_management` - User/group handling
+- `integration_user_management` - User/group handling (UID/GID switching, privilege dropping, umask)
 - `integration_shim` - Shim-specific tests
 
 Run a specific test:
@@ -46,6 +46,8 @@ The main integration test suite runs against a kind (Kubernetes in Docker) clust
 - ✓ Basic command execution (echo)
 - ✓ Overlay filesystem sharing across pods
 - ✓ Host filesystem protection (no leakage to host)
+- ✓ UID/GID switching with securityContext
+- ✓ Privilege drop to non-root user
 - ✓ Shim cleanup after pod deletion
 - ✓ No defunct (zombie) processes
 - ✓ `kubectl exec` support
@@ -113,7 +115,7 @@ The test harness orchestrates:
    - Create RuntimeClass
    - Wait for default ServiceAccount
 4. **Phase 4**: Integration tests
-   - DNS, echo, overlay, host protection, exec, zombie check
+   - DNS, echo, overlay, host protection, UID/GID switching, privilege drop, exec, zombie check
 5. **Phase 5**: Summary & reporting
 
 ## Coverage

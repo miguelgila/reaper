@@ -135,10 +135,14 @@ cargo fmt --all -- --check
 Run clippy to catch common mistakes and improve code quality:
 
 ```bash
+# Quick check
 cargo clippy --all-targets --all-features
+
+# Match CI exactly (treats warnings as errors)
+cargo clippy -- -D warnings
 ```
 
-CI runs both formatting and clippy checks. Push will fail if they don't pass.
+CI runs clippy with `-D warnings`, so any warning is a hard failure. The pre-push hook runs this automatically if you've installed hooks via `./scripts/install-hooks.sh`.
 
 ### Linux Cross-Check (macOS only)
 
@@ -154,18 +158,29 @@ cargo clippy --target x86_64-unknown-linux-gnu --all-targets --all-features
 
 ## Git Hooks
 
-We provide git hooks to maintain code quality. The pre-commit hook automatically formats code and stages the changes.
+We provide git hooks in `.githooks/` to catch issues before they reach CI.
 
 ### Enable Hooks
 
 ```bash
-chmod +x .githooks/pre-commit
 ./scripts/install-hooks.sh
 ```
 
-### Hook Behavior
+This sets `core.hooksPath` to `.githooks/` and marks the hooks executable. Since the hooks are checked into the repo, every contributor gets the same setup.
 
-The pre-commit hook runs `cargo fmt --all` and stages formatting changes automatically. If you prefer the hook to fail instead of auto-staging, edit `.githooks/pre-commit` to use `cargo fmt --all -- --check` and exit non-zero on mismatch.
+### Available Hooks
+
+| Hook | Runs | Purpose |
+|------|------|---------|
+| `pre-commit` | `cargo fmt --all` | Auto-formats code and stages changes before each commit |
+| `pre-push` | `cargo clippy -- -D warnings` | Catches lint issues before pushing (matches CI) |
+
+The pre-push hook mirrors the exact clippy invocation used in CI, so pushes that pass locally will pass the CI clippy check too.
+
+### Customization
+
+- **pre-commit**: To fail on unformatted code instead of auto-fixing, change `cargo fmt --all` to `cargo fmt --all -- --check` and remove the `git add -A` line.
+- **pre-push**: To skip clippy for a one-off push, use `git push --no-verify`.
 
 ## Docker (Optional)
 
@@ -278,7 +293,7 @@ Configuration lives in `tarpaulin.toml`. Functions requiring root + Linux namesp
    ./scripts/run-integration-tests.sh
    ```
 
-5. **Optional: Install git hooks** (auto-formats on commit):
+5. **Install git hooks** (auto-formats on commit, runs clippy before push):
    ```bash
    ./scripts/install-hooks.sh
    ```
@@ -336,7 +351,7 @@ reaper/
 ├── ansible/                            # Ansible playbooks for deployment
 ├── kubernetes/                         # Kubernetes manifests
 ├── docs/                               # Documentation
-└── .githooks/                          # Git hooks
+└── .githooks/                          # Git hooks (pre-commit, pre-push)
 ```
 
 ## Common Tasks
