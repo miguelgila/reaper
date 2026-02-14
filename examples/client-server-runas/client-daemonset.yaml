@@ -1,0 +1,52 @@
+# TCP client running as a non-root user (demo-svc, UID 1500 / GID 1500).
+# Identical to client-server/client-daemonset.yaml but with securityContext
+# to verify Reaper's UID/GID switching.
+#
+# Each log line includes the effective UID to prove privilege drop.
+#
+# Usage:
+#   kubectl apply -f client-daemonset.yaml
+#   kubectl logs -l app=demo-client-runas --all-containers --prefix -f
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: demo-client-runas
+  labels:
+    app: demo-client-runas
+spec:
+  selector:
+    matchLabels:
+      app: demo-client-runas
+  template:
+    metadata:
+      labels:
+        app: demo-client-runas
+    spec:
+      runtimeClassName: reaper-v2
+      nodeSelector:
+        role: client
+      securityContext:
+        runAsUser: 1500
+        runAsGroup: 1500
+      containers:
+        - name: client
+          image: busybox
+          env:
+            - name: SERVER_IP
+              valueFrom:
+                configMapKeyRef:
+                  name: server-config
+                  key: SERVER_IP
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Client starting on $(hostname) as uid=$(id -u) gid=$(id -g) user=$(id -un 2>/dev/null || echo unknown), server at $SERVER_IP:9090"
+              while true; do
+                response=$(echo "" | socat -T2 - TCP:$SERVER_IP:9090 2>&1)
+                if [ $? -eq 0 ]; then
+                  echo "[$(hostname) uid=$(id -u)] $(date -u +%H:%M:%S) <- $response"
+                else
+                  echo "[$(hostname) uid=$(id -u)] $(date -u +%H:%M:%S) ERROR: $response"
+                fi
+                sleep 5
+              done
