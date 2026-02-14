@@ -1,0 +1,36 @@
+# Run a host-monitoring daemon on every node in the cluster.
+#
+# Prerequisites:
+#   - Reaper installed on all target nodes (see ansible/README.md)
+#   - RuntimeClass applied: kubectl apply -f kubernetes/runtimeclass.yaml
+#
+# Usage:
+#   kubectl apply -f all-nodes-daemonset.yaml
+#   kubectl logs -l app=node-monitor --all-containers
+#   kubectl delete daemonset node-monitor
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-monitor
+  labels:
+    app: node-monitor
+spec:
+  selector:
+    matchLabels:
+      app: node-monitor
+  template:
+    metadata:
+      labels:
+        app: node-monitor
+    spec:
+      runtimeClassName: reaper-v2
+      containers:
+        - name: monitor
+          image: busybox # Pulled by kubelet but ignored by Reaper
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $(hostname) load=$(cat /proc/loadavg | cut -d' ' -f1-3) mem_free=$(grep MemAvailable /proc/meminfo | awk '{print $2}')kB"
+                sleep 60
+              done
