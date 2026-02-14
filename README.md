@@ -189,8 +189,19 @@ For architecture details, see [docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md) and
 - ✅ **Zombie process reaping** (proper process cleanup)
 - ✅ **End-to-end testing** (validated with kind cluster integration tests)
 
+## Examples
+
+The [examples/](examples/) directory contains runnable demos, each with a `setup.sh` that creates a Kind cluster with Reaper pre-installed:
+
+| Example | Description |
+|---------|-------------|
+| **[scheduling/](examples/scheduling/)** | DaemonSets on all nodes vs. a labeled subset |
+| **[client-server/](examples/client-server/)** | TCP server + clients communicating across nodes via host networking |
+| **[client-server-runas/](examples/client-server-runas/)** | Same as above, but running as a shared non-root user (LDAP-style UID/GID) |
+
 ## Documentation
 
+- **[examples/README.md](examples/README.md)** - Runnable examples with Kind clusters
 - **[kubernetes/README.md](kubernetes/README.md)** - Installation and Kubernetes integration
 - **[TESTING.md](TESTING.md)** - Testing guide (unit tests, integration tests, coverage)
 - **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup, tooling, and contributing
