@@ -9,6 +9,7 @@ This file contains important project-specific context and instructions for Claud
 ### What Reaper Does
 - ✅ Executes commands directly on Kubernetes nodes (no traditional container isolation)
 - ✅ Provides shared overlay filesystem to protect host from workload modifications
+- ✅ Supports Kubernetes volumes (ConfigMap, Secret, hostPath, emptyDir) via OCI bind mounts
 - ✅ Integrates with Kubernetes API (Pods, kubectl logs, kubectl exec)
 - ✅ Supports interactive containers with PTY (kubectl run -it, kubectl exec -it)
 - ✅ Captures real exit codes and process lifecycle events
@@ -86,6 +87,22 @@ Host Root (/) ─── read-only lower layer
 - `REAPER_OVERLAY_BASE`: Default `/run/reaper/overlay`
 - Overlay is mandatory on Linux (no fail-open)
 - Not available on macOS (code gated with `#[cfg(target_os = "linux")]`)
+
+### Volume Mounts
+
+Kubernetes volumes (ConfigMap, Secret, hostPath, emptyDir, etc.) are supported via OCI bind mounts. Kubelet prepares volume content as host directories, and containerd writes bind-mount directives to the OCI `config.json` `mounts` array. Reaper reads this array and performs bind mounts inside the overlay namespace.
+
+**How it works:**
+1. OCI `config.json` mounts are parsed into `OciMount` structs
+2. Non-bind mounts (proc, sysfs, tmpfs, etc.) are filtered out (already handled by overlay)
+3. Kubernetes-internal mounts (`/etc/hosts`, `/etc/hostname`, `/etc/resolv.conf`, `/dev/termination-log`) are skipped
+4. Remaining bind mounts are applied inside the shared overlay namespace after `enter_overlay()`
+
+**Key details:**
+- Volume mounts are shared across all workloads (same shared namespace, no per-container isolation)
+- Mount failures are fatal — workload refuses to start (same pattern as overlay failure)
+- Read-only mounts (`"ro"` in options) are remounted with `MS_RDONLY`
+- `do_exec()` does NOT need to re-apply volume mounts — they persist in the shared namespace
 
 ## Project Structure
 
@@ -222,7 +239,9 @@ cargo clippy --target x86_64-unknown-linux-gnu --all-targets
 - FIFO-based I/O capture (kubectl logs)
 - PTY support (kubectl run -it, kubectl exec -it)
 - Overlay filesystem namespace with persistent helper
+- Volume mounts (ConfigMap, Secret, hostPath, emptyDir) via OCI bind mounts
 - UID/GID switching with privilege dropping (setgroups → setgid → setuid → umask)
+- Sensitive host file filtering in overlay
 - State persistence and lifecycle management
 - Kubernetes integration via RuntimeClass
 - End-to-end validation with Kind cluster
@@ -232,11 +251,10 @@ cargo clippy --target x86_64-unknown-linux-gnu --all-targets
 - ResizePty returns OK but is no-op (no dynamic PTY resize)
 - No cgroup resource limits (by design)
 - No namespace isolation (by design)
+- Volume mounts are shared across all workloads (no per-container isolation)
 
 ### ⏳ Future Work
 See [docs/TODO.md](docs/TODO.md) for planned enhancements:
-- Volume mounting (`hostPath` support)
-- Sensitive host file filtering in overlay
 - Real Kubernetes cluster testing (GKE, EKS)
 
 ## Documentation Map

@@ -4,7 +4,7 @@
 [![Build](https://github.com/miguelgila/reaper/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/miguelgila/reaper/actions/workflows/build.yml)
 [![Coverage](https://codecov.io/gh/miguelgila/reaper/branch/main/graph/badge.svg)](https://codecov.io/gh/miguelgila/reaper)
 
-**Reaper is a lightweight Kubernetes container runtime that executes commands directly on cluster nodes without traditional container isolation.** Think of it as a way to run host-native processes through Kubernetes' orchestration layer.
+**Reaper is a lightweight Kubernetes container-less runtime that executes commands directly on cluster nodes without traditional container isolation.** Think of it as a way to run host-native processes through Kubernetes' orchestration layer.
 
 ## What is Reaper?
 
@@ -20,6 +20,7 @@ Reaper is a containerd shim that runs processes directly on the host system whil
 - ✅ Standard Kubernetes API (Pods, kubectl logs, kubectl exec)
 - ✅ Process lifecycle management (start, stop, restart)
 - ✅ Shared overlay filesystem for workload isolation from host changes
+- ✅ Kubernetes volumes (ConfigMap, Secret, hostPath, emptyDir)
 - ✅ Filters sensitive host files (SSH keys, passwords, SSL keys)
 - ✅ Direct command execution on cluster nodes
 - ✅ Integration with kubectl (logs, exec, describe)
@@ -98,24 +99,58 @@ kubectl run -it debug --rm --image=placeholder --restart=Never \
 kubectl exec -it my-pod -- /bin/sh
 ```
 
+### 4. Using Volumes
+
+Reaper supports Kubernetes volumes — ConfigMaps, Secrets, hostPath, emptyDir, and projected volumes all work as expected:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-task
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  volumes:
+    - name: config
+      configMap:
+        name: my-config
+    - name: data
+      hostPath:
+        path: /opt/data
+        type: Directory
+  containers:
+    - name: task
+      image: busybox
+      command: ["/bin/sh", "-c", "cat /config/settings.yaml && ls /data"]
+      volumeMounts:
+        - name: config
+          mountPath: /config
+          readOnly: true
+        - name: data
+          mountPath: /data
+```
+
+Kubelet prepares volume content on the host and Reaper bind-mounts it into the shared overlay namespace. Read-only mounts are enforced. Since all Reaper workloads share the same mount namespace, volume mounts from one pod are visible to others.
+
 ## Important: Pod Field Compatibility
 
 Reaper implements the Kubernetes Pod API but **ignores or doesn't support certain container-specific fields**:
 
-| Pod Field | Behavior |
-|-----------|----------|
-| `spec.containers[].image` | **Ignored** — Set to `placeholder` for clarity. Reaper doesn't pull images. |
-| `spec.containers[].resources.limits` | **Ignored** — No cgroup enforcement; processes use host resources. |
-| `spec.containers[].resources.requests` | **Ignored** — Scheduling hints not used. |
-| `spec.containers[].volumeMounts` | **Not implemented** — No volume mounting support currently. |
-| `spec.containers[].securityContext.capabilities` | **Ignored** — Processes run with host-level capabilities. |
-| `spec.containers[].livenessProbe` | **Ignored** — No health checking. |
-| `spec.containers[].readinessProbe` | **Ignored** — No readiness checks. |
-| `spec.containers[].command` | ✅ **Supported** — Program path on host (must exist). |
-| `spec.containers[].args` | ✅ **Supported** — Arguments to the command. |
-| `spec.containers[].env` | ✅ **Supported** — Environment variables. |
-| `spec.containers[].workingDir` | ✅ **Supported** — Working directory for the process. |
-| `spec.runtimeClassName` | ✅ **Required** — Must be set to `reaper-v2`. |
+| Pod Field                                        | Behavior                                                                    |
+| ------------------------------------------------ | --------------------------------------------------------------------------- |
+| `spec.containers[].image`                        | **Ignored** — Set to `placeholder` for clarity. Reaper doesn't pull images. |
+| `spec.containers[].resources.limits`             | **Ignored** — No cgroup enforcement; processes use host resources.          |
+| `spec.containers[].resources.requests`           | **Ignored** — Scheduling hints not used.                                    |
+| `spec.containers[].volumeMounts`                 | ✅ **Supported** — Bind mounts for ConfigMap, Secret, hostPath, emptyDir.   |
+| `spec.containers[].securityContext.capabilities` | **Ignored** — Processes run with host-level capabilities.                   |
+| `spec.containers[].livenessProbe`                | **Ignored** — No health checking.                                           |
+| `spec.containers[].readinessProbe`               | **Ignored** — No readiness checks.                                          |
+| `spec.containers[].command`                      | ✅ **Supported** — Program path on host (must exist).                        |
+| `spec.containers[].args`                         | ✅ **Supported** — Arguments to the command.                                 |
+| `spec.containers[].env`                          | ✅ **Supported** — Environment variables.                                    |
+| `spec.containers[].workingDir`                   | ✅ **Supported** — Working directory for the process.                        |
+| `spec.runtimeClassName`                          | ✅ **Required** — Must be set to `reaper-v2`.                                |
 
 **Best practice:** Set `image: placeholder` to make it explicit that the image field is not used.
 
@@ -147,6 +182,7 @@ For architecture details, see [docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md) and
 - ✅ **Containerd shim v2 protocol** (Task trait with all lifecycle methods)
 - ✅ **Kubernetes integration** via RuntimeClass
 - ✅ **Overlay filesystem namespace** (protects host from modifications)
+- ✅ **Volume mount support** (ConfigMap, Secret, hostPath, emptyDir via OCI bind mounts)
 - ✅ **Container I/O capture** (stdout/stderr via FIFOs for `kubectl logs`)
 - ✅ **Interactive sessions** (PTY support for `kubectl run -it` and `kubectl exec -it`)
 - ✅ **Process monitoring** (fork-based with real exit code capture)
