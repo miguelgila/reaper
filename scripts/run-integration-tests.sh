@@ -730,7 +730,7 @@ test_shim_cleanup_after_delete() {
   # Count how many reaper pods are still actually running
   local running_pods
   running_pods=$(kubectl get pods --no-headers 2>/dev/null \
-    | grep -c '^reaper-' || echo 0)
+    | grep -c '^reaper-' || true)
 
   log_verbose "Shim processes: $shim_count, Running reaper pods: $running_pods"
 
