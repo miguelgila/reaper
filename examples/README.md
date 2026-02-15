@@ -14,7 +14,7 @@ Run all scripts from the **repository root**.
 
 ## Examples
 
-### [scheduling/](scheduling/) — Node Scheduling Patterns
+### [01-scheduling/](01-scheduling/) — Node Scheduling Patterns
 
 Demonstrates running workloads on all nodes vs. a labeled subset using DaemonSets with `nodeSelector`.
 
@@ -23,12 +23,12 @@ Demonstrates running workloads on all nodes vs. a labeled subset using DaemonSet
 - Subset DaemonSet (login-node monitor only on `node-role=login` nodes)
 
 ```bash
-./examples/scheduling/setup.sh
-kubectl apply -f examples/scheduling/all-nodes-daemonset.yaml
-kubectl apply -f examples/scheduling/subset-nodes-daemonset.yaml
+./examples/01-scheduling/setup.sh
+kubectl apply -f examples/01-scheduling/all-nodes-daemonset.yaml
+kubectl apply -f examples/01-scheduling/subset-nodes-daemonset.yaml
 ```
 
-### [client-server/](client-server/) — TCP Client-Server Communication
+### [02-client-server/](02-client-server/) — TCP Client-Server Communication
 
 Demonstrates cross-node networking with a socat TCP server on one node and clients connecting from other nodes over host networking.
 
@@ -37,13 +37,13 @@ Demonstrates cross-node networking with a socat TCP server on one node and clien
 - Clients discover the server IP via a ConfigMap
 
 ```bash
-./examples/client-server/setup.sh
-kubectl apply -f examples/client-server/server-daemonset.yaml
-kubectl apply -f examples/client-server/client-daemonset.yaml
+./examples/02-client-server/setup.sh
+kubectl apply -f examples/02-client-server/server-daemonset.yaml
+kubectl apply -f examples/02-client-server/client-daemonset.yaml
 kubectl logs -l app=demo-client --all-containers --prefix -f
 ```
 
-### [client-server-runas/](client-server-runas/) — Client-Server with Non-Root User
+### [03-client-server-runas/](03-client-server-runas/) — Client-Server with Non-Root User
 
 Same as client-server, but all workloads run as a shared non-root user (`demo-svc`, UID 1500 / GID 1500), demonstrating Reaper's `securityContext.runAsUser` / `runAsGroup` support. The setup script creates the user on every node with identical IDs, mimicking an LDAP environment.
 
@@ -52,9 +52,9 @@ Same as client-server, but all workloads run as a shared non-root user (`demo-sv
 - All log output includes `uid=` to prove privilege drop
 
 ```bash
-./examples/client-server-runas/setup.sh
-kubectl apply -f examples/client-server-runas/server-daemonset.yaml
-kubectl apply -f examples/client-server-runas/client-daemonset.yaml
+./examples/03-client-server-runas/setup.sh
+kubectl apply -f examples/03-client-server-runas/server-daemonset.yaml
+kubectl apply -f examples/03-client-server-runas/client-daemonset.yaml
 kubectl logs -l app=demo-client-runas --all-containers --prefix -f
 ```
 
@@ -63,7 +63,7 @@ kubectl logs -l app=demo-client-runas --all-containers --prefix -f
 Each example can be cleaned up independently:
 
 ```bash
-./examples/scheduling/setup.sh --cleanup
-./examples/client-server/setup.sh --cleanup
-./examples/client-server-runas/setup.sh --cleanup
+./examples/01-scheduling/setup.sh --cleanup
+./examples/02-client-server/setup.sh --cleanup
+./examples/03-client-server-runas/setup.sh --cleanup
 ```
