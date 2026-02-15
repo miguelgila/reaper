@@ -662,24 +662,34 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
         let dest_path = Path::new(dest);
 
         // Volume sources are prepared by kubelet as mounts in the host mount
-        // namespace. Inside the overlay namespace these mounts are not visible
-        // directly. Fall back to /proc/1/root/<path> which resolves through
-        // PID 1's (host) mount namespace.
-        let direct_path = PathBuf::from(source);
+        // namespace (tmpfs for projected/secret, bind for configmap/hostpath, etc.).
+        // Inside the overlay namespace, the underlying directory structure from the
+        // host root IS visible through the overlay lower layer, but any MOUNTS on
+        // those directories (tmpfs, projected, etc.) are NOT visible because mount
+        // propagation is set to MS_PRIVATE.
+        //
+        // Therefore we MUST prefer /proc/1/root/<path> which resolves through
+        // PID 1's (host) mount namespace and sees the actual kubelet-prepared
+        // volume content. The direct overlay path would only show an empty directory.
         let host_path = PathBuf::from(format!("/proc/1/root{}", source));
+        let direct_path = PathBuf::from(source);
 
-        let effective_source = if direct_path.exists() {
-            direct_path
-        } else if host_path.exists() {
+        let effective_source = if host_path.exists() {
             info!(
-                "volume: source {} not visible in overlay, using host path {}",
-                source,
-                host_path.display()
+                "volume: using host-namespace path {} for source {}",
+                host_path.display(),
+                source
             );
             host_path
+        } else if direct_path.exists() {
+            info!(
+                "volume: host path not available, using overlay-direct path for {}",
+                source
+            );
+            direct_path
         } else {
             tracing::warn!(
-                "volume: source {} does not exist (checked overlay and host), skipping mount to {}",
+                "volume: source {} does not exist (checked host ns and overlay), skipping mount to {}",
                 source,
                 dest
             );

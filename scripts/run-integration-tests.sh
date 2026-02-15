@@ -234,6 +234,14 @@ dump_pod_diagnostics() {
     log_status "    $line"
   done
 
+  # Reaper runtime log (shows daemon errors that go to /dev/null on stdout)
+  local runtime_log
+  runtime_log=$(docker exec "$NODE_ID" tail -50 /run/reaper/runtime.log 2>/dev/null || echo "(no runtime log)")
+  log_status "  Reaper runtime log (last 50 lines):"
+  echo "$runtime_log" | while IFS= read -r line; do
+    log_status "    $line"
+  done
+
   # kubectl describe (full detail, to log file only to avoid overwhelming stdout)
   {
     echo "=== kubectl describe pod $pod_name ==="
@@ -256,6 +264,9 @@ collect_diagnostics() {
     echo ""
     echo "=== Kubelet journal (last 200 lines) ==="
     docker exec "$NODE_ID" journalctl -u kubelet -n 200 --no-pager 2>/dev/null || true
+    echo ""
+    echo "=== Reaper runtime log ==="
+    docker exec "$NODE_ID" cat /run/reaper/runtime.log 2>/dev/null || echo "(no runtime log)"
     echo ""
     echo "=== Reaper state files ==="
     docker exec "$NODE_ID" find /run/reaper -type f -exec sh -c 'echo "--- {} ---"; cat {}' \; 2>/dev/null || true
