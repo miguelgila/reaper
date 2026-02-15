@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 use nix::fcntl::{Flock, FlockArg};
+use nix::libc;
 use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::sched::{setns, unshare, CloneFlags};
 use nix::unistd::{fork, ForkResult};
@@ -629,6 +630,95 @@ pub fn filter_volume_mounts(mounts: &[super::OciMount]) -> Vec<&super::OciMount>
         .collect()
 }
 
+/// Clone a mount from the host mount namespace into the current (overlay) namespace.
+///
+/// Uses open_tree(OPEN_TREE_CLONE) + move_mount() (Linux 5.2+) with namespace
+/// switching. Mount-related syscalls cannot follow /proc/1/root/ magic links, so
+/// we must temporarily setns() into the host mount namespace to resolve the path,
+/// clone the mount, switch back to the overlay namespace, then attach it.
+///
+/// The `source` parameter is the path AS SEEN FROM THE HOST namespace (not
+/// /proc/1/root-prefixed).
+#[cfg(not(tarpaulin_include))]
+fn cross_namespace_mount(source: &Path, dest: &Path) -> Result<()> {
+    use std::ffi::CString;
+
+    // Syscall numbers (same on x86_64 and aarch64 for Linux >= 5.2)
+    const SYS_OPEN_TREE: libc::c_long = 428;
+    const SYS_MOVE_MOUNT: libc::c_long = 429;
+
+    // Flags for open_tree
+    const OPEN_TREE_CLONE: libc::c_uint = 1;
+    const OPEN_TREE_CLOEXEC: libc::c_uint = libc::O_CLOEXEC as libc::c_uint;
+    const AT_RECURSIVE: libc::c_uint = 0x8000;
+
+    // Flags for move_mount
+    const MOVE_MOUNT_F_EMPTY_PATH: libc::c_uint = 0x00000004;
+
+    let source_cstr = CString::new(source.as_os_str().as_encoded_bytes())
+        .context("invalid source path for open_tree")?;
+    let dest_cstr = CString::new(dest.as_os_str().as_encoded_bytes())
+        .context("invalid dest path for move_mount")?;
+
+    // Save the current (overlay) mount namespace so we can return to it
+    let overlay_ns =
+        fs::File::open("/proc/self/ns/mnt").context("opening overlay mount namespace fd")?;
+    let host_ns = fs::File::open("/proc/1/ns/mnt").context("opening host mount namespace fd")?;
+
+    // Step 1: Enter host mount namespace to resolve the source path
+    setns(&host_ns, CloneFlags::CLONE_NEWNS).context("setns to host mount namespace")?;
+
+    // Step 2: Clone the mount at source (now visible in host ns) into a detached fd
+    let tree_fd = unsafe {
+        libc::syscall(
+            SYS_OPEN_TREE,
+            libc::AT_FDCWD,
+            source_cstr.as_ptr(),
+            OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC | AT_RECURSIVE,
+        )
+    };
+    let open_tree_err = if tree_fd < 0 {
+        Some(std::io::Error::last_os_error())
+    } else {
+        None
+    };
+
+    // Step 3: Return to overlay namespace (MUST happen even if open_tree failed)
+    setns(&overlay_ns, CloneFlags::CLONE_NEWNS).context("setns back to overlay mount namespace")?;
+
+    // Now check if open_tree succeeded
+    if let Some(err) = open_tree_err {
+        bail!("open_tree({}) failed: {}", source.display(), err);
+    }
+
+    // Step 4: Attach the detached mount to the destination in the overlay namespace
+    let ret = unsafe {
+        libc::syscall(
+            SYS_MOVE_MOUNT,
+            tree_fd as libc::c_int,
+            c"".as_ptr(),
+            libc::AT_FDCWD,
+            dest_cstr.as_ptr(),
+            MOVE_MOUNT_F_EMPTY_PATH,
+        )
+    };
+
+    // Close the tree fd regardless of move_mount result
+    unsafe { libc::close(tree_fd as libc::c_int) };
+
+    if ret < 0 {
+        let err = std::io::Error::last_os_error();
+        bail!(
+            "move_mount({} -> {}) failed: {}",
+            source.display(),
+            dest.display(),
+            err
+        );
+    }
+
+    Ok(())
+}
+
 /// Apply volume mounts from OCI config inside the current mount namespace.
 ///
 /// For each filtered bind mount:
@@ -668,37 +758,47 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
         // those directories (tmpfs, projected, etc.) are NOT visible because mount
         // propagation is set to MS_PRIVATE.
         //
-        // Therefore we MUST prefer /proc/1/root/<path> which resolves through
-        // PID 1's (host) mount namespace and sees the actual kubelet-prepared
-        // volume content. The direct overlay path would only show an empty directory.
+        // Strategy: check if the source exists via /proc/1/root/<path> (host ns).
+        // If so, use cross_namespace_mount() which setns's to the host ns, clones
+        // the mount with open_tree(), returns to overlay ns, and attaches via
+        // move_mount(). Falls back to direct bind mount for sources visible in the
+        // overlay (e.g., emptyDir is a plain directory, not a mount).
         let host_path = PathBuf::from(format!("/proc/1/root{}", source));
         let direct_path = PathBuf::from(source);
 
-        let effective_source = if host_path.exists() {
-            info!(
-                "volume: using host-namespace path {} for source {}",
-                host_path.display(),
-                source
-            );
-            host_path
-        } else if direct_path.exists() {
-            info!(
-                "volume: host path not available, using overlay-direct path for {}",
-                source
-            );
-            direct_path
-        } else {
+        // Determine whether source needs cross-namespace mount
+        let use_host_ns = host_path.exists();
+        let source_path = PathBuf::from(source);
+
+        if !use_host_ns && !direct_path.exists() {
             tracing::warn!(
                 "volume: source {} does not exist (checked host ns and overlay), skipping mount to {}",
                 source,
                 dest
             );
             continue;
+        }
+
+        if use_host_ns {
+            info!(
+                "volume: source {} exists in host namespace, will use cross-ns mount",
+                source
+            );
+        } else {
+            info!(
+                "volume: source {} exists directly in overlay, will use bind mount",
+                source
+            );
+        }
+
+        // Create destination: directory if source is a directory, file otherwise.
+        // Check via /proc/1/root if using host ns, otherwise direct.
+        let check_path = if use_host_ns {
+            &host_path
+        } else {
+            &direct_path
         };
-
-        // Create destination: directory if source is a directory, file otherwise
-
-        if effective_source.is_dir() {
+        if check_path.is_dir() {
             fs::create_dir_all(dest_path)
                 .with_context(|| format!("creating mount destination dir {}", dest))?;
         } else {
@@ -713,21 +813,23 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
             }
         }
 
-        // Perform recursive bind mount
-        let mount_source = effective_source.to_str().unwrap_or(source);
-        mount(
-            Some(mount_source),
-            dest_path,
-            None::<&str>,
-            MsFlags::MS_BIND | MsFlags::MS_REC,
-            None::<&str>,
-        )
-        .with_context(|| format!("bind-mounting {} -> {}", mount_source, dest))?;
+        if use_host_ns {
+            // Cross-namespace mount: setns to host, open_tree(CLONE), setns back, move_mount
+            cross_namespace_mount(&source_path, dest_path)
+                .with_context(|| format!("cross-ns mounting {} -> {}", source, dest))?;
+        } else {
+            // Direct bind mount within the overlay namespace
+            mount(
+                Some(source),
+                dest_path,
+                None::<&str>,
+                MsFlags::MS_BIND | MsFlags::MS_REC,
+                None::<&str>,
+            )
+            .with_context(|| format!("bind-mounting {} -> {}", source, dest))?;
+        }
 
-        info!(
-            "volume: mounted {} -> {} (source: {})",
-            mount_source, dest, source
-        );
+        info!("volume: mounted {} -> {}", source, dest);
 
         // Apply read-only remount if requested
         if is_read_only(m) {
