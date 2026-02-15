@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 use nix::fcntl::{Flock, FlockArg};
+use nix::libc;
 use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::sched::{setns, unshare, CloneFlags};
 use nix::unistd::{fork, ForkResult};
@@ -561,6 +562,306 @@ fn ensure_etc_files_in_namespace(etc_dir: &Path, host_files: &[(String, Vec<u8>)
     }
 }
 
+/// System mount destinations that are already handled by overlay setup.
+/// These are skipped when processing OCI volume mounts.
+const SYSTEM_MOUNT_PREFIXES: &[&str] = &["/proc", "/sys", "/dev"];
+
+/// Kubernetes-internal mounts that are handled by the kubelet/containerd
+/// and should not be bind-mounted by the runtime.
+const K8S_INTERNAL_MOUNTS: &[&str] = &[
+    "/etc/hosts",
+    "/etc/hostname",
+    "/etc/resolv.conf",
+    "/dev/termination-log",
+];
+
+/// Check if a mount entry is a bind mount.
+/// A mount is considered a bind mount if its type is "bind" or if "bind" or "rbind"
+/// appears in its options.
+fn is_bind_mount(m: &super::OciMount) -> bool {
+    if let Some(ref t) = m.mount_type {
+        if t == "bind" {
+            return true;
+        }
+    }
+    m.options.iter().any(|o| o == "bind" || o == "rbind")
+}
+
+/// Check if a mount destination is a system path already handled by overlay.
+fn is_system_destination(dest: &str) -> bool {
+    for prefix in SYSTEM_MOUNT_PREFIXES {
+        if dest == *prefix || dest.starts_with(&format!("{}/", prefix)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if a mount destination is a Kubernetes-internal mount.
+fn is_k8s_internal(dest: &str) -> bool {
+    K8S_INTERNAL_MOUNTS.contains(&dest)
+}
+
+/// Check if a mount should have read-only applied.
+fn is_read_only(m: &super::OciMount) -> bool {
+    m.options.iter().any(|o| o == "ro")
+}
+
+/// Filter OCI mounts to only those that should be processed as volume mounts.
+/// Returns bind mounts that are not system or Kubernetes-internal destinations.
+pub fn filter_volume_mounts(mounts: &[super::OciMount]) -> Vec<&super::OciMount> {
+    mounts
+        .iter()
+        .filter(|m| {
+            if !is_bind_mount(m) {
+                info!("volume: skipping non-bind mount: {}", m.destination);
+                return false;
+            }
+            if is_system_destination(&m.destination) {
+                info!("volume: skipping system destination: {}", m.destination);
+                return false;
+            }
+            if is_k8s_internal(&m.destination) {
+                info!("volume: skipping k8s-internal mount: {}", m.destination);
+                return false;
+            }
+            true
+        })
+        .collect()
+}
+
+/// Clone a mount from the host mount namespace into the current (overlay) namespace.
+///
+/// Uses open_tree(OPEN_TREE_CLONE) + move_mount() (Linux 5.2+) with namespace
+/// switching. Mount-related syscalls cannot follow /proc/1/root/ magic links, so
+/// we must temporarily setns() into the host mount namespace to resolve the path,
+/// clone the mount, switch back to the overlay namespace, then attach it.
+///
+/// The `source` parameter is the path AS SEEN FROM THE HOST namespace (not
+/// /proc/1/root-prefixed).
+#[cfg(not(tarpaulin_include))]
+fn cross_namespace_mount(source: &Path, dest: &Path) -> Result<()> {
+    use std::ffi::CString;
+
+    // Syscall numbers (same on x86_64 and aarch64 for Linux >= 5.2)
+    const SYS_OPEN_TREE: libc::c_long = 428;
+    const SYS_MOVE_MOUNT: libc::c_long = 429;
+
+    // Flags for open_tree
+    const OPEN_TREE_CLONE: libc::c_uint = 1;
+    const OPEN_TREE_CLOEXEC: libc::c_uint = libc::O_CLOEXEC as libc::c_uint;
+    const AT_RECURSIVE: libc::c_uint = 0x8000;
+
+    // Flags for move_mount
+    const MOVE_MOUNT_F_EMPTY_PATH: libc::c_uint = 0x00000004;
+
+    let source_cstr = CString::new(source.as_os_str().as_encoded_bytes())
+        .context("invalid source path for open_tree")?;
+    let dest_cstr = CString::new(dest.as_os_str().as_encoded_bytes())
+        .context("invalid dest path for move_mount")?;
+
+    // Save the current (overlay) mount namespace so we can return to it
+    let overlay_ns =
+        fs::File::open("/proc/self/ns/mnt").context("opening overlay mount namespace fd")?;
+    let host_ns = fs::File::open("/proc/1/ns/mnt").context("opening host mount namespace fd")?;
+
+    // Step 1: Enter host mount namespace to resolve the source path
+    setns(&host_ns, CloneFlags::CLONE_NEWNS).context("setns to host mount namespace")?;
+
+    // Step 2: Clone the mount at source (now visible in host ns) into a detached fd
+    let tree_fd = unsafe {
+        libc::syscall(
+            SYS_OPEN_TREE,
+            libc::AT_FDCWD,
+            source_cstr.as_ptr(),
+            OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC | AT_RECURSIVE,
+        )
+    };
+    let open_tree_err = if tree_fd < 0 {
+        Some(std::io::Error::last_os_error())
+    } else {
+        None
+    };
+
+    // Step 3: Return to overlay namespace (MUST happen even if open_tree failed)
+    setns(&overlay_ns, CloneFlags::CLONE_NEWNS).context("setns back to overlay mount namespace")?;
+
+    // Now check if open_tree succeeded
+    if let Some(err) = open_tree_err {
+        bail!("open_tree({}) failed: {}", source.display(), err);
+    }
+
+    // Step 4: Attach the detached mount to the destination in the overlay namespace
+    let ret = unsafe {
+        libc::syscall(
+            SYS_MOVE_MOUNT,
+            tree_fd as libc::c_int,
+            c"".as_ptr(),
+            libc::AT_FDCWD,
+            dest_cstr.as_ptr(),
+            MOVE_MOUNT_F_EMPTY_PATH,
+        )
+    };
+
+    // Close the tree fd regardless of move_mount result
+    unsafe { libc::close(tree_fd as libc::c_int) };
+
+    if ret < 0 {
+        let err = std::io::Error::last_os_error();
+        bail!(
+            "move_mount({} -> {}) failed: {}",
+            source.display(),
+            dest.display(),
+            err
+        );
+    }
+
+    Ok(())
+}
+
+/// Apply volume mounts from OCI config inside the current mount namespace.
+///
+/// For each filtered bind mount:
+/// 1. Creates the destination directory (or file) if it doesn't exist
+/// 2. Performs a recursive bind mount from source to destination
+/// 3. If "ro" is in options, remounts read-only
+///
+/// Must be called AFTER entering the overlay namespace and BEFORE spawning
+/// the workload. Mount failures are fatal.
+///
+/// Tested by kind-integration tests (requires root + Linux namespaces).
+#[cfg(not(tarpaulin_include))]
+pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
+    let volume_mounts = filter_volume_mounts(mounts);
+
+    if volume_mounts.is_empty() {
+        info!("volume: no volume mounts to apply");
+        return Ok(());
+    }
+
+    info!("volume: applying {} volume mount(s)", volume_mounts.len());
+
+    for m in &volume_mounts {
+        let source = m.source.as_deref().unwrap_or("");
+        let dest = &m.destination;
+
+        if source.is_empty() {
+            bail!("volume mount for {} has no source path", dest);
+        }
+
+        let dest_path = Path::new(dest);
+
+        // Volume sources are prepared by kubelet as mounts in the host mount
+        // namespace (tmpfs for projected/secret, bind for configmap/hostpath, etc.).
+        // Inside the overlay namespace, the underlying directory structure from the
+        // host root IS visible through the overlay lower layer, but any MOUNTS on
+        // those directories (tmpfs, projected, etc.) are NOT visible because mount
+        // propagation is set to MS_PRIVATE.
+        //
+        // Strategy: check if the source exists via /proc/1/root/<path> (host ns).
+        // If so, use cross_namespace_mount() which setns's to the host ns, clones
+        // the mount with open_tree(), returns to overlay ns, and attaches via
+        // move_mount(). Falls back to direct bind mount for sources visible in the
+        // overlay (e.g., emptyDir is a plain directory, not a mount).
+        let host_path = PathBuf::from(format!("/proc/1/root{}", source));
+        let direct_path = PathBuf::from(source);
+
+        // Determine whether source needs cross-namespace mount
+        let use_host_ns = host_path.exists();
+        let source_path = PathBuf::from(source);
+
+        if !use_host_ns && !direct_path.exists() {
+            tracing::warn!(
+                "volume: source {} does not exist (checked host ns and overlay), skipping mount to {}",
+                source,
+                dest
+            );
+            continue;
+        }
+
+        if use_host_ns {
+            info!(
+                "volume: source {} exists in host namespace, will use cross-ns mount",
+                source
+            );
+        } else {
+            info!(
+                "volume: source {} exists directly in overlay, will use bind mount",
+                source
+            );
+        }
+
+        // Unmount any stale mount at the destination from a previous pod.
+        // Volume mounts in the shared namespace persist after pod deletion,
+        // referencing kubelet directories that no longer exist. Attempting to
+        // move_mount on top of a stale mount fails with ENOENT because path
+        // lookup traverses into the disconnected mount.
+        if dest_path.exists() {
+            match umount2(dest_path, MntFlags::MNT_DETACH) {
+                Ok(()) => info!("volume: unmounted stale mount at {}", dest),
+                Err(nix::errno::Errno::EINVAL) => {} // not a mount point, fine
+                Err(e) => info!("volume: umount2({}) returned {} (continuing)", dest, e),
+            }
+        }
+
+        // Create destination: directory if source is a directory, file otherwise.
+        // Check via /proc/1/root if using host ns, otherwise direct.
+        let check_path = if use_host_ns {
+            &host_path
+        } else {
+            &direct_path
+        };
+        if check_path.is_dir() {
+            fs::create_dir_all(dest_path)
+                .with_context(|| format!("creating mount destination dir {}", dest))?;
+        } else {
+            // Source is a file — create parent dir and touch the file
+            if let Some(parent) = dest_path.parent() {
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("creating parent dir for {}", dest))?;
+            }
+            if !dest_path.exists() {
+                fs::write(dest_path, b"")
+                    .with_context(|| format!("creating mount destination file {}", dest))?;
+            }
+        }
+
+        if use_host_ns {
+            // Cross-namespace mount: setns to host, open_tree(CLONE), setns back, move_mount
+            cross_namespace_mount(&source_path, dest_path)
+                .with_context(|| format!("cross-ns mounting {} -> {}", source, dest))?;
+        } else {
+            // Direct bind mount within the overlay namespace
+            mount(
+                Some(source),
+                dest_path,
+                None::<&str>,
+                MsFlags::MS_BIND | MsFlags::MS_REC,
+                None::<&str>,
+            )
+            .with_context(|| format!("bind-mounting {} -> {}", source, dest))?;
+        }
+
+        info!("volume: mounted {} -> {}", source, dest);
+
+        // Apply read-only remount if requested
+        if is_read_only(m) {
+            mount(
+                None::<&str>,
+                dest_path,
+                None::<&str>,
+                MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY,
+                None::<&str>,
+            )
+            .with_context(|| format!("remounting {} as read-only", dest))?;
+            info!("volume: remounted {} as read-only", dest);
+        }
+    }
+
+    info!("volume: all volume mounts applied successfully");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -839,5 +1140,279 @@ mod tests {
         assert!(filters.contains(&PathBuf::from("/etc/shadow")));
         assert!(filters.contains(&PathBuf::from("/root/.ssh")));
         assert!(filters.contains(&PathBuf::from("/etc/ssh/ssh_host_rsa_key")));
+    }
+
+    // --- Volume mount filtering tests ---
+
+    fn make_mount(
+        destination: &str,
+        source: Option<&str>,
+        mount_type: Option<&str>,
+        options: &[&str],
+    ) -> super::super::OciMount {
+        super::super::OciMount {
+            destination: destination.to_string(),
+            source: source.map(|s| s.to_string()),
+            mount_type: mount_type.map(|t| t.to_string()),
+            options: options.iter().map(|o| o.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn test_is_bind_mount_by_type() {
+        let m = make_mount("/data", Some("/host/data"), Some("bind"), &[]);
+        assert!(super::is_bind_mount(&m));
+    }
+
+    #[test]
+    fn test_is_bind_mount_by_option_bind() {
+        let m = make_mount("/data", Some("/host/data"), None, &["bind", "ro"]);
+        assert!(super::is_bind_mount(&m));
+    }
+
+    #[test]
+    fn test_is_bind_mount_by_option_rbind() {
+        let m = make_mount("/data", Some("/host/data"), None, &["rbind", "ro"]);
+        assert!(super::is_bind_mount(&m));
+    }
+
+    #[test]
+    fn test_is_not_bind_mount_proc() {
+        let m = make_mount("/proc", Some("proc"), Some("proc"), &[]);
+        assert!(!super::is_bind_mount(&m));
+    }
+
+    #[test]
+    fn test_is_not_bind_mount_tmpfs() {
+        let m = make_mount("/dev", Some("tmpfs"), Some("tmpfs"), &[]);
+        assert!(!super::is_bind_mount(&m));
+    }
+
+    #[test]
+    fn test_is_system_destination() {
+        assert!(super::is_system_destination("/proc"));
+        assert!(super::is_system_destination("/proc/sys"));
+        assert!(super::is_system_destination("/sys"));
+        assert!(super::is_system_destination("/sys/fs/cgroup"));
+        assert!(super::is_system_destination("/dev"));
+        assert!(super::is_system_destination("/dev/pts"));
+        assert!(!super::is_system_destination("/data"));
+        assert!(!super::is_system_destination("/scripts"));
+        assert!(!super::is_system_destination("/var/data"));
+    }
+
+    #[test]
+    fn test_is_k8s_internal() {
+        assert!(super::is_k8s_internal("/etc/hosts"));
+        assert!(super::is_k8s_internal("/etc/hostname"));
+        assert!(super::is_k8s_internal("/etc/resolv.conf"));
+        assert!(super::is_k8s_internal("/dev/termination-log"));
+        assert!(!super::is_k8s_internal("/scripts"));
+        assert!(!super::is_k8s_internal("/etc/config"));
+    }
+
+    #[test]
+    fn test_is_read_only() {
+        let m_ro = make_mount("/data", Some("/host"), Some("bind"), &["rbind", "ro"]);
+        assert!(super::is_read_only(&m_ro));
+
+        let m_rw = make_mount("/data", Some("/host"), Some("bind"), &["rbind", "rw"]);
+        assert!(!super::is_read_only(&m_rw));
+
+        let m_empty = make_mount("/data", Some("/host"), Some("bind"), &[]);
+        assert!(!super::is_read_only(&m_empty));
+    }
+
+    #[test]
+    fn test_filter_volume_mounts_selects_bind_only() {
+        let mounts = vec![
+            make_mount("/proc", Some("proc"), Some("proc"), &[]),
+            make_mount("/dev", Some("tmpfs"), Some("tmpfs"), &[]),
+            make_mount(
+                "/scripts",
+                Some("/var/lib/kubelet/pods/abc/scripts"),
+                Some("bind"),
+                &["rbind", "ro"],
+            ),
+            make_mount(
+                "/data",
+                Some("/var/lib/kubelet/pods/abc/data"),
+                None,
+                &["rbind"],
+            ),
+        ];
+
+        let filtered = super::filter_volume_mounts(&mounts);
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].destination, "/scripts");
+        assert_eq!(filtered[1].destination, "/data");
+    }
+
+    #[test]
+    fn test_filter_volume_mounts_skips_system_destinations() {
+        let mounts = vec![
+            make_mount("/proc", Some("/proc"), Some("bind"), &["rbind"]),
+            make_mount(
+                "/sys/fs/cgroup",
+                Some("/sys/fs/cgroup"),
+                Some("bind"),
+                &["rbind"],
+            ),
+            make_mount("/dev/pts", Some("/dev/pts"), None, &["bind"]),
+            make_mount(
+                "/app/config",
+                Some("/host/config"),
+                Some("bind"),
+                &["rbind"],
+            ),
+        ];
+
+        let filtered = super::filter_volume_mounts(&mounts);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].destination, "/app/config");
+    }
+
+    #[test]
+    fn test_filter_volume_mounts_skips_k8s_internal() {
+        let mounts = vec![
+            make_mount(
+                "/etc/hosts",
+                Some("/var/lib/containerd/hosts"),
+                Some("bind"),
+                &["rbind", "ro"],
+            ),
+            make_mount(
+                "/etc/hostname",
+                Some("/var/lib/containerd/hostname"),
+                Some("bind"),
+                &["rbind", "ro"],
+            ),
+            make_mount(
+                "/etc/resolv.conf",
+                Some("/var/lib/containerd/resolv.conf"),
+                Some("bind"),
+                &["rbind", "ro"],
+            ),
+            make_mount(
+                "/dev/termination-log",
+                Some("/var/lib/containerd/termination-log"),
+                Some("bind"),
+                &["rbind"],
+            ),
+            make_mount(
+                "/scripts",
+                Some("/var/lib/kubelet/pods/abc/scripts"),
+                Some("bind"),
+                &["rbind", "ro"],
+            ),
+        ];
+
+        let filtered = super::filter_volume_mounts(&mounts);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].destination, "/scripts");
+    }
+
+    #[test]
+    fn test_filter_volume_mounts_empty_input() {
+        let filtered = super::filter_volume_mounts(&[]);
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_filter_volume_mounts_realistic_k8s_config() {
+        // Simulates a real Kubernetes config.json mounts array
+        let mounts = vec![
+            make_mount(
+                "/proc",
+                Some("proc"),
+                Some("proc"),
+                &["nosuid", "noexec", "nodev"],
+            ),
+            make_mount(
+                "/dev",
+                Some("tmpfs"),
+                Some("tmpfs"),
+                &["nosuid", "strictatime", "mode=755", "size=65536k"],
+            ),
+            make_mount(
+                "/dev/pts",
+                Some("devpts"),
+                Some("devpts"),
+                &["nosuid", "noexec", "newinstance"],
+            ),
+            make_mount(
+                "/dev/mqueue",
+                Some("mqueue"),
+                Some("mqueue"),
+                &["nosuid", "noexec", "nodev"],
+            ),
+            make_mount(
+                "/sys",
+                Some("sysfs"),
+                Some("sysfs"),
+                &["nosuid", "noexec", "nodev", "ro"],
+            ),
+            make_mount(
+                "/sys/fs/cgroup",
+                Some("cgroup"),
+                Some("cgroup"),
+                &["nosuid", "noexec", "nodev", "ro"],
+            ),
+            make_mount(
+                "/etc/hosts",
+                Some("/var/lib/containerd/io.containerd.grpc.v1.cri/sandboxes/abc/hostname/hosts"),
+                Some("bind"),
+                &["rbind", "ro"],
+            ),
+            make_mount(
+                "/etc/hostname",
+                Some(
+                    "/var/lib/containerd/io.containerd.grpc.v1.cri/sandboxes/abc/hostname/hostname",
+                ),
+                Some("bind"),
+                &["rbind", "ro"],
+            ),
+            make_mount(
+                "/etc/resolv.conf",
+                Some("/var/lib/containerd/io.containerd.grpc.v1.cri/sandboxes/abc/resolv.conf"),
+                Some("bind"),
+                &["rbind", "ro"],
+            ),
+            make_mount(
+                "/dev/termination-log",
+                Some("/var/lib/kubelet/pods/abc/containers/test/termination-log"),
+                Some("bind"),
+                &["rbind"],
+            ),
+            // User-defined volume mounts
+            make_mount(
+                "/scripts",
+                Some("/var/lib/kubelet/pods/abc/volumes/kubernetes.io~configmap/scripts"),
+                Some("bind"),
+                &["rbind", "ro"],
+            ),
+            make_mount(
+                "/data",
+                Some("/var/lib/kubelet/pods/abc/volumes/kubernetes.io~empty-dir/data"),
+                Some("bind"),
+                &["rbind"],
+            ),
+            // Service account token
+            make_mount(
+                "/var/run/secrets/kubernetes.io/serviceaccount",
+                Some("/var/lib/kubelet/pods/abc/volumes/kubernetes.io~projected/kube-api-access"),
+                Some("bind"),
+                &["rbind", "ro"],
+            ),
+        ];
+
+        let filtered = super::filter_volume_mounts(&mounts);
+        assert_eq!(filtered.len(), 3);
+        assert_eq!(filtered[0].destination, "/scripts");
+        assert_eq!(filtered[1].destination, "/data");
+        assert_eq!(
+            filtered[2].destination,
+            "/var/run/secrets/kubernetes.io/serviceaccount"
+        );
     }
 }

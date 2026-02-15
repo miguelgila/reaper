@@ -6,6 +6,7 @@ target-linux/
 *~
 .idea/
 .vscode/local
+.claude/
 cobertura.xml
 
 # Ansible temporary files

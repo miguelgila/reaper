@@ -111,10 +111,25 @@ struct OciProcess {
     // terminal: bool,
 }
 
+/// OCI mount specification from config.json.
+/// Containerd populates this array with bind-mount directives for volumes.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OciMount {
+    pub destination: String,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(rename = "type", default)]
+    pub mount_type: Option<String>,
+    #[serde(default)]
+    pub options: Vec<String>,
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct OciConfig {
     process: Option<OciProcess>,
-    // Note: We only need the process section; root and other fields are ignored
+    #[serde(default)]
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    mounts: Vec<OciMount>,
 }
 
 fn read_oci_config(bundle: &Path) -> Result<OciConfig> {
@@ -267,6 +282,8 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
     let container_id = id.to_string();
     let cwd = proc.cwd.clone();
     let env_vars = proc.env.clone();
+    #[cfg(target_os = "linux")]
+    let oci_mounts = cfg.mounts.clone();
 
     use nix::unistd::{fork, ForkResult};
 
@@ -396,6 +413,23 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                         std::process::exit(1);
                     }
                     info!("do_start() - joined shared overlay namespace");
+
+                    // Apply volume mounts from OCI config (FATAL on failure)
+                    if !oci_mounts.is_empty() {
+                        if let Err(e) = overlay::apply_volume_mounts(&oci_mounts) {
+                            tracing::error!(
+                                "do_start() - volume mount failed: {:#}, refusing to start workload",
+                                e
+                            );
+                            if let Ok(mut state) = load_state(&container_id) {
+                                state.status = "stopped".into();
+                                state.exit_code = Some(1);
+                                let _ = save_state(&state);
+                            }
+                            std::process::exit(1);
+                        }
+                        info!("do_start() - volume mounts applied");
+                    }
                 }
             }
 
@@ -1580,6 +1614,77 @@ mod tests {
         assert_eq!(env[0], "PATH=/usr/bin");
     }
 
+    #[test]
+    fn test_parse_config_with_mounts() {
+        let bundle_dir = TempDir::new().expect("Failed to create temp dir");
+        let config = serde_json::json!({
+            "process": {
+                "args": ["/bin/sh", "-c", "ls /scripts"],
+                "cwd": "/"
+            },
+            "mounts": [
+                {
+                    "destination": "/proc",
+                    "type": "proc",
+                    "source": "proc",
+                    "options": ["nosuid", "noexec", "nodev"]
+                },
+                {
+                    "destination": "/scripts",
+                    "type": "bind",
+                    "source": "/var/lib/kubelet/pods/abc/volumes/kubernetes.io~configmap/scripts",
+                    "options": ["rbind", "ro"]
+                },
+                {
+                    "destination": "/data",
+                    "source": "/host/data",
+                    "options": ["rbind"]
+                }
+            ]
+        });
+        fs::write(
+            bundle_dir.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let parsed = read_oci_config(bundle_dir.path()).unwrap();
+        assert_eq!(parsed.mounts.len(), 3);
+
+        assert_eq!(parsed.mounts[0].destination, "/proc");
+        assert_eq!(parsed.mounts[0].mount_type, Some("proc".to_string()));
+
+        assert_eq!(parsed.mounts[1].destination, "/scripts");
+        assert_eq!(parsed.mounts[1].mount_type, Some("bind".to_string()));
+        assert_eq!(
+            parsed.mounts[1].source,
+            Some("/var/lib/kubelet/pods/abc/volumes/kubernetes.io~configmap/scripts".to_string())
+        );
+        assert_eq!(parsed.mounts[1].options, vec!["rbind", "ro"]);
+
+        assert_eq!(parsed.mounts[2].destination, "/data");
+        assert!(parsed.mounts[2].mount_type.is_none());
+        assert_eq!(parsed.mounts[2].options, vec!["rbind"]);
+    }
+
+    #[test]
+    fn test_parse_config_without_mounts() {
+        let bundle_dir = TempDir::new().expect("Failed to create temp dir");
+        let config = serde_json::json!({
+            "process": {
+                "args": ["/bin/echo", "hello"]
+            }
+        });
+        fs::write(
+            bundle_dir.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let parsed = read_oci_config(bundle_dir.path()).unwrap();
+        assert!(parsed.mounts.is_empty());
+    }
+
     // --- parse_program_and_args tests ---
 
     #[test]
@@ -1591,6 +1696,7 @@ mod tests {
                 cwd: None,
                 user: None,
             }),
+            mounts: vec![],
         };
         let (program, argv) = parse_program_and_args(&cfg).unwrap();
         assert_eq!(program, PathBuf::from("/bin/echo"));
@@ -1606,6 +1712,7 @@ mod tests {
                 cwd: None,
                 user: None,
             }),
+            mounts: vec![],
         };
         let (program, argv) = parse_program_and_args(&cfg).unwrap();
         assert_eq!(program, PathBuf::from("/bin/true"));
@@ -1621,6 +1728,7 @@ mod tests {
                 cwd: None,
                 user: None,
             }),
+            mounts: vec![],
         };
         let result = parse_program_and_args(&cfg);
         assert!(result.is_err());
@@ -1639,6 +1747,7 @@ mod tests {
                 cwd: None,
                 user: None,
             }),
+            mounts: vec![],
         };
         let result = parse_program_and_args(&cfg);
         assert!(result.is_err());
@@ -1646,7 +1755,10 @@ mod tests {
 
     #[test]
     fn test_parse_program_and_args_no_process() {
-        let cfg = OciConfig { process: None };
+        let cfg = OciConfig {
+            process: None,
+            mounts: vec![],
+        };
         let result = parse_program_and_args(&cfg);
         assert!(result.is_err());
         assert!(result
@@ -1664,6 +1776,7 @@ mod tests {
                 cwd: None,
                 user: None,
             }),
+            mounts: vec![],
         };
         let (program, argv) = parse_program_and_args(&cfg).unwrap();
         assert_eq!(program, PathBuf::from("my-binary"));
