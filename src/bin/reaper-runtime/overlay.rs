@@ -659,24 +659,36 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
             bail!("volume mount for {} has no source path", dest);
         }
 
-        let source_path = Path::new(source);
         let dest_path = Path::new(dest);
 
-        // Skip mounts whose source doesn't exist inside the overlay namespace.
-        // Kubelet-managed paths (e.g. projected SA tokens) may not be visible
-        // through the overlay lower layer.
-        if !source_path.exists() {
+        // Volume sources are prepared by kubelet as mounts in the host mount
+        // namespace. Inside the overlay namespace these mounts are not visible
+        // directly. Fall back to /proc/1/root/<path> which resolves through
+        // PID 1's (host) mount namespace.
+        let direct_path = PathBuf::from(source);
+        let host_path = PathBuf::from(format!("/proc/1/root{}", source));
+
+        let effective_source = if direct_path.exists() {
+            direct_path
+        } else if host_path.exists() {
+            info!(
+                "volume: source {} not visible in overlay, using host path {}",
+                source,
+                host_path.display()
+            );
+            host_path
+        } else {
             tracing::warn!(
-                "volume: source {} does not exist in overlay namespace, skipping mount to {}",
+                "volume: source {} does not exist (checked overlay and host), skipping mount to {}",
                 source,
                 dest
             );
             continue;
-        }
+        };
 
         // Create destination: directory if source is a directory, file otherwise
 
-        if source_path.is_dir() {
+        if effective_source.is_dir() {
             fs::create_dir_all(dest_path)
                 .with_context(|| format!("creating mount destination dir {}", dest))?;
         } else {
@@ -692,16 +704,20 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
         }
 
         // Perform recursive bind mount
+        let mount_source = effective_source.to_str().unwrap_or(source);
         mount(
-            Some(source),
+            Some(mount_source),
             dest_path,
             None::<&str>,
             MsFlags::MS_BIND | MsFlags::MS_REC,
             None::<&str>,
         )
-        .with_context(|| format!("bind-mounting {} -> {}", source, dest))?;
+        .with_context(|| format!("bind-mounting {} -> {}", mount_source, dest))?;
 
-        info!("volume: mounted {} -> {}", source, dest);
+        info!(
+            "volume: mounted {} -> {} (source: {})",
+            mount_source, dest, source
+        );
 
         // Apply read-only remount if requested
         if is_read_only(m) {

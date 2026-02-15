@@ -197,7 +197,7 @@ dump_pod_diagnostics() {
   pod_json=$(kubectl get pod "$pod_name" -o json 2>/dev/null || echo "")
   if [[ -n "$pod_json" ]]; then
     local phase status_msg
-    phase=$(echo "$pod_json" | grep -oP '"phase"\s*:\s*"\K[^"]+' | head -1 || echo "unknown")
+    phase=$(echo "$pod_json" | jq -r '.status.phase // "unknown"' 2>/dev/null || echo "unknown")
     log_status "  Pod phase: $phase"
 
     # Container statuses — show waiting/terminated reasons
