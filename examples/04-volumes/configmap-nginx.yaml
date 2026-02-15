@@ -1,0 +1,82 @@
+# ConfigMap volume demo — nginx configured via a mounted ConfigMap.
+#
+# The ConfigMap 'nginx-config' contains a custom server block that listens
+# on port 8080 and returns a welcome message. The pod installs nginx via
+# apt-get inside the overlay namespace (host filesystem is never modified),
+# then starts nginx using the ConfigMap-provided config.
+#
+# Usage:
+#   kubectl apply -f configmap-nginx.yaml
+#   kubectl logs configmap-nginx -f
+#
+# Verify (from another terminal):
+#   kubectl exec configmap-nginx -- curl -s http://localhost:8080
+#   kubectl exec configmap-nginx -- curl -s http://localhost:8080/health
+apiVersion: v1
+kind: Pod
+metadata:
+  name: configmap-nginx
+  labels:
+    app: configmap-nginx
+    demo: volumes
+spec:
+  runtimeClassName: reaper-v2
+  nodeSelector:
+    role: demo
+  restartPolicy: Never
+  containers:
+    - name: nginx
+      image: busybox
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          echo "=== ConfigMap Volume Demo ==="
+          echo "Hostname: $(hostname)"
+          echo ""
+
+          echo "--- Checking mounted ConfigMap ---"
+          if [ -f /etc/nginx/conf.d/demo.conf ]; then
+            echo "ConfigMap mounted at /etc/nginx/conf.d/demo.conf"
+            echo "Contents:"
+            cat /etc/nginx/conf.d/demo.conf
+          else
+            echo "ERROR: ConfigMap not found at /etc/nginx/conf.d/demo.conf"
+            exit 1
+          fi
+          echo ""
+
+          echo "--- Installing nginx (inside overlay, host unmodified) ---"
+          apt-get update -qq > /dev/null 2>&1
+          apt-get install -y -qq nginx curl > /dev/null 2>&1
+          echo "nginx installed successfully"
+          echo ""
+
+          echo "--- Starting nginx with ConfigMap config ---"
+          # Remove default site to avoid port conflicts
+          rm -f /etc/nginx/sites-enabled/default
+          nginx -g 'daemon off;' &
+          NGINX_PID=$!
+          trap "kill $NGINX_PID 2>/dev/null; wait $NGINX_PID 2>/dev/null" TERM INT
+          sleep 1
+
+          echo "--- Verifying nginx is serving ---"
+          RESPONSE=$(curl -s http://localhost:8080)
+          echo "Response from localhost:8080:"
+          echo "$RESPONSE"
+          echo ""
+
+          HEALTH=$(curl -s http://localhost:8080/health)
+          echo "Health check: $HEALTH"
+          echo ""
+
+          echo "=== nginx running (PID $NGINX_PID), serving ConfigMap-defined content ==="
+          wait $NGINX_PID
+      volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d/demo.conf
+          subPath: demo.conf
+          readOnly: true
+  volumes:
+    - name: nginx-config
+      configMap:
+        name: nginx-config

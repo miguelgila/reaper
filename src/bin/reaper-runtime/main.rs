@@ -859,10 +859,15 @@ fn do_kill(id: &str, signal: Option<i32>) -> Result<()> {
     let signal = signal.unwrap_or(15); // Default to SIGTERM
     info!("do_kill() called - id={}, signal={}", id, signal);
     let pid = load_pid(id)?;
-    info!("do_kill() - sending signal {} to pid {}", signal, pid);
-    // Use nix to send signal
+    info!(
+        "do_kill() - sending signal {} to process group (pgid={})",
+        signal, pid
+    );
+    // Kill the entire process group (-pid) so children of the workload (e.g. backgrounded
+    // processes) are also signalled. The workload calls setsid() in pre_exec, so its PGID
+    // equals its PID.
     let sig = nix::sys::signal::Signal::try_from(signal).context("invalid signal")?;
-    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), sig) {
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(-pid), sig) {
         Ok(()) => {
             info!(
                 "do_kill() succeeded - id={}, signal={}, pid={}",

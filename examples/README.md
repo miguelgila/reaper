@@ -58,6 +58,20 @@ kubectl apply -f examples/03-client-server-runas/client-daemonset.yaml
 kubectl logs -l app=demo-client-runas --all-containers --prefix -f
 ```
 
+### [04-volumes/](04-volumes/) — Kubernetes Volume Mounts
+
+Demonstrates Reaper's volume mount support across four volume types: ConfigMap, Secret, hostPath, and emptyDir. Showcases package installation (nginx) inside the overlay namespace without modifying the host.
+
+- **2-node cluster** (1 control-plane + 1 worker)
+- ConfigMap-configured nginx, read-only Secrets, hostPath file serving, emptyDir scratch workspace
+- Software installed inside pod commands via overlay (host unmodified)
+
+```bash
+./examples/04-volumes/setup.sh
+kubectl apply -f examples/04-volumes/configmap-nginx.yaml
+kubectl logs configmap-nginx -f
+```
+
 ## Cleanup
 
 Each example can be cleaned up independently:
@@ -66,4 +80,5 @@ Each example can be cleaned up independently:
 ./examples/01-scheduling/setup.sh --cleanup
 ./examples/02-client-server/setup.sh --cleanup
 ./examples/03-client-server-runas/setup.sh --cleanup
+./examples/04-volumes/setup.sh --cleanup
 ```

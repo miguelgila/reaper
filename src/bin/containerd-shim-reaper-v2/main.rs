@@ -719,8 +719,10 @@ impl Task for ReaperTask {
                         if pid > 0 {
                             let sig = nix::sys::signal::Signal::try_from(req.signal as i32)
                                 .unwrap_or(nix::sys::signal::Signal::SIGTERM);
+                            // Kill the entire process group so children are also signalled.
+                            // Exec processes call setsid(), so PGID == PID.
                             match nix::sys::signal::kill(
-                                nix::unistd::Pid::from_raw(pid as i32),
+                                nix::unistd::Pid::from_raw(-(pid as i32)),
                                 sig,
                             ) {
                                 Ok(()) => info!("kill() exec - signal sent to pid {}", pid),

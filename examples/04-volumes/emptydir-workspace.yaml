@@ -1,0 +1,85 @@
+# emptyDir volume demo — ephemeral scratch storage for workload processing.
+#
+# The pod mounts an emptyDir at /workspace and uses it to generate files,
+# process data, and produce a summary report — demonstrating that emptyDir
+# provides a writable scratch space that disappears when the pod is deleted.
+#
+# Usage:
+#   kubectl apply -f emptydir-workspace.yaml
+#   kubectl logs emptydir-worker -f
+apiVersion: v1
+kind: Pod
+metadata:
+  name: emptydir-worker
+  labels:
+    app: emptydir-worker
+    demo: volumes
+spec:
+  runtimeClassName: reaper-v2
+  nodeSelector:
+    role: demo
+  restartPolicy: Never
+  containers:
+    - name: worker
+      image: busybox
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          echo "=== emptyDir Volume Demo ==="
+          echo "Hostname: $(hostname)"
+          echo ""
+
+          echo "--- Verifying /workspace is empty ---"
+          FILE_COUNT=$(ls -A /workspace | wc -l | tr -d ' ')
+          echo "Files in /workspace: $FILE_COUNT (expected: 0)"
+          echo ""
+
+          echo "--- Generating data files ---"
+          for i in 1 2 3 4 5; do
+            TIMESTAMP=$(date -u +%H:%M:%S)
+            echo "record_${i}: timestamp=${TIMESTAMP} value=$((RANDOM % 1000))" > "/workspace/data_${i}.txt"
+            echo "  Created data_${i}.txt"
+          done
+          echo ""
+
+          echo "--- Processing data ---"
+          cat /workspace/data_*.txt > /workspace/combined.txt
+          LINE_COUNT=$(wc -l < /workspace/combined.txt | tr -d ' ')
+          echo "Combined $LINE_COUNT records into /workspace/combined.txt"
+          echo ""
+
+          echo "--- Generating summary report ---"
+          cat > /workspace/report.txt <<REPORT
+          ========================================
+          Reaper emptyDir Processing Report
+          ========================================
+          Hostname:    $(hostname)
+          Generated:   $(date -u)
+          Input files: 5
+          Records:     $LINE_COUNT
+          ========================================
+
+          Data:
+          $(cat /workspace/combined.txt)
+
+          Status: Processing complete
+          ========================================
+          REPORT
+          echo "Report written to /workspace/report.txt"
+          echo ""
+
+          echo "--- Final workspace contents ---"
+          ls -la /workspace/
+          echo ""
+
+          echo "--- Report output ---"
+          cat /workspace/report.txt
+          echo ""
+
+          echo "=== emptyDir demo complete (data disappears when pod is deleted) ==="
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+  volumes:
+    - name: workspace
+      emptyDir: {}

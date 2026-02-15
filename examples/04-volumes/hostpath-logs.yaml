@@ -1,0 +1,92 @@
+# hostPath volume demo — read files from the host filesystem.
+#
+# The host directory /opt/reaper-demo/html (created by setup.sh) contains
+# a custom HTML file. The pod mounts it read-only, then installs nginx
+# inside the overlay to serve the host-provided content.
+#
+# Usage:
+#   kubectl apply -f hostpath-logs.yaml
+#   kubectl logs hostpath-reader -f
+#
+# Verify (from another terminal):
+#   kubectl exec hostpath-reader -- curl -s http://localhost:8081
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hostpath-reader
+  labels:
+    app: hostpath-reader
+    demo: volumes
+spec:
+  runtimeClassName: reaper-v2
+  nodeSelector:
+    role: demo
+  restartPolicy: Never
+  containers:
+    - name: reader
+      image: busybox
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          echo "=== hostPath Volume Demo ==="
+          echo "Hostname: $(hostname)"
+          echo ""
+
+          echo "--- Checking mounted hostPath ---"
+          if [ -f /host-html/index.html ]; then
+            echo "hostPath mounted at /host-html/"
+            echo "Files:"
+            ls -la /host-html/
+          else
+            echo "ERROR: hostPath content not found at /host-html/index.html"
+            exit 1
+          fi
+          echo ""
+
+          echo "--- Reading host-provided HTML ---"
+          cat /host-html/index.html
+          echo ""
+
+          echo "--- Installing nginx (inside overlay, host unmodified) ---"
+          apt-get update -qq > /dev/null 2>&1
+          apt-get install -y -qq nginx curl > /dev/null 2>&1
+          echo "nginx installed successfully"
+          echo ""
+
+          echo "--- Copying host content to nginx document root ---"
+          cp /host-html/* /var/www/html/
+          echo "Content copied to /var/www/html/"
+
+          echo "--- Starting nginx on port 8081 ---"
+          # Clear conf.d to avoid loading configs from other pods
+          # (volume mounts are shared across the overlay namespace)
+          rm -f /etc/nginx/conf.d/*.conf
+          cat > /etc/nginx/sites-enabled/default <<'NGINX'
+          server {
+              listen 8081 default_server;
+              root /var/www/html;
+              index index.html;
+          }
+          NGINX
+          nginx -g 'daemon off;' &
+          NGINX_PID=$!
+          trap "kill $NGINX_PID 2>/dev/null; wait $NGINX_PID 2>/dev/null" TERM INT
+          sleep 1
+
+          echo "--- Verifying nginx serves host content ---"
+          RESPONSE=$(curl -s http://localhost:8081)
+          echo "Response from localhost:8081:"
+          echo "$RESPONSE"
+          echo ""
+
+          echo "=== nginx running (PID $NGINX_PID), serving host-provided content ==="
+          wait $NGINX_PID
+      volumeMounts:
+        - name: host-html
+          mountPath: /host-html
+          readOnly: true
+  volumes:
+    - name: host-html
+      hostPath:
+        path: /opt/reaper-demo/html
+        type: Directory
