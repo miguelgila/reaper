@@ -505,9 +505,10 @@ phase_readiness() {
   kubectl delete pod reaper-example reaper-integration-test reaper-dns-check \
     reaper-overlay-writer reaper-overlay-reader reaper-exec-test \
     reaper-uid-gid-test reaper-privdrop-test \
-    reaper-configmap-vol reaper-hostpath-vol \
+    reaper-configmap-vol reaper-secret-vol reaper-emptydir-vol reaper-hostpath-vol \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true
 
   log_status "Kubernetes cluster ready."
   ci_group_end
@@ -960,6 +961,113 @@ YAML
   log_verbose "hostPath volume mount verified"
 }
 
+test_secret_volume() {
+  # Create a Secret with test data
+  kubectl create secret generic reaper-test-secret \
+    --from-literal=username='reaper-user' \
+    --from-literal=password='secret-volume-works' \
+    --dry-run=client -o yaml | kubectl apply -f - >> "$LOG_FILE" 2>&1
+
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-secret-vol
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  volumes:
+    - name: creds
+      secret:
+        secretName: reaper-test-secret
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/sh", "-c", "cat /creds/username && echo '' && cat /creds/password"]
+      volumeMounts:
+        - name: creds
+          mountPath: /creds
+          readOnly: true
+YAML
+
+  wait_for_pod_phase reaper-secret-vol Succeeded 120 2 || {
+    log_error "Secret volume pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-secret-vol
+    return 1
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-secret-vol 2>&1 || echo "(failed to retrieve logs)")
+  log_verbose "Secret volume test logs: $logs"
+
+  if [[ "$logs" != *"secret-volume-works"* ]]; then
+    log_error "Secret volume test did not produce expected 'secret-volume-works' output"
+    log_error "Actual pod logs:"
+    echo "$logs" | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    dump_pod_diagnostics reaper-secret-vol
+    return 1
+  fi
+
+  if [[ "$logs" != *"reaper-user"* ]]; then
+    log_error "Secret volume test did not produce expected 'reaper-user' output"
+    dump_pod_diagnostics reaper-secret-vol
+    return 1
+  fi
+
+  log_verbose "Secret volume mount verified"
+}
+
+test_emptydir_volume() {
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-emptydir-vol
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  volumes:
+    - name: scratch
+      emptyDir: {}
+  containers:
+    - name: test
+      image: busybox
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "emptydir-volume-works" > /scratch/test.txt
+          cat /scratch/test.txt
+      volumeMounts:
+        - name: scratch
+          mountPath: /scratch
+YAML
+
+  wait_for_pod_phase reaper-emptydir-vol Succeeded 120 2 || {
+    log_error "emptyDir volume pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-emptydir-vol
+    return 1
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-emptydir-vol 2>&1 || echo "(failed to retrieve logs)")
+  log_verbose "emptyDir volume test logs: $logs"
+
+  if [[ "$logs" != *"emptydir-volume-works"* ]]; then
+    log_error "emptyDir volume test did not produce expected 'emptydir-volume-works' output"
+    log_error "Actual pod logs:"
+    echo "$logs" | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    dump_pod_diagnostics reaper-emptydir-vol
+    return 1
+  fi
+
+  log_verbose "emptyDir volume mount verified"
+}
+
 test_exec_support() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -1004,16 +1112,19 @@ phase_integration_tests() {
   run_test test_uid_gid_switching "UID/GID switching with securityContext" --hard-fail
   run_test test_privilege_drop   "Privilege drop to non-root user" --hard-fail
   run_test test_configmap_volume "ConfigMap volume mount"         --hard-fail
+  run_test test_secret_volume   "Secret volume mount"            --hard-fail
+  run_test test_emptydir_volume "emptyDir volume mount"          --hard-fail
   run_test test_hostpath_volume  "hostPath volume mount"          --hard-fail
   run_test test_exec_support     "kubectl exec support"          --soft-fail
 
   # Cleanup test pods (before defunct check so pods are terminated)
   kubectl delete pod reaper-dns-check reaper-integration-test \
     reaper-overlay-writer reaper-overlay-reader reaper-uid-gid-test \
-    reaper-privdrop-test reaper-configmap-vol reaper-hostpath-vol \
-    reaper-exec-test \
+    reaper-privdrop-test reaper-configmap-vol reaper-secret-vol \
+    reaper-emptydir-vol reaper-hostpath-vol reaper-exec-test \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true
 
   # Wait for all pods to fully terminate before checking for zombies
   log_verbose "Waiting for test pods to terminate..."
