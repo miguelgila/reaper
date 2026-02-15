@@ -1079,6 +1079,65 @@ YAML
   log_verbose "emptyDir volume mount verified"
 }
 
+# Test that volume mounts work on second runs (after pod deletion and recreation).
+# This catches stale mount accumulation in the shared overlay namespace: volume
+# mounts persist after pod deletion, and move_mount() fails with ENOENT if
+# the stale mount references a deleted kubelet directory.
+test_volume_rerun() {
+  # Delete the emptydir pod from the earlier test and wait for it to disappear
+  kubectl delete pod reaper-emptydir-vol --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  for i in $(seq 1 30); do
+    if ! kubectl get pod reaper-emptydir-vol &>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+
+  # Re-create the same pod with the same volume mount destination
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-emptydir-vol
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  volumes:
+    - name: scratch
+      emptyDir: {}
+  containers:
+    - name: test
+      image: busybox
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "rerun-volume-works" > /scratch/rerun.txt
+          cat /scratch/rerun.txt
+      volumeMounts:
+        - name: scratch
+          mountPath: /scratch
+YAML
+
+  wait_for_pod_phase reaper-emptydir-vol Succeeded 120 2 || {
+    log_error "Volume rerun pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-emptydir-vol
+    return 1
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-emptydir-vol 2>&1 || echo "(failed to retrieve logs)")
+  log_verbose "Volume rerun test logs: $logs"
+
+  if [[ "$logs" != *"rerun-volume-works"* ]]; then
+    log_error "Volume rerun test did not produce expected 'rerun-volume-works' output"
+    dump_pod_diagnostics reaper-emptydir-vol
+    return 1
+  fi
+
+  log_verbose "Volume rerun verified — stale mount cleanup works"
+}
+
 test_exec_support() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -1126,6 +1185,7 @@ phase_integration_tests() {
   run_test test_secret_volume   "Secret volume mount"            --hard-fail
   run_test test_emptydir_volume "emptyDir volume mount"          --hard-fail
   run_test test_hostpath_volume  "hostPath volume mount"          --hard-fail
+  run_test test_volume_rerun    "Volume mount rerun (stale cleanup)" --hard-fail
   run_test test_exec_support     "kubectl exec support"          --soft-fail
 
   # Cleanup test pods (before defunct check so pods are terminated)

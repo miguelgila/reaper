@@ -791,6 +791,19 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
             );
         }
 
+        // Unmount any stale mount at the destination from a previous pod.
+        // Volume mounts in the shared namespace persist after pod deletion,
+        // referencing kubelet directories that no longer exist. Attempting to
+        // move_mount on top of a stale mount fails with ENOENT because path
+        // lookup traverses into the disconnected mount.
+        if dest_path.exists() {
+            match umount2(dest_path, MntFlags::MNT_DETACH) {
+                Ok(()) => info!("volume: unmounted stale mount at {}", dest),
+                Err(nix::errno::Errno::EINVAL) => {} // not a mount point, fine
+                Err(e) => info!("volume: umount2({}) returned {} (continuing)", dest, e),
+            }
+        }
+
         // Create destination: directory if source is a directory, file otherwise.
         // Check via /proc/1/root if using host ns, otherwise direct.
         let check_path = if use_host_ns {
