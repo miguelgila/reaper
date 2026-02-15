@@ -659,9 +659,22 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
             bail!("volume mount for {} has no source path", dest);
         }
 
-        // Create destination: directory if source is a directory, file otherwise
         let source_path = Path::new(source);
         let dest_path = Path::new(dest);
+
+        // Skip mounts whose source doesn't exist inside the overlay namespace.
+        // Kubelet-managed paths (e.g. projected SA tokens) may not be visible
+        // through the overlay lower layer.
+        if !source_path.exists() {
+            tracing::warn!(
+                "volume: source {} does not exist in overlay namespace, skipping mount to {}",
+                source,
+                dest
+            );
+            continue;
+        }
+
+        // Create destination: directory if source is a directory, file otherwise
 
         if source_path.is_dir() {
             fs::create_dir_all(dest_path)
