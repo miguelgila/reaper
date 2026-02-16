@@ -627,7 +627,7 @@ spec:
   containers:
     - name: test
       image: busybox
-      command: ["sleep", "60"]
+      command: ["sleep", "300"]
 YAML
 
   wait_for_pod_phase reaper-exec-test Running 60 1 || {
@@ -812,9 +812,18 @@ YAML
 }
 
 test_exec_exit_code() {
-  # This test reuses the reaper-exec-test pod from test_exec_support.
-  # If that test didn't run or failed, create the pod ourselves.
-  if ! kubectl get pod reaper-exec-test &>/dev/null; then
+  # We need a Running pod to exec into. The reaper-exec-test pod from
+  # test_exec_support may have expired (sleep 60 finished) by now, so
+  # check its phase — recreate if it's not Running.
+  local phase
+  phase=$(kubectl get pod reaper-exec-test -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+  if [[ "$phase" != "Running" ]]; then
+    kubectl delete pod reaper-exec-test --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+    # Wait for deletion
+    for i in $(seq 1 15); do
+      if ! kubectl get pod reaper-exec-test &>/dev/null; then break; fi
+      sleep 1
+    done
     cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
 kind: Pod
@@ -826,7 +835,7 @@ spec:
   containers:
     - name: test
       image: busybox
-      command: ["sleep", "60"]
+      command: ["sleep", "300"]
 YAML
     wait_for_pod_phase reaper-exec-test Running 60 1 || {
       log_error "Exec exit code test: pod did not reach Running phase"
@@ -1206,8 +1215,15 @@ YAML
 }
 
 test_exec_nonexistent_binary() {
-  # Reuse the reaper-exec-test pod if it's still running, otherwise create it
-  if ! kubectl get pod reaper-exec-test &>/dev/null; then
+  # We need a Running pod. Check if reaper-exec-test is still alive.
+  local phase
+  phase=$(kubectl get pod reaper-exec-test -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+  if [[ "$phase" != "Running" ]]; then
+    kubectl delete pod reaper-exec-test --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+    for i in $(seq 1 15); do
+      if ! kubectl get pod reaper-exec-test &>/dev/null; then break; fi
+      sleep 1
+    done
     cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
 kind: Pod
@@ -1219,7 +1235,7 @@ spec:
   containers:
     - name: test
       image: busybox
-      command: ["sleep", "60"]
+      command: ["sleep", "300"]
 YAML
     wait_for_pod_phase reaper-exec-test Running 60 1 || {
       log_error "Exec nonexistent binary test: pod did not reach Running phase"
