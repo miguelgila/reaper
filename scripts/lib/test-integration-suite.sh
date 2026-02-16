@@ -647,6 +647,76 @@ YAML
   fi
 }
 
+test_concurrent_pods() {
+  # Apply 3 pods at once to exercise overlay flock() contention
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-concurrent-a
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/sh", "-c", "echo concurrent-a-ok"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-concurrent-b
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/sh", "-c", "echo concurrent-b-ok"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-concurrent-c
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/sh", "-c", "echo concurrent-c-ok"]
+YAML
+
+  local all_ok=true
+  for pod in reaper-concurrent-a reaper-concurrent-b reaper-concurrent-c; do
+    wait_for_pod_phase "$pod" Succeeded 120 2 || {
+      log_error "Concurrent pod $pod did not reach Succeeded phase"
+      dump_pod_diagnostics "$pod"
+      all_ok=false
+      continue
+    }
+
+    local logs
+    logs=$(kubectl logs "$pod" 2>&1 || echo "(failed to retrieve logs)")
+    local expected="${pod#reaper-}-ok"
+    if [[ "$logs" != *"$expected"* ]]; then
+      log_error "Concurrent pod $pod did not produce expected '$expected' output"
+      log_error "Actual: $logs"
+      all_ok=false
+    fi
+  done
+
+  # Cleanup these pods immediately (not part of the main cleanup list)
+  kubectl delete pod reaper-concurrent-a reaper-concurrent-b reaper-concurrent-c \
+    --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+
+  if ! $all_ok; then
+    return 1
+  fi
+
+  log_verbose "Concurrent pod starts verified: all 3 pods succeeded"
+}
+
 test_process_group_kill() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -888,6 +958,7 @@ phase_integration_tests() {
   run_test test_volume_rerun    "Volume mount rerun (stale cleanup)" --hard-fail
   run_test test_exec_support     "kubectl exec support"          --soft-fail
   run_test test_nonzero_exit_code "Non-zero exit code propagation" --hard-fail
+  run_test test_concurrent_pods   "Concurrent pod starts (lock contention)" --hard-fail
   run_test test_process_group_kill "Process group kill on pod delete" --hard-fail
   run_test test_stderr_capture     "stderr capture via FIFO"        --hard-fail
   run_test test_env_vars          "Environment variable passing"   --hard-fail
