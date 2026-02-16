@@ -6,6 +6,10 @@
 
 **Reaper is a lightweight Kubernetes container-less runtime that executes commands directly on cluster nodes without traditional container isolation.** Think of it as a way to run host-native processes through Kubernetes' orchestration layer.
 
+## Disclaimer
+
+Reaper is an experimental, personal project built to explore what's possible with AI-assisted development. It is under continuous development with no stability guarantees — there is no assurance it will work correctly in your environment. No support of any kind is provided. Unless you fully understand what Reaper does and how it works, you probably don't want to run it. Use entirely at your own risk. That said, the code is open — feel free to read it and send PRs.
+
 ## What is Reaper?
 
 Reaper is a containerd shim that runs processes directly on the host system while integrating with Kubernetes' workload management. Unlike traditional container runtimes that provide isolation through namespaces and cgroups, Reaper intentionally runs processes with full host access.
