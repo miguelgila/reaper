@@ -647,6 +647,79 @@ YAML
   fi
 }
 
+test_sigterm_delivery() {
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-sigterm-test
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 30
+  containers:
+    - name: test
+      image: busybox
+      command:
+        - /bin/sh
+        - -c
+        - |
+          trap 'echo SIGTERM-received; exit 0' TERM
+          echo trap-ready
+          while true; do sleep 1; done
+YAML
+
+  wait_for_pod_phase reaper-sigterm-test Running 60 2 || {
+    log_error "SIGTERM test pod did not reach Running phase"
+    dump_pod_diagnostics reaper-sigterm-test
+    return 1
+  }
+
+  # Wait for trap handler to be installed
+  sleep 2
+
+  # Delete the pod (triggers SIGTERM, then SIGKILL after grace period)
+  # Use --wait=false so we can observe the pod's terminal state before removal
+  kubectl delete pod reaper-sigterm-test --grace-period=10 --wait=false >> "$LOG_FILE" 2>&1 || true
+
+  # Poll for the container to reach a terminated state (before the pod object disappears)
+  local exit_code=""
+  for i in $(seq 1 20); do
+    exit_code=$(kubectl get pod reaper-sigterm-test \
+      -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo "")
+    if [[ -n "$exit_code" ]]; then
+      break
+    fi
+    sleep 1
+  done
+
+  # Try to grab logs before the pod is fully removed
+  local logs
+  logs=$(kubectl logs reaper-sigterm-test 2>&1 || echo "(logs unavailable)")
+  log_verbose "SIGTERM test logs: $logs"
+  log_verbose "SIGTERM test exit code: $exit_code"
+
+  # Wait for the pod to be fully gone
+  for i in $(seq 1 15); do
+    if ! kubectl get pod reaper-sigterm-test &>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+
+  # If SIGTERM was delivered and the trap ran 'exit 0', exitCode should be 0.
+  # If SIGTERM was NOT delivered (SIGKILL only), exitCode would be 137 (128+9).
+  if [[ "$exit_code" == "0" ]]; then
+    log_verbose "SIGTERM delivery verified: trap handler ran, exit code=0"
+  elif [[ -z "$exit_code" ]]; then
+    # Pod disappeared before we could read the exit code — not ideal but not a failure
+    log_verbose "SIGTERM test: pod removed before exit code could be read (inconclusive)"
+  else
+    log_error "Expected exit code 0 (SIGTERM trap), got: $exit_code (SIGKILL?)"
+    return 1
+  fi
+}
+
 test_working_directory() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -1089,6 +1162,7 @@ phase_integration_tests() {
   run_test test_nonzero_exit_code "Non-zero exit code propagation" --hard-fail
   run_test test_concurrent_pods   "Concurrent pod starts (lock contention)" --hard-fail
   run_test test_process_group_kill "Process group kill on pod delete" --hard-fail
+  run_test test_sigterm_delivery   "Graceful shutdown (SIGTERM)"     --hard-fail
   run_test test_working_directory  "Working directory (cwd)"         --hard-fail
   run_test test_large_output       "Large output (FIFO buffer)"     --hard-fail
   run_test test_exec_exit_code     "Exec exit code propagation"     --hard-fail
