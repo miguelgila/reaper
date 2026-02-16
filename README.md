@@ -195,9 +195,10 @@ The [examples/](examples/) directory contains runnable demos, each with a `setup
 
 | Example | Description |
 |---------|-------------|
-| **[scheduling/](examples/scheduling/)** | DaemonSets on all nodes vs. a labeled subset |
-| **[client-server/](examples/client-server/)** | TCP server + clients communicating across nodes via host networking |
-| **[client-server-runas/](examples/client-server-runas/)** | Same as above, but running as a shared non-root user (LDAP-style UID/GID) |
+| **[01-scheduling/](examples/01-scheduling/)** | DaemonSets on all nodes vs. a labeled subset |
+| **[02-client-server/](examples/02-client-server/)** | TCP server + clients communicating across nodes via host networking |
+| **[03-client-server-runas/](examples/03-client-server-runas/)** | Same as above, but running as a shared non-root user (LDAP-style UID/GID) |
+| **[04-volumes/](examples/04-volumes/)** | Kubernetes volume mounts (ConfigMap, Secret, hostPath, emptyDir) with overlay |
 
 ## Documentation
 
