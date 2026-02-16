@@ -647,6 +647,40 @@ YAML
   fi
 }
 
+test_command_not_found() {
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-cmd-not-found
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["/nonexistent/binary"]
+YAML
+
+  wait_for_pod_phase reaper-cmd-not-found Failed 60 2 || {
+    log_error "Command-not-found pod did not reach Failed phase"
+    dump_pod_diagnostics reaper-cmd-not-found
+    return 1
+  }
+
+  local exit_code
+  exit_code=$(kubectl get pod reaper-cmd-not-found -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo "")
+  log_verbose "Command not found test: exitCode=$exit_code"
+
+  if [[ -z "$exit_code" || "$exit_code" == "0" ]]; then
+    log_error "Expected non-zero exit code for missing binary, got: '$exit_code'"
+    dump_pod_diagnostics reaper-cmd-not-found
+    return 1
+  fi
+
+  log_verbose "Command not found handled correctly: exitCode=$exit_code"
+}
+
 test_nonzero_exit_code() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -702,13 +736,14 @@ phase_integration_tests() {
   run_test test_volume_rerun    "Volume mount rerun (stale cleanup)" --hard-fail
   run_test test_exec_support     "kubectl exec support"          --soft-fail
   run_test test_nonzero_exit_code "Non-zero exit code propagation" --hard-fail
+  run_test test_command_not_found "Command not found (failed pod)" --hard-fail
 
   # Cleanup test pods (before defunct check so pods are terminated)
   kubectl delete pod reaper-dns-check reaper-integration-test \
     reaper-overlay-writer reaper-overlay-reader reaper-uid-gid-test \
     reaper-privdrop-test reaper-configmap-vol reaper-secret-vol \
     reaper-emptydir-vol reaper-hostpath-vol reaper-exec-test \
-    reaper-exit-code-test \
+    reaper-exit-code-test reaper-cmd-not-found \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true
