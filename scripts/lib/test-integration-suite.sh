@@ -647,6 +647,43 @@ YAML
   fi
 }
 
+test_working_directory() {
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-cwd-test
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/sh", "-c", "pwd"]
+      workingDir: /tmp
+YAML
+
+  wait_for_pod_phase reaper-cwd-test Succeeded 60 2 || {
+    log_error "Working directory test pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-cwd-test
+    return 1
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-cwd-test 2>&1 || echo "(failed to retrieve logs)")
+  local cwd
+  cwd=$(echo "$logs" | head -1 | tr -d '[:space:]')
+  log_verbose "Working directory test: cwd=$cwd"
+
+  if [[ "$cwd" != "/tmp" ]]; then
+    log_error "Expected working directory '/tmp', got: '$cwd'"
+    dump_pod_diagnostics reaper-cwd-test
+    return 1
+  fi
+
+  log_verbose "Working directory verified: cwd=$cwd"
+}
+
 test_large_output() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -1052,6 +1089,7 @@ phase_integration_tests() {
   run_test test_nonzero_exit_code "Non-zero exit code propagation" --hard-fail
   run_test test_concurrent_pods   "Concurrent pod starts (lock contention)" --hard-fail
   run_test test_process_group_kill "Process group kill on pod delete" --hard-fail
+  run_test test_working_directory  "Working directory (cwd)"         --hard-fail
   run_test test_large_output       "Large output (FIFO buffer)"     --hard-fail
   run_test test_exec_exit_code     "Exec exit code propagation"     --hard-fail
   run_test test_stderr_capture     "stderr capture via FIFO"        --hard-fail
@@ -1064,7 +1102,7 @@ phase_integration_tests() {
     reaper-privdrop-test reaper-configmap-vol reaper-secret-vol \
     reaper-emptydir-vol reaper-hostpath-vol reaper-exec-test \
     reaper-exit-code-test reaper-cmd-not-found reaper-env-test \
-    reaper-stderr-test reaper-large-output \
+    reaper-stderr-test reaper-large-output reaper-cwd-test \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true
