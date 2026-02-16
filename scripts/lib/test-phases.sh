@@ -171,6 +171,8 @@ phase_readiness() {
     reaper-stderr-test reaper-pgkill-test reaper-large-output \
     reaper-cwd-test reaper-sigterm-test reaper-ro-vol-test \
     reaper-concurrent-a reaper-concurrent-b reaper-concurrent-c \
+    reaper-stress-1 reaper-stress-2 reaper-stress-3 \
+    reaper-stress-4 reaper-stress-5 \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true

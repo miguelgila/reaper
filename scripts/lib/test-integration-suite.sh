@@ -1139,6 +1139,72 @@ YAML
   log_verbose "Non-zero exit code propagation verified: exitCode=$exit_code"
 }
 
+test_rapid_create_delete() {
+  # Rapidly create and delete 5 pods to stress-test cleanup paths
+  local all_ok=true
+  for i in 1 2 3 4 5; do
+    local pod_name="reaper-stress-$i"
+    cat <<YAML | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: $pod_name
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/echo", "stress-$i"]
+YAML
+  done
+
+  # Wait for all to succeed
+  for i in 1 2 3 4 5; do
+    local pod_name="reaper-stress-$i"
+    wait_for_pod_phase "$pod_name" Succeeded 120 2 || {
+      log_error "Stress pod $pod_name did not reach Succeeded"
+      dump_pod_diagnostics "$pod_name"
+      all_ok=false
+    }
+  done
+
+  # Delete them all at once
+  kubectl delete pod reaper-stress-1 reaper-stress-2 reaper-stress-3 \
+    reaper-stress-4 reaper-stress-5 --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+
+  # Wait for all to disappear
+  for i in $(seq 1 20); do
+    local remaining
+    remaining=$(kubectl get pods --no-headers 2>/dev/null | grep -c '^reaper-stress-' || true)
+    if [[ "$remaining" -eq 0 ]]; then
+      break
+    fi
+    sleep 1
+  done
+
+  # Check for leftover state files on the node
+  local state_dirs
+  state_dirs=$(docker exec "$NODE_ID" sh -c 'ls -d /run/reaper/*/state.json 2>/dev/null | wc -l' 2>/dev/null || echo "0")
+  state_dirs=$(echo "$state_dirs" | tr -d '[:space:]')
+  log_verbose "State files remaining after stress test: $state_dirs"
+
+  # Check for zombies
+  local defunct
+  defunct=$(docker exec "$NODE_ID" ps aux 2>/dev/null | grep -E '\<defunct\>' | grep -v grep || true)
+  if [[ -n "$defunct" ]]; then
+    log_error "Zombies found after rapid create/delete:"
+    log_error "$defunct"
+    all_ok=false
+  fi
+
+  if ! $all_ok; then
+    return 1
+  fi
+
+  log_verbose "Rapid create/delete stress test passed: no zombies, cleanup OK"
+}
+
 test_exec_nonexistent_binary() {
   # Reuse the reaper-exec-test pod if it's still running, otherwise create it
   if ! kubectl get pod reaper-exec-test &>/dev/null; then
@@ -1262,6 +1328,7 @@ phase_integration_tests() {
   run_test test_command_not_found "Command not found (failed pod)" --hard-fail
   run_test test_exec_nonexistent_binary "Exec nonexistent binary"         --hard-fail
   run_test test_readonly_volume_rejection "Read-only volume write rejection" --hard-fail
+  run_test test_rapid_create_delete "Rapid create/delete stress"     --hard-fail
 
   # Cleanup test pods (before defunct check so pods are terminated)
   kubectl delete pod reaper-dns-check reaper-integration-test \
