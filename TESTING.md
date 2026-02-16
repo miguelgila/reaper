@@ -31,6 +31,9 @@ Tests run in a few seconds and provide immediate feedback. Use this for developm
 - `integration_basic_binary` - Basic runtime functionality
 - `integration_user_management` - User/group handling (UID/GID switching, privilege dropping, umask)
 - `integration_shim` - Shim-specific tests
+- `integration_io` - FIFO stdout/stderr redirection
+- `integration_exec` - Exec into running containers
+- `integration_overlay` - Overlay filesystem tests
 
 Run a specific test:
 
@@ -245,15 +248,20 @@ Wait a few seconds after applying the RuntimeClass, as it takes time to propagat
 reaper/
 ├── scripts/
 │   ├── run-integration-tests.sh      [MAIN] Orchestrates all integration tests
+│   ├── install-reaper.sh             Ansible-based installation wrapper
+│   ├── generate-kind-inventory.sh    Auto-generate Kind inventory for Ansible
 │   ├── configure-containerd.sh       Helper to configure containerd
 │   ├── install-hooks.sh              Setup git hooks (optional)
 │   └── docker-coverage.sh            Run coverage in Docker
 ├── tests/
 │   ├── integration_basic_binary.rs
 │   ├── integration_user_management.rs
-│   └── integration_shim.rs
+│   ├── integration_shim.rs
+│   ├── integration_io.rs
+│   ├── integration_exec.rs
+│   └── integration_overlay.rs
 ├── kubernetes/                       [K8s cluster config examples]
-├── examples/                         [Example pods and RuntimeClass]
+├── examples/                         [Runnable Kind-based demos]
 └── TESTING.md                        [This file]
 ```
 

@@ -185,6 +185,8 @@ For architecture details, see [docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md) and
 - ✅ **Volume mount support** (ConfigMap, Secret, hostPath, emptyDir via OCI bind mounts)
 - ✅ **Container I/O capture** (stdout/stderr via FIFOs for `kubectl logs`)
 - ✅ **Interactive sessions** (PTY support for `kubectl run -it` and `kubectl exec -it`)
+- ✅ **UID/GID switching** (privilege dropping with `securityContext`)
+- ✅ **Sensitive file filtering** (hides SSH keys, passwords, SSL keys in overlay)
 - ✅ **Process monitoring** (fork-based with real exit code capture)
 - ✅ **Zombie process reaping** (proper process cleanup)
 - ✅ **End-to-end testing** (validated with kind cluster integration tests)
@@ -207,8 +209,8 @@ The [examples/](examples/) directory contains runnable demos, each with a `setup
 - **[TESTING.md](TESTING.md)** - Testing guide (unit tests, integration tests, coverage)
 - **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup, tooling, and contributing
 - **[docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md)** - Shim v2 protocol implementation details
+- **[docs/SHIM_ARCHITECTURE.md](docs/SHIM_ARCHITECTURE.md)** - Architecture deep-dive
 - **[docs/OVERLAY_DESIGN.md](docs/OVERLAY_DESIGN.md)** - Overlay filesystem design and architecture
-- **[docs/CURRENT_STATE.md](docs/CURRENT_STATE.md)** - Current implementation status and known issues
 
 ## Requirements
 

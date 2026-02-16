@@ -1,4 +1,6 @@
-# Current State - Reaper OCI Runtime (February 2026)
+# Current State - Reaper OCI Runtime
+
+> **DEPRECATED**: This document is outdated and no longer maintained. For current implementation status, refer to [SHIMV2_DESIGN.md](SHIMV2_DESIGN.md). For architecture details, see [SHIM_ARCHITECTURE.md](SHIM_ARCHITECTURE.md).
 
 ## Quick Summary
 

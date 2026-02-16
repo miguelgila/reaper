@@ -327,5 +327,4 @@ The playbooks are connection-agnostic - they use Ansible modules that work equal
 
 - [Main README](../README.md) - Project overview
 - [Kubernetes README](../kubernetes/README.md) - Kubernetes integration guide
-- [Installation Plan](../docs/plan-install-script.md) - Detailed implementation plan
 - [Testing Guide](../TESTING.md) - Testing procedures

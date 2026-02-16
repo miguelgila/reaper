@@ -3,8 +3,8 @@ name = "reaper"
 version = "0.1.0"
 edition = "2021"
 authors = ["Miguel Gila <miguelgila@gmail.com>"]
-description = "A Rust project"
-repository = "https://github.com/miguelgi/reaper"
+description = "A lightweight Kubernetes container-less runtime that executes commands directly on cluster nodes"
+repository = "https://github.com/miguelgila/reaper"
 license = "MIT"
 
 [dependencies]
