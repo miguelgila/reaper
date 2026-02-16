@@ -166,7 +166,7 @@ phase_readiness() {
     reaper-uid-gid-test reaper-privdrop-test \
     reaper-configmap-vol reaper-secret-vol reaper-emptydir-vol reaper-hostpath-vol \
     reaper-exit-code-test reaper-cmd-not-found reaper-env-test \
-    reaper-stderr-test reaper-pgkill-test \
+    reaper-stderr-test reaper-pgkill-test reaper-large-output \
     reaper-concurrent-a reaper-concurrent-b reaper-concurrent-c \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true

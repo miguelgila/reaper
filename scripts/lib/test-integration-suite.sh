@@ -647,6 +647,60 @@ YAML
   fi
 }
 
+test_large_output() {
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-large-output
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/sh", "-c", "seq 1 20000"]
+YAML
+
+  wait_for_pod_phase reaper-large-output Succeeded 120 2 || {
+    log_error "Large output pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-large-output
+    return 1
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-large-output 2>&1 || echo "(failed to retrieve logs)")
+  local line_count
+  line_count=$(echo "$logs" | wc -l | tr -d ' ')
+  log_verbose "Large output test: $line_count lines"
+
+  # Verify first and last lines are present (proves no truncation)
+  local first_line
+  first_line=$(echo "$logs" | head -1 | tr -d '[:space:]')
+  local last_line
+  last_line=$(echo "$logs" | tail -1 | tr -d '[:space:]')
+
+  if [[ "$first_line" != "1" ]]; then
+    log_error "Expected first line '1', got: '$first_line'"
+    dump_pod_diagnostics reaper-large-output
+    return 1
+  fi
+
+  if [[ "$last_line" != "20000" ]]; then
+    log_error "Expected last line '20000', got: '$last_line'"
+    log_error "Total lines captured: $line_count"
+    dump_pod_diagnostics reaper-large-output
+    return 1
+  fi
+
+  if [[ "$line_count" -lt 20000 ]]; then
+    log_error "Expected 20000 lines, got: $line_count (output truncated)"
+    return 1
+  fi
+
+  log_verbose "Large output verified: $line_count lines, first=$first_line, last=$last_line"
+}
+
 test_exec_exit_code() {
   # This test reuses the reaper-exec-test pod from test_exec_support.
   # If that test didn't run or failed, create the pod ourselves.
@@ -998,6 +1052,7 @@ phase_integration_tests() {
   run_test test_nonzero_exit_code "Non-zero exit code propagation" --hard-fail
   run_test test_concurrent_pods   "Concurrent pod starts (lock contention)" --hard-fail
   run_test test_process_group_kill "Process group kill on pod delete" --hard-fail
+  run_test test_large_output       "Large output (FIFO buffer)"     --hard-fail
   run_test test_exec_exit_code     "Exec exit code propagation"     --hard-fail
   run_test test_stderr_capture     "stderr capture via FIFO"        --hard-fail
   run_test test_env_vars          "Environment variable passing"   --hard-fail
@@ -1009,7 +1064,7 @@ phase_integration_tests() {
     reaper-privdrop-test reaper-configmap-vol reaper-secret-vol \
     reaper-emptydir-vol reaper-hostpath-vol reaper-exec-test \
     reaper-exit-code-test reaper-cmd-not-found reaper-env-test \
-    reaper-stderr-test \
+    reaper-stderr-test reaper-large-output \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true
