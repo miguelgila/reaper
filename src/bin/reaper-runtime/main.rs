@@ -755,33 +755,40 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                     cmd.stderr(Stdio::inherit());
                 }
 
-                // Apply user/group configuration if present
-                if let Some(ref user) = user_config {
-                    let uid_val = user.uid;
-                    let gid_val = user.gid;
-                    let groups = user.additional_gids.clone();
-                    let umask_val = user.umask;
-
+                // Always call setsid() so the workload gets its own process group
+                // (PGID == workload PID). This is critical for do_kill() which sends
+                // signals to -pid (the process group). Without setsid(), the workload
+                // inherits the daemon's PGID, so kill(-workload_pid) targets a
+                // non-existent process group and the signal never reaches the process.
+                {
+                    let user_cfg_clone = user_config.clone();
                     unsafe {
                         cmd.pre_exec(move || {
-                            // Set supplementary groups first (must be done while privileged)
-                            if !groups.is_empty() {
-                                safe_setgroups(&groups)?;
-                            }
-
-                            // Set GID before UID (privilege dropping order matters)
-                            if nix::libc::setgid(gid_val) != 0 {
+                            if nix::libc::setsid() < 0 {
                                 return Err(std::io::Error::last_os_error());
                             }
 
-                            // Set UID (this must be last - irreversible privilege drop)
-                            if nix::libc::setuid(uid_val) != 0 {
-                                return Err(std::io::Error::last_os_error());
-                            }
+                            // Apply user/group configuration if present
+                            if let Some(ref user) = user_cfg_clone {
+                                // Set supplementary groups first (must be done while privileged)
+                                if !user.additional_gids.is_empty() {
+                                    safe_setgroups(&user.additional_gids)?;
+                                }
 
-                            // Apply umask if specified
-                            if let Some(mask) = umask_val {
-                                nix::libc::umask(mask as nix::libc::mode_t);
+                                // Set GID before UID (privilege dropping order matters)
+                                if nix::libc::setgid(user.gid) != 0 {
+                                    return Err(std::io::Error::last_os_error());
+                                }
+
+                                // Set UID (this must be last - irreversible privilege drop)
+                                if nix::libc::setuid(user.uid) != 0 {
+                                    return Err(std::io::Error::last_os_error());
+                                }
+
+                                // Apply umask if specified
+                                if let Some(mask) = user.umask {
+                                    nix::libc::umask(mask as nix::libc::mode_t);
+                                }
                             }
 
                             Ok(())
@@ -859,10 +866,15 @@ fn do_kill(id: &str, signal: Option<i32>) -> Result<()> {
     let signal = signal.unwrap_or(15); // Default to SIGTERM
     info!("do_kill() called - id={}, signal={}", id, signal);
     let pid = load_pid(id)?;
-    info!("do_kill() - sending signal {} to pid {}", signal, pid);
-    // Use nix to send signal
+    info!(
+        "do_kill() - sending signal {} to process group (pgid={})",
+        signal, pid
+    );
+    // Kill the entire process group (-pid) so children of the workload (e.g. backgrounded
+    // processes) are also signalled. The workload calls setsid() in pre_exec, so its PGID
+    // equals its PID.
     let sig = nix::sys::signal::Signal::try_from(signal).context("invalid signal")?;
-    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), sig) {
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(-pid), sig) {
         Ok(()) => {
             info!(
                 "do_kill() succeeded - id={}, signal={}, pid={}",
@@ -1140,33 +1152,38 @@ fn exec_without_pty(
         cmd.stderr(Stdio::inherit());
     }
 
-    // Apply user/group configuration if present
-    if let Some(ref user) = user_config {
-        let uid_val = user.uid;
-        let gid_val = user.gid;
-        let groups = user.additional_gids.clone();
-        let umask_val = user.umask;
-
+    // Always call setsid() so the exec process gets its own process group
+    // (PGID == PID), matching what the shim's kill() expects when sending
+    // signals to -pid.
+    {
+        let user_cfg_clone = user_config;
         unsafe {
             cmd.pre_exec(move || {
-                // Set supplementary groups first (must be done while privileged)
-                if !groups.is_empty() {
-                    safe_setgroups(&groups)?;
-                }
-
-                // Set GID before UID (privilege dropping order matters)
-                if nix::libc::setgid(gid_val) != 0 {
+                if nix::libc::setsid() < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
 
-                // Set UID (this must be last - irreversible privilege drop)
-                if nix::libc::setuid(uid_val) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
+                // Apply user/group configuration if present
+                if let Some(ref user) = user_cfg_clone {
+                    // Set supplementary groups first (must be done while privileged)
+                    if !user.additional_gids.is_empty() {
+                        safe_setgroups(&user.additional_gids)?;
+                    }
 
-                // Apply umask if specified
-                if let Some(mask) = umask_val {
-                    nix::libc::umask(mask as nix::libc::mode_t);
+                    // Set GID before UID (privilege dropping order matters)
+                    if nix::libc::setgid(user.gid) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+
+                    // Set UID (this must be last - irreversible privilege drop)
+                    if nix::libc::setuid(user.uid) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+
+                    // Apply umask if specified
+                    if let Some(mask) = user.umask {
+                        nix::libc::umask(mask as nix::libc::mode_t);
+                    }
                 }
 
                 Ok(())

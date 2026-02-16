@@ -1,0 +1,43 @@
+# Run a daemon only on nodes with a specific label.
+#
+# This example targets nodes labeled with node-role=login,
+# useful for running services only on login/gateway nodes.
+#
+# Prerequisites:
+#   - Reaper installed on target nodes (see ansible/README.md)
+#   - RuntimeClass applied: kubectl apply -f kubernetes/runtimeclass.yaml
+#   - Target nodes labeled:
+#       kubectl label node <node-name> node-role=login
+#
+# Usage:
+#   kubectl apply -f subset-nodes-daemonset.yaml
+#   kubectl logs -l app=login-monitor --all-containers
+#   kubectl delete daemonset login-monitor
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: login-monitor
+  labels:
+    app: login-monitor
+spec:
+  selector:
+    matchLabels:
+      app: login-monitor
+  template:
+    metadata:
+      labels:
+        app: login-monitor
+    spec:
+      runtimeClassName: reaper-v2
+      nodeSelector:
+        node-role: login
+      containers:
+        - name: monitor
+          image: busybox # Pulled by kubelet but ignored by Reaper
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $(hostname) users=$(who | wc -l) sessions=$(ls /tmp/.X11-unix 2>/dev/null | wc -l)"
+                sleep 30
+              done

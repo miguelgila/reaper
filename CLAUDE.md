@@ -120,6 +120,10 @@ reaper/
 │   ├── integration_io.rs        # FIFO stdout/stderr
 │   ├── integration_exec.rs      # Exec support
 │   └── integration_user_management.rs
+├── examples/                    # Runnable Kind-based demos
+│   ├── scheduling/              # DaemonSet on all/subset of nodes
+│   ├── client-server/           # TCP server + clients across nodes
+│   └── client-server-runas/     # Same as above, running as non-root user
 ├── scripts/
 │   ├── run-integration-tests.sh # Full integration test suite
 │   └── install-reaper.sh        # Installation script (Ansible wrapper)
@@ -260,6 +264,7 @@ See [docs/TODO.md](docs/TODO.md) for planned enhancements:
 ## Documentation Map
 
 - **[README.md](README.md)** - Project overview, quick start, features
+- **[examples/README.md](examples/README.md)** - Runnable Kind-based demos (scheduling, client-server, runAs)
 - **[kubernetes/README.md](kubernetes/README.md)** - Installation and Kubernetes integration guide
 - **[TESTING.md](TESTING.md)** - Testing guide (unit, integration, coverage)
 - **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup, tooling, contributing

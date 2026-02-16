@@ -1,0 +1,36 @@
+# TCP server that responds with hostname and timestamp on each connection.
+# Runs on nodes labeled role=server (one node in the demo cluster).
+#
+# Uses socat, which is available on all Kubernetes nodes (required for
+# kubectl port-forward). Listens on port 9090 and forks a handler per
+# connection.
+#
+# Usage:
+#   kubectl apply -f server-daemonset.yaml
+#   kubectl logs -l app=demo-server -f
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: demo-server
+  labels:
+    app: demo-server
+spec:
+  selector:
+    matchLabels:
+      app: demo-server
+  template:
+    metadata:
+      labels:
+        app: demo-server
+    spec:
+      runtimeClassName: reaper-v2
+      nodeSelector:
+        role: server
+      containers:
+        - name: server
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Server starting on $(hostname)"
+              socat TCP-LISTEN:9090,fork,reuseaddr SYSTEM:'echo "Hello from $(hostname) — $(date -u +%H:%M:%S)"'

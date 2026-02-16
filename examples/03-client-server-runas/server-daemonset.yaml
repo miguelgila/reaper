@@ -1,0 +1,38 @@
+# TCP server running as a non-root user (demo-svc, UID 1500 / GID 1500).
+# Identical to client-server/server-daemonset.yaml but with securityContext
+# to verify Reaper's UID/GID switching.
+#
+# The server prints its effective user on startup to prove privilege drop.
+#
+# Usage:
+#   kubectl apply -f server-daemonset.yaml
+#   kubectl logs -l app=demo-server-runas -f
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: demo-server-runas
+  labels:
+    app: demo-server-runas
+spec:
+  selector:
+    matchLabels:
+      app: demo-server-runas
+  template:
+    metadata:
+      labels:
+        app: demo-server-runas
+    spec:
+      runtimeClassName: reaper-v2
+      nodeSelector:
+        role: server
+      securityContext:
+        runAsUser: 1500
+        runAsGroup: 1500
+      containers:
+        - name: server
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Server starting on $(hostname) as uid=$(id -u) gid=$(id -g) user=$(id -un 2>/dev/null || echo unknown)"
+              socat TCP-LISTEN:9090,fork,reuseaddr SYSTEM:'echo "Hello from $(hostname) as uid=$(id -u) — $(date -u +%H:%M:%S)"'

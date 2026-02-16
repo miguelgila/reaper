@@ -69,7 +69,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: task
-      image: placeholder  # Image field is ignored by Reaper
+      image: busybox  # Pulled by kubelet but ignored by Reaper
       command: ["/bin/sh", "-c"]
       args: ["echo Hello from host && uname -a"]
       env:
@@ -91,7 +91,7 @@ Reaper supports interactive containers:
 
 ```bash
 # Run interactive shell
-kubectl run -it debug --rm --image=placeholder --restart=Never \
+kubectl run -it debug --rm --image=busybox --restart=Never \
   --overrides='{"spec":{"runtimeClassName":"reaper-v2"}}' \
   -- /bin/bash
 
@@ -137,22 +137,22 @@ Kubelet prepares volume content on the host and Reaper bind-mounts it into the s
 
 Reaper implements the Kubernetes Pod API but **ignores or doesn't support certain container-specific fields**:
 
-| Pod Field                                        | Behavior                                                                    |
-| ------------------------------------------------ | --------------------------------------------------------------------------- |
-| `spec.containers[].image`                        | **Ignored** — Set to `placeholder` for clarity. Reaper doesn't pull images. |
-| `spec.containers[].resources.limits`             | **Ignored** — No cgroup enforcement; processes use host resources.          |
-| `spec.containers[].resources.requests`           | **Ignored** — Scheduling hints not used.                                    |
-| `spec.containers[].volumeMounts`                 | ✅ **Supported** — Bind mounts for ConfigMap, Secret, hostPath, emptyDir.   |
-| `spec.containers[].securityContext.capabilities` | **Ignored** — Processes run with host-level capabilities.                   |
-| `spec.containers[].livenessProbe`                | **Ignored** — No health checking.                                           |
-| `spec.containers[].readinessProbe`               | **Ignored** — No readiness checks.                                          |
-| `spec.containers[].command`                      | ✅ **Supported** — Program path on host (must exist).                        |
-| `spec.containers[].args`                         | ✅ **Supported** — Arguments to the command.                                 |
-| `spec.containers[].env`                          | ✅ **Supported** — Environment variables.                                    |
-| `spec.containers[].workingDir`                   | ✅ **Supported** — Working directory for the process.                        |
-| `spec.runtimeClassName`                          | ✅ **Required** — Must be set to `reaper-v2`.                                |
+| Pod Field | Behavior |
+|-----------|----------|
+| `spec.containers[].image` | **Ignored by Reaper** — Kubelet pulls the image before the runtime runs, so a valid image is required. Use a lightweight image like `busybox`. Reaper does not use it. |
+| `spec.containers[].resources.limits` | **Ignored** — No cgroup enforcement; processes use host resources. |
+| `spec.containers[].resources.requests` | **Ignored** — Scheduling hints not used. |
+| `spec.containers[].volumeMounts` | ✅ **Supported** — Bind mounts for ConfigMap, Secret, hostPath, emptyDir. |
+| `spec.containers[].securityContext.capabilities` | **Ignored** — Processes run with host-level capabilities. |
+| `spec.containers[].livenessProbe` | **Ignored** — No health checking. |
+| `spec.containers[].readinessProbe` | **Ignored** — No readiness checks. |
+| `spec.containers[].command` | ✅ **Supported** — Program path on host (must exist). |
+| `spec.containers[].args` | ✅ **Supported** — Arguments to the command. |
+| `spec.containers[].env` | ✅ **Supported** — Environment variables. |
+| `spec.containers[].workingDir` | ✅ **Supported** — Working directory for the process. |
+| `spec.runtimeClassName` | ✅ **Required** — Must be set to `reaper-v2`. |
 
-**Best practice:** Set `image: placeholder` to make it explicit that the image field is not used.
+**Best practice:** Use a small, valid image like `busybox`. Kubelet pulls the image before handing off to the runtime, so the image must exist in a registry. Reaper itself ignores the image entirely — it runs the `command` directly on the host.
 
 ## Architecture Overview
 
@@ -189,8 +189,19 @@ For architecture details, see [docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md) and
 - ✅ **Zombie process reaping** (proper process cleanup)
 - ✅ **End-to-end testing** (validated with kind cluster integration tests)
 
+## Examples
+
+The [examples/](examples/) directory contains runnable demos, each with a `setup.sh` that creates a Kind cluster with Reaper pre-installed:
+
+| Example | Description |
+|---------|-------------|
+| **[scheduling/](examples/scheduling/)** | DaemonSets on all nodes vs. a labeled subset |
+| **[client-server/](examples/client-server/)** | TCP server + clients communicating across nodes via host networking |
+| **[client-server-runas/](examples/client-server-runas/)** | Same as above, but running as a shared non-root user (LDAP-style UID/GID) |
+
 ## Documentation
 
+- **[examples/README.md](examples/README.md)** - Runnable examples with Kind clusters
 - **[kubernetes/README.md](kubernetes/README.md)** - Installation and Kubernetes integration
 - **[TESTING.md](TESTING.md)** - Testing guide (unit tests, integration tests, coverage)
 - **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup, tooling, and contributing

@@ -719,8 +719,10 @@ impl Task for ReaperTask {
                         if pid > 0 {
                             let sig = nix::sys::signal::Signal::try_from(req.signal as i32)
                                 .unwrap_or(nix::sys::signal::Signal::SIGTERM);
+                            // Kill the entire process group so children are also signalled.
+                            // Exec processes call setsid(), so PGID == PID.
                             match nix::sys::signal::kill(
-                                nix::unistd::Pid::from_raw(pid as i32),
+                                nix::unistd::Pid::from_raw(-(pid as i32)),
                                 sig,
                             ) {
                                 Ok(()) => info!("kill() exec - signal sent to pid {}", pid),
@@ -1394,18 +1396,16 @@ async fn main() {
 
     set_child_subreaper();
 
-    // Spawn a background task to periodically reap zombie children.
-    // Because no_reaper=true (required to avoid conflicts with std::process::Command),
-    // the containerd-shim library does NOT install a SIGCHLD handler. Monitoring daemons
-    // forked by reaper-runtime (start/exec) get reparented to us via PR_SET_CHILD_SUBREAPER,
-    // but nobody reaps them when they exit. This background loop ensures zombies are
-    // cleaned up within a few seconds regardless of when they exit.
-    tokio::spawn(async {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            reap_orphaned_children();
-        }
-    });
+    // NOTE: Do NOT run a background reaper loop here. A background task calling
+    // waitpid(-1, WNOHANG) races with std::process::Command::output() which
+    // calls waitpid(child_pid). If the background reaper steals the zombie
+    // before output() can wait on it, output() gets ECHILD (os error 10).
+    //
+    // Instead, orphaned monitoring daemons (reparented via PR_SET_CHILD_SUBREAPER)
+    // are reaped at well-defined points where no concurrent waitpid is active:
+    //   - execute_and_reap_child(): after cmd.output() returns
+    //   - wait() polling loop: every 100-200ms iteration
+    //   - delete(): after runtime delete completes
 
     info!("Calling containerd_shim::run()...");
 

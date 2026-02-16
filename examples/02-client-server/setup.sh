@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+# setup.sh — Create a 4-node Kind cluster for the client-server demo.
+#
+# Topology:
+#   control-plane  (no workloads)
+#   worker         role=server   ← TCP server listens here
+#   worker2        role=client   ← TCP client connects from here
+#   worker3        role=client   ← TCP client connects from here
+#
+# Usage:
+#   ./examples/client-server/setup.sh              # Create cluster
+#   ./examples/client-server/setup.sh --cleanup    # Delete cluster
+#
+# Prerequisites:
+#   - Docker running
+#   - kind installed (https://kind.sigs.k8s.io/)
+#   - Ansible installed (pip install ansible)
+#   - Run from the repository root
+
+set -euo pipefail
+
+CLUSTER_NAME="reaper-client-server-demo"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+KIND_CONFIG="/tmp/reaper-client-server-kind-config.yaml"
+LOG_FILE="/tmp/reaper-client-server-setup.log"
+
+# ---------------------------------------------------------------------------
+# Colors (respects NO_COLOR)
+# ---------------------------------------------------------------------------
+if [[ -n "${NO_COLOR:-}" ]]; then
+  B="" G="" Y="" C="" D="" R=""
+elif [[ -t 1 ]]; then
+  B=$'\033[1m'       # bold
+  G=$'\033[1;32m'    # green
+  Y=$'\033[1;33m'    # yellow
+  C=$'\033[1;36m'    # cyan
+  D=$'\033[0;37m'    # dim
+  R=$'\033[0m'       # reset
+else
+  B="" G="" Y="" C="" D="" R=""
+fi
+
+info()  { echo "${C}==> ${R}${B}$*${R}"; }
+ok()    { echo " ${G}OK${R}  $*"; }
+warn()  { echo " ${Y}!!${R}  $*"; }
+fail()  { echo " ${Y}ERR${R} $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Cleanup mode
+# ---------------------------------------------------------------------------
+if [[ "${1:-}" == "--cleanup" ]]; then
+  info "Deleting Kind cluster '$CLUSTER_NAME'..."
+  kubectl delete configmap server-config --ignore-not-found 2>/dev/null || true
+  kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null && ok "Cluster deleted." || warn "Cluster not found."
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Preflight checks
+# ---------------------------------------------------------------------------
+info "Preflight checks"
+
+command -v docker >/dev/null 2>&1 || fail "docker not found. Install Docker first."
+docker info >/dev/null 2>&1       || fail "Docker daemon not running."
+command -v kind >/dev/null 2>&1   || fail "kind not found. Install from https://kind.sigs.k8s.io/"
+command -v kubectl >/dev/null 2>&1 || fail "kubectl not found."
+command -v ansible-playbook >/dev/null 2>&1 || fail "ansible-playbook not found. Install with: pip install ansible"
+
+if [[ ! -f "$REPO_ROOT/scripts/install-reaper.sh" ]]; then
+  fail "Run this script from the repository root: ./examples/client-server/setup.sh"
+fi
+
+ok "All prerequisites found."
+
+# ---------------------------------------------------------------------------
+# Create Kind config for 4 nodes (1 control-plane + 3 workers)
+# ---------------------------------------------------------------------------
+info "Writing Kind cluster config"
+
+cat > "$KIND_CONFIG" <<'EOF'
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker
+EOF
+
+ok "Config written to $KIND_CONFIG"
+
+# ---------------------------------------------------------------------------
+# Create or reuse cluster
+# ---------------------------------------------------------------------------
+info "Creating Kind cluster '$CLUSTER_NAME' (4 nodes)"
+
+if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
+  warn "Cluster '$CLUSTER_NAME' already exists, reusing."
+else
+  kind create cluster --name "$CLUSTER_NAME" --config "$KIND_CONFIG" 2>&1 | tee "$LOG_FILE"
+  ok "Cluster created."
+fi
+
+# ---------------------------------------------------------------------------
+# Build static musl binaries for Kind nodes
+# ---------------------------------------------------------------------------
+info "Building Reaper binaries for Kind nodes"
+
+cd "$REPO_ROOT"
+
+NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
+NODE_ARCH=$(docker exec "$NODE_ID" uname -m 2>&1) || fail "Cannot detect node architecture"
+
+case "$NODE_ARCH" in
+  aarch64)
+    TARGET_TRIPLE="aarch64-unknown-linux-musl"
+    MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
+    ;;
+  x86_64)
+    TARGET_TRIPLE="x86_64-unknown-linux-musl"
+    MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
+    ;;
+  *)
+    fail "Unsupported architecture: $NODE_ARCH"
+    ;;
+esac
+
+echo "  Architecture: $NODE_ARCH ($TARGET_TRIPLE)"
+
+docker run --rm \
+  -v "$(pwd)":/work \
+  -w /work \
+  "$MUSL_IMAGE" \
+  cargo build --release \
+    --bin containerd-shim-reaper-v2 \
+    --bin reaper-runtime \
+    --target "$TARGET_TRIPLE" \
+  >> "$LOG_FILE" 2>&1 || {
+    fail "Build failed. See $LOG_FILE for details."
+  }
+
+mkdir -p target/release
+cp "target/$TARGET_TRIPLE/release/containerd-shim-reaper-v2" target/release/
+cp "target/$TARGET_TRIPLE/release/reaper-runtime" target/release/
+
+ok "Binaries built."
+
+# ---------------------------------------------------------------------------
+# Install Reaper on all nodes via Ansible
+# ---------------------------------------------------------------------------
+info "Installing Reaper runtime on all nodes"
+
+./scripts/install-reaper.sh --kind "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1 || {
+  fail "Ansible install failed. See $LOG_FILE for details."
+}
+
+ok "Reaper installed on all nodes."
+
+# ---------------------------------------------------------------------------
+# Wait for nodes to be ready
+# ---------------------------------------------------------------------------
+info "Waiting for all nodes to be Ready"
+
+kubectl wait --for=condition=Ready node --all --timeout=120s >> "$LOG_FILE" 2>&1 || {
+  fail "Nodes did not become Ready. See $LOG_FILE"
+}
+
+ok "All nodes Ready."
+
+# ---------------------------------------------------------------------------
+# Apply node labels
+# ---------------------------------------------------------------------------
+info "Applying node labels"
+
+WORKERS=($(kubectl get nodes --no-headers -o custom-columns=NAME:.metadata.name | grep worker | sort))
+
+if [[ ${#WORKERS[@]} -lt 3 ]]; then
+  fail "Expected at least 3 worker nodes, found ${#WORKERS[@]}"
+fi
+
+# First worker is the server, rest are clients
+kubectl label node "${WORKERS[0]}" role=server --overwrite >> "$LOG_FILE" 2>&1
+ok "${WORKERS[0]} labeled role=server"
+
+for i in 1 2; do
+  kubectl label node "${WORKERS[$i]}" role=client --overwrite >> "$LOG_FILE" 2>&1
+  ok "${WORKERS[$i]} labeled role=client"
+done
+
+# ---------------------------------------------------------------------------
+# Create ConfigMap with server node IP
+# ---------------------------------------------------------------------------
+info "Discovering server node IP"
+
+SERVER_NODE="${WORKERS[0]}"
+SERVER_IP=$(kubectl get node "$SERVER_NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+
+if [[ -z "$SERVER_IP" ]]; then
+  fail "Could not determine internal IP of server node $SERVER_NODE"
+fi
+
+ok "Server node IP: $SERVER_IP"
+
+kubectl delete configmap server-config --ignore-not-found >> "$LOG_FILE" 2>&1
+kubectl create configmap server-config --from-literal=SERVER_IP="$SERVER_IP" >> "$LOG_FILE" 2>&1
+ok "ConfigMap server-config created (SERVER_IP=$SERVER_IP)"
+
+# ---------------------------------------------------------------------------
+# Verify RuntimeClass
+# ---------------------------------------------------------------------------
+info "Verifying RuntimeClass"
+
+for i in $(seq 1 15); do
+  if kubectl get runtimeclass reaper-v2 &>/dev/null; then
+    ok "RuntimeClass reaper-v2 available."
+    break
+  fi
+  sleep 1
+done
+
+kubectl get runtimeclass reaper-v2 &>/dev/null || fail "RuntimeClass reaper-v2 not found"
+
+# ---------------------------------------------------------------------------
+# Ensure socat is available on worker nodes
+# ---------------------------------------------------------------------------
+info "Ensuring socat is available on worker nodes"
+
+for worker in "${WORKERS[@]}"; do
+  if docker exec "$worker" which socat >/dev/null 2>&1; then
+    ok "$worker already has socat"
+  else
+    echo "  Installing socat on $worker..."
+    docker exec "$worker" sh -c "apt-get update -qq && apt-get install -y -qq socat" >> "$LOG_FILE" 2>&1 || {
+      fail "Failed to install socat on $worker. See $LOG_FILE"
+    }
+    ok "$worker socat installed"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+echo ""
+echo "${C}========================================${R}"
+echo "${B}Cluster ready: $CLUSTER_NAME${R}"
+echo "${C}========================================${R}"
+echo ""
+
+echo "${B}Nodes:${R}"
+kubectl get nodes -o custom-columns=\
+'NAME:.metadata.name,STATUS:.status.conditions[-1].type,ROLE:.metadata.labels.role,IP:.status.addresses[0].address' \
+  --no-headers 2>/dev/null | while IFS= read -r line; do
+  echo "  $line"
+done
+
+echo ""
+echo "${B}Server:${R}"
+echo "  Node: $SERVER_NODE"
+echo "  IP:   $SERVER_IP"
+echo "  Port: 9090"
+
+echo ""
+echo "${B}ConfigMap:${R}"
+echo "  $(kubectl get configmap server-config -o jsonpath='{.data}' 2>/dev/null)"
+
+echo ""
+echo "${C}────────────────────────────────────────${R}"
+echo ""
+echo "Run the demo:"
+echo ""
+echo "  ${B}# 1. Start the server${R}"
+echo "  kubectl apply -f examples/client-server/server-daemonset.yaml"
+echo ""
+echo "  ${B}# 2. Start the clients${R}"
+echo "  kubectl apply -f examples/client-server/client-daemonset.yaml"
+echo ""
+echo "  ${B}# 3. Watch the clients receive responses${R}"
+echo "  kubectl logs -l app=demo-client --all-containers --prefix -f"
+echo ""
+echo "  ${B}# 4. Check server logs${R}"
+echo "  kubectl logs -l app=demo-server -f"
+echo ""
+echo "  ${B}# Clean up${R}"
+echo "  kubectl delete -f examples/client-server/"
+echo "  ./examples/client-server/setup.sh --cleanup"
+echo ""
+echo "Log file: $LOG_FILE"
