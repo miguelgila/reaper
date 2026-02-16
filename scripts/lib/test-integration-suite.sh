@@ -647,6 +647,69 @@ YAML
   fi
 }
 
+test_process_group_kill() {
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-pgkill-test
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/sh", "-c", "sleep 300 & sleep 300 & echo pgkill-children-started && wait"]
+YAML
+
+  wait_for_pod_phase reaper-pgkill-test Running 60 2 || {
+    log_error "Process group kill pod did not reach Running phase"
+    dump_pod_diagnostics reaper-pgkill-test
+    return 1
+  }
+
+  # Verify child processes are running on the node
+  sleep 2
+  local before_count
+  before_count=$(docker exec "$NODE_ID" sh -c "ps aux | grep 'sleep 300' | grep -v grep | wc -l" 2>/dev/null || echo "0")
+  log_verbose "Sleep processes before kill: $before_count"
+
+  if [[ "$before_count" -lt 2 ]]; then
+    log_error "Expected at least 2 'sleep 300' processes, found: $before_count"
+    dump_pod_diagnostics reaper-pgkill-test
+    return 1
+  fi
+
+  # Delete the pod (triggers SIGTERM to process group)
+  kubectl delete pod reaper-pgkill-test --grace-period=5 >> "$LOG_FILE" 2>&1 || true
+
+  # Wait for pod to be fully gone
+  for i in $(seq 1 15); do
+    if ! kubectl get pod reaper-pgkill-test &>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+
+  # Give processes a moment to exit after signal
+  sleep 2
+
+  # Verify no orphaned sleep processes remain
+  local after_count
+  after_count=$(docker exec "$NODE_ID" sh -c "ps aux | grep 'sleep 300' | grep -v grep | wc -l" 2>/dev/null || echo "0")
+  log_verbose "Sleep processes after kill: $after_count"
+
+  if [[ "$after_count" -gt 0 ]]; then
+    log_error "Found $after_count orphaned 'sleep 300' processes after pod deletion"
+    docker exec "$NODE_ID" ps aux 2>/dev/null | grep 'sleep 300' | grep -v grep | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    return 1
+  fi
+
+  log_verbose "Process group kill verified: all children reaped"
+}
+
 test_stderr_capture() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -825,6 +888,7 @@ phase_integration_tests() {
   run_test test_volume_rerun    "Volume mount rerun (stale cleanup)" --hard-fail
   run_test test_exec_support     "kubectl exec support"          --soft-fail
   run_test test_nonzero_exit_code "Non-zero exit code propagation" --hard-fail
+  run_test test_process_group_kill "Process group kill on pod delete" --hard-fail
   run_test test_stderr_capture     "stderr capture via FIFO"        --hard-fail
   run_test test_env_vars          "Environment variable passing"   --hard-fail
   run_test test_command_not_found "Command not found (failed pod)" --hard-fail
