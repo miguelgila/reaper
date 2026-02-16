@@ -1139,6 +1139,42 @@ YAML
   log_verbose "Non-zero exit code propagation verified: exitCode=$exit_code"
 }
 
+test_exec_nonexistent_binary() {
+  # Reuse the reaper-exec-test pod if it's still running, otherwise create it
+  if ! kubectl get pod reaper-exec-test &>/dev/null; then
+    cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-exec-test
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["sleep", "60"]
+YAML
+    wait_for_pod_phase reaper-exec-test Running 60 1 || {
+      log_error "Exec nonexistent binary test: pod did not reach Running phase"
+      dump_pod_diagnostics reaper-exec-test
+      return 1
+    }
+  fi
+
+  local exec_rc=0
+  kubectl exec reaper-exec-test -- /nonexistent/binary >> "$LOG_FILE" 2>&1 || exec_rc=$?
+  log_verbose "Exec nonexistent binary exit code: $exec_rc"
+
+  if [[ "$exec_rc" -eq 0 ]]; then
+    log_error "Expected non-zero exit code for nonexistent binary exec, got: 0"
+    dump_pod_diagnostics reaper-exec-test
+    return 1
+  fi
+
+  log_verbose "Exec nonexistent binary handled correctly: exit code=$exec_rc"
+}
+
 test_readonly_volume_rejection() {
   # Ensure the secret exists
   kubectl create secret generic reaper-test-secret \
@@ -1224,6 +1260,7 @@ phase_integration_tests() {
   run_test test_stderr_capture     "stderr capture via FIFO"        --hard-fail
   run_test test_env_vars          "Environment variable passing"   --hard-fail
   run_test test_command_not_found "Command not found (failed pod)" --hard-fail
+  run_test test_exec_nonexistent_binary "Exec nonexistent binary"         --hard-fail
   run_test test_readonly_volume_rejection "Read-only volume write rejection" --hard-fail
 
   # Cleanup test pods (before defunct check so pods are terminated)
