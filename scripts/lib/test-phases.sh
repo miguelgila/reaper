@@ -166,6 +166,7 @@ phase_readiness() {
     reaper-uid-gid-test reaper-privdrop-test \
     reaper-configmap-vol reaper-secret-vol reaper-emptydir-vol reaper-hostpath-vol \
     reaper-exit-code-test reaper-cmd-not-found reaper-env-test \
+    reaper-stderr-test \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true

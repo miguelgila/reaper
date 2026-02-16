@@ -647,6 +647,48 @@ YAML
   fi
 }
 
+test_stderr_capture() {
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-stderr-test
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/sh", "-c", "echo stdout-line && echo stderr-line >&2"]
+YAML
+
+  wait_for_pod_phase reaper-stderr-test Succeeded 60 2 || {
+    log_error "stderr capture pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-stderr-test
+    return 1
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-stderr-test 2>&1 || echo "(failed to retrieve logs)")
+  log_verbose "stderr test logs: $logs"
+
+  if [[ "$logs" != *"stdout-line"* ]]; then
+    log_error "Expected 'stdout-line' in logs, got:"
+    echo "$logs" | while IFS= read -r line; do log_error "  $line"; done
+    dump_pod_diagnostics reaper-stderr-test
+    return 1
+  fi
+
+  if [[ "$logs" != *"stderr-line"* ]]; then
+    log_error "Expected 'stderr-line' in logs (stderr should be captured), got:"
+    echo "$logs" | while IFS= read -r line; do log_error "  $line"; done
+    dump_pod_diagnostics reaper-stderr-test
+    return 1
+  fi
+
+  log_verbose "stderr capture verified"
+}
+
 test_env_vars() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -783,6 +825,7 @@ phase_integration_tests() {
   run_test test_volume_rerun    "Volume mount rerun (stale cleanup)" --hard-fail
   run_test test_exec_support     "kubectl exec support"          --soft-fail
   run_test test_nonzero_exit_code "Non-zero exit code propagation" --hard-fail
+  run_test test_stderr_capture     "stderr capture via FIFO"        --hard-fail
   run_test test_env_vars          "Environment variable passing"   --hard-fail
   run_test test_command_not_found "Command not found (failed pod)" --hard-fail
 
@@ -792,6 +835,7 @@ phase_integration_tests() {
     reaper-privdrop-test reaper-configmap-vol reaper-secret-vol \
     reaper-emptydir-vol reaper-hostpath-vol reaper-exec-test \
     reaper-exit-code-test reaper-cmd-not-found reaper-env-test \
+    reaper-stderr-test \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true
