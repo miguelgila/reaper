@@ -1139,6 +1139,61 @@ YAML
   log_verbose "Non-zero exit code propagation verified: exitCode=$exit_code"
 }
 
+test_readonly_volume_rejection() {
+  # Ensure the secret exists
+  kubectl create secret generic reaper-test-secret \
+    --from-literal=username='reaper-user' \
+    --from-literal=password='secret-volume-works' \
+    --dry-run=client -o yaml | kubectl apply -f - >> "$LOG_FILE" 2>&1
+
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-ro-vol-test
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  volumes:
+    - name: creds
+      secret:
+        secretName: reaper-test-secret
+  containers:
+    - name: test
+      image: busybox
+      command: ["/bin/sh", "-c", "touch /creds/newfile 2>&1; echo rc=$?"]
+      volumeMounts:
+        - name: creds
+          mountPath: /creds
+          readOnly: true
+YAML
+
+  wait_for_pod_phase reaper-ro-vol-test Succeeded 60 2 || {
+    # Pod might reach Failed if touch causes non-zero exit
+    local phase
+    phase=$(kubectl get pod reaper-ro-vol-test -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    if [[ "$phase" != "Failed" ]]; then
+      log_error "Read-only volume test pod did not reach Succeeded or Failed phase (phase=$phase)"
+      dump_pod_diagnostics reaper-ro-vol-test
+      return 1
+    fi
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-ro-vol-test 2>&1 || echo "(failed to retrieve logs)")
+  log_verbose "Read-only volume test logs: $logs"
+
+  # The touch command should fail — we expect either a "Read-only" error
+  # or a non-zero rc= in the output
+  if [[ "$logs" == *"rc=0"* ]]; then
+    log_error "Write to read-only volume succeeded unexpectedly"
+    dump_pod_diagnostics reaper-ro-vol-test
+    return 1
+  fi
+
+  log_verbose "Read-only volume write rejection verified"
+}
+
 # ---------------------------------------------------------------------------
 # Phase 4: Integration test orchestrator
 # ---------------------------------------------------------------------------
@@ -1169,6 +1224,7 @@ phase_integration_tests() {
   run_test test_stderr_capture     "stderr capture via FIFO"        --hard-fail
   run_test test_env_vars          "Environment variable passing"   --hard-fail
   run_test test_command_not_found "Command not found (failed pod)" --hard-fail
+  run_test test_readonly_volume_rejection "Read-only volume write rejection" --hard-fail
 
   # Cleanup test pods (before defunct check so pods are terminated)
   kubectl delete pod reaper-dns-check reaper-integration-test \
@@ -1177,6 +1233,7 @@ phase_integration_tests() {
     reaper-emptydir-vol reaper-hostpath-vol reaper-exec-test \
     reaper-exit-code-test reaper-cmd-not-found reaper-env-test \
     reaper-stderr-test reaper-large-output reaper-cwd-test \
+    reaper-ro-vol-test \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true
