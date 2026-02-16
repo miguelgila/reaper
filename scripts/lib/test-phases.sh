@@ -14,6 +14,8 @@ phase_cargo_tests() {
   cargo test --test integration_basic_binary 2>&1 | tee -a "$LOG_FILE"
   cargo test --test integration_user_management 2>&1 | tee -a "$LOG_FILE"
   cargo test --test integration_shim 2>&1 | tee -a "$LOG_FILE"
+  cargo test --test integration_io 2>&1 | tee -a "$LOG_FILE"
+  cargo test --test integration_exec 2>&1 | tee -a "$LOG_FILE"
 
   log_status "All Rust integration tests passed."
   ci_group_end
