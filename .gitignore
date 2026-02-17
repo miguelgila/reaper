@@ -9,6 +9,7 @@ target-linux/
 .ignored/
 .claude/
 cobertura.xml
+.ignore/
 
 # Ansible temporary files
 *.retry
