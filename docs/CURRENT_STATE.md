@@ -157,8 +157,6 @@ match unsafe { fork() }? {
 - `tests/integration_shim.rs` - Shim protocol tests
 
 ### Documentation
-- `.github/copilot-instructions.md` - GitHub Copilot context
-- `.github/claude-instructions.md` - Claude AI context
 - `docs/SHIM_ARCHITECTURE.md` - Shim v2 protocol details
 - `docs/SHIMV2_DESIGN.md` - Implementation milestones
 - `docs/NOTES_FUTURE.md` - Future enhancements
@@ -166,7 +164,7 @@ match unsafe { fork() }? {
 
 ### Deployment & Testing
 - `scripts/run-integration-tests.sh` - Automated integration test suite (kind-based)
-- `kubernetes/runtimeclass.yaml` - RuntimeClass and example pod
+- `deploy/kubernetes/runtimeclass.yaml` - RuntimeClass and example pod
 
 ## State Management
 
@@ -228,7 +226,7 @@ Reaper integrates with Kubernetes logging via FIFO redirection:
 
 ## Building and Testing
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for development setup and [TESTING.md](../TESTING.md) for comprehensive testing documentation.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for development setup and [TESTING.md](TESTING.md) for comprehensive testing documentation.
 
 ## Testing Checklist
 
@@ -324,9 +322,9 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for development setup and [TESTING.md](../T
 - `src/bin/containerd-shim-reaper-v2/main.rs` (especially `Task` trait impl)
 
 **For deployment & testing:**
-- `kubernetes/runtimeclass.yaml` - RuntimeClass definition
+- `deploy/kubernetes/runtimeclass.yaml` - RuntimeClass definition
 - `scripts/run-integration-tests.sh` - Integration test harness
-- See [TESTING.md](../TESTING.md) and [DEVELOPMENT.md](DEVELOPMENT.md)
+- See [TESTING.md](TESTING.md) and [DEVELOPMENT.md](DEVELOPMENT.md)
 
 ## References
 

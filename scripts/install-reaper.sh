@@ -19,7 +19,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-ANSIBLE_DIR="$PROJECT_ROOT/ansible"
+ANSIBLE_DIR="$PROJECT_ROOT/deploy/ansible"
 
 # ---------------------------------------------------------------------------
 # State
@@ -79,7 +79,7 @@ Examples:
   $0 --kind my-cluster
 
   # Deploy to production cluster
-  $0 --inventory ansible/inventory.ini
+  $0 --inventory deploy/ansible/inventory.ini
 
   # Dry run on Kind
   $0 --kind test --dry-run
@@ -269,7 +269,7 @@ create_runtimeclass() {
   fi
 
   log_info "Creating RuntimeClass..."
-  if kubectl apply -f "$PROJECT_ROOT/kubernetes/runtimeclass.yaml"; then
+  if kubectl apply -f "$PROJECT_ROOT/deploy/kubernetes/runtimeclass.yaml"; then
     log_success "RuntimeClass created"
   else
     log_warn "RuntimeClass creation failed (may already exist)"
@@ -308,7 +308,7 @@ main() {
   log_info ""
   log_info "Next steps:"
   log_info "  1. Verify: kubectl get runtimeclass reaper-v2"
-  log_info "  2. Test: kubectl apply -f kubernetes/runtimeclass.yaml"
+  log_info "  2. Test: kubectl apply -f deploy/kubernetes/runtimeclass.yaml"
   log_info "  3. Check logs: kubectl logs reaper-example"
 }
 

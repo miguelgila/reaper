@@ -8,8 +8,6 @@ on:
       - "docs/**"
       - "LICENSE*"
       - ".gitignore"
-      - ".github/copilot-instructions.md"
-      - ".github/claude-instructions.md"
   pull_request:
     branches: [main]
     paths-ignore:
@@ -17,8 +15,6 @@ on:
       - "docs/**"
       - "LICENSE*"
       - ".gitignore"
-      - ".github/copilot-instructions.md"
-      - ".github/claude-instructions.md"
 
 env:
   CARGO_TERM_COLOR: always

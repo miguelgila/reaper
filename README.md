@@ -74,14 +74,14 @@ pip install ansible  # or: brew install ansible
 
 **For production clusters:**
 ```bash
-# Create inventory file (see ansible/inventory.ini.example)
+# Create inventory file (see deploy/ansible/inventory.ini.example)
 vim inventory.ini
 
 # Install via Ansible
-ansible-playbook -i inventory.ini ansible/install-reaper.yml
+ansible-playbook -i inventory.ini deploy/ansible/install-reaper.yml
 ```
 
-See [kubernetes/README.md](kubernetes/README.md) for detailed installation instructions.
+See [deploy/kubernetes/README.md](deploy/kubernetes/README.md) for detailed installation instructions.
 
 ### 2. Run a Command on the Host
 
@@ -233,8 +233,8 @@ The [examples/](examples/) directory contains runnable demos, each with a `setup
 ## Documentation
 
 - **[examples/README.md](examples/README.md)** - Runnable examples with Kind clusters
-- **[kubernetes/README.md](kubernetes/README.md)** - Installation and Kubernetes integration
-- **[TESTING.md](TESTING.md)** - Testing guide (unit tests, integration tests, coverage)
+- **[deploy/kubernetes/README.md](deploy/kubernetes/README.md)** - Installation and Kubernetes integration
+- **[docs/TESTING.md](docs/TESTING.md)** - Testing guide (unit tests, integration tests, coverage)
 - **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup, tooling, and contributing
 - **[docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md)** - Shim v2 protocol implementation details
 - **[docs/SHIM_ARCHITECTURE.md](docs/SHIM_ARCHITECTURE.md)** - Architecture deep-dive
@@ -257,7 +257,7 @@ cargo test
 # Full integration tests (Kubernetes + unit tests)
 ./scripts/run-integration-tests.sh
 
-# For complete testing guidance, see TESTING.md
+# For complete testing guidance, see docs/TESTING.md
 ```
 
 ## Configuration

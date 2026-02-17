@@ -2,7 +2,7 @@
 # Ansible playbook for rolling back Reaper runtime installation
 #
 # Usage:
-#   ansible-playbook -i inventory.ini ansible/rollback-reaper.yml
+#   ansible-playbook -i inventory.ini deploy/ansible/rollback-reaper.yml
 #
 # This playbook:
 # - Removes Reaper binaries from /usr/local/bin/
@@ -142,4 +142,4 @@
           - "2. Verify no pods using Reaper runtime"
           - "3. Clean up any remaining test pods"
           - ""
-          - "To reinstall: ansible-playbook -i inventory.ini ansible/install-reaper.yml"
+          - "To reinstall: ansible-playbook -i inventory.ini deploy/ansible/install-reaper.yml"

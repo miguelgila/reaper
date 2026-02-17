@@ -52,7 +52,7 @@ test-unit: ## Run only unit tests for reaper-runtime
 
 coverage: ## Run tarpaulin in Docker (same as CI, with caching)
 	@echo "==> Building Docker image $(DOCKER_IMAGE)..."
-	docker build -t $(DOCKER_IMAGE) .
+	docker build -t $(DOCKER_IMAGE) -f scripts/Dockerfile.coverage .
 	@echo "==> Ensuring cargo cache volume $(COVERAGE_VOL)..."
 	docker volume create $(COVERAGE_VOL) 2>/dev/null || true
 	@echo "==> Running tarpaulin (Linux)..."

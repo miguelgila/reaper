@@ -2,7 +2,7 @@
 
 This directory contains configuration files for integrating the Reaper containerd shim v2 with Kubernetes.
 
-**For testing and integration workflows, see [TESTING.md](../TESTING.md).**
+**For testing and integration workflows, see [TESTING.md](../../docs/TESTING.md).**
 
 ## Quick Start
 
@@ -23,23 +23,23 @@ Use the Ansible-based installer for both Kind and production clusters:
 ./scripts/run-integration-tests.sh
 ```
 
-See [TESTING.md](../TESTING.md) for full details.
+See [TESTING.md](../../docs/TESTING.md) for full details.
 
 ### For Production Clusters
 
 ```bash
 # 1. Create inventory
-cp ansible/inventory.ini.example ansible/inventory.ini
-# Edit ansible/inventory.ini with your nodes
+cp deploy/ansible/inventory.ini.example deploy/ansible/inventory.ini
+# Edit deploy/ansible/inventory.ini with your nodes
 
 # 2. Test connectivity
-ansible -i ansible/inventory.ini k8s_nodes -m ping
+ansible -i deploy/ansible/inventory.ini k8s_nodes -m ping
 
 # 3. Install using wrapper script
-./scripts/install-reaper.sh --inventory ansible/inventory.ini
+./scripts/install-reaper.sh --inventory deploy/ansible/inventory.ini
 
 # Or call Ansible directly
-# ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
+# ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/install-reaper.yml
 ```
 
 See [ansible/README.md](../ansible/README.md) for complete Ansible documentation.
@@ -66,7 +66,7 @@ See [ansible/README.md](../ansible/README.md) for complete Ansible documentation
 ./scripts/install-reaper.sh --kind <cluster-name>
 
 # Production clusters
-./scripts/install-reaper.sh --inventory ansible/inventory.ini
+./scripts/install-reaper.sh --inventory deploy/ansible/inventory.ini
 ```
 
 See [ansible/README.md](../ansible/README.md) for:
@@ -125,7 +125,7 @@ sudo systemctl restart containerd
 Apply the RuntimeClass:
 
 ```bash
-kubectl apply -f kubernetes/runtimeclass.yaml
+kubectl apply -f deploy/kubernetes/runtimeclass.yaml
 ```
 
 #### 4. Test a Pod
@@ -141,7 +141,7 @@ Expected output: `Hello from Reaper runtime!`
 
 ## Integration Testing
 
-See [TESTING.md](../TESTING.md) for:
+See [TESTING.md](../../docs/TESTING.md) for:
 - Running the full integration test suite
 - Available test options
 - Troubleshooting guide
@@ -158,8 +158,8 @@ By default, all Reaper workloads share a mount namespace with an overlay filesys
 - Host filesystem is protected from modifications
 - Overlay is mandatory—workloads cannot run without filesystem isolation
 
-See [docs/OVERLAY_DESIGN.md](../docs/OVERLAY_DESIGN.md) for full architecture details.
+See [docs/OVERLAY_DESIGN.md](../../docs/OVERLAY_DESIGN.md) for full architecture details.
 
 ## Troubleshooting
 
-For troubleshooting guidance, see [TESTING.md](../TESTING.md#troubleshooting).
+For troubleshooting guidance, see [TESTING.md](../../docs/TESTING.md#troubleshooting).

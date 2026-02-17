@@ -130,15 +130,18 @@ reaper/
 ├── scripts/
 │   ├── run-integration-tests.sh # Full integration test suite
 │   └── install-reaper.sh        # Installation script (Ansible wrapper)
-├── ansible/
-│   └── install-reaper.yml       # Deployment playbook
-├── kubernetes/
-│   └── runtimeclass.yaml        # RuntimeClass definition
+├── deploy/
+│   ├── ansible/
+│   │   └── install-reaper.yml   # Deployment playbook
+│   └── kubernetes/
+│       └── runtimeclass.yaml    # RuntimeClass definition
 └── docs/
     ├── SHIMV2_DESIGN.md         # Shim v2 protocol implementation
     ├── SHIM_ARCHITECTURE.md     # Architecture deep-dive
     ├── OVERLAY_DESIGN.md        # Overlay filesystem design
     ├── DEVELOPMENT.md           # Development guide
+    ├── TESTING.md               # Testing guide
+    ├── CONTRIBUTING.md          # Contributing guide
     └── CURRENT_STATE.md         # ⚠️ OUTDATED - refer to SHIMV2_DESIGN.md
 ```
 
@@ -154,7 +157,7 @@ reaper/
 
 **For testing:**
 - [scripts/run-integration-tests.sh](scripts/run-integration-tests.sh) - full test suite
-- [TESTING.md](TESTING.md) - comprehensive testing guide
+- [docs/TESTING.md](docs/TESTING.md) - comprehensive testing guide
 
 ## CI/CD and Integration Testing
 
@@ -174,7 +177,7 @@ Key environment variables:
 Files involved:
 - [scripts/run-integration-tests.sh](scripts/run-integration-tests.sh): Detects CI mode and sets `REAPER_BINARY_DIR`
 - [scripts/install-reaper.sh](scripts/install-reaper.sh): Accepts `REAPER_BINARY_DIR` and passes it to Ansible
-- [ansible/install-reaper.yml](ansible/install-reaper.yml): Uses `local_binary_dir` variable (set from `REAPER_BINARY_DIR`)
+- [deploy/ansible/install-reaper.yml](deploy/ansible/install-reaper.yml): Uses `local_binary_dir` variable (set from `REAPER_BINARY_DIR`)
 
 ### Building Binaries for Integration Tests
 
@@ -268,8 +271,8 @@ See [docs/TODO.md](docs/TODO.md) for planned enhancements:
 
 - **[README.md](README.md)** - Project overview, quick start, features
 - **[examples/README.md](examples/README.md)** - Runnable Kind-based demos (scheduling, client-server, runAs, volumes)
-- **[kubernetes/README.md](kubernetes/README.md)** - Installation and Kubernetes integration guide
-- **[TESTING.md](TESTING.md)** - Testing guide (unit, integration, coverage)
+- **[deploy/kubernetes/README.md](deploy/kubernetes/README.md)** - Installation and Kubernetes integration guide
+- **[docs/TESTING.md](docs/TESTING.md)** - Testing guide (unit, integration, coverage)
 - **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup, tooling, contributing
 - **[docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md)** - Shim v2 protocol implementation (authoritative)
 - **[docs/SHIM_ARCHITECTURE.md](docs/SHIM_ARCHITECTURE.md)** - Architecture deep-dive

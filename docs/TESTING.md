@@ -260,9 +260,11 @@ reaper/
 │   ├── integration_io.rs
 │   ├── integration_exec.rs
 │   └── integration_overlay.rs
-├── kubernetes/                       [K8s cluster config examples]
+├── deploy/
+│   └── kubernetes/                   [K8s cluster config examples]
 ├── examples/                         [Runnable Kind-based demos]
-└── TESTING.md                        [This file]
+└── docs/
+    └── TESTING.md                    [This file]
 ```
 
 ## CI Integration
@@ -287,6 +289,6 @@ The following scripts have been consolidated into `run-integration-tests.sh` and
 
 ## Next Steps
 
-- Read the [Architecture](docs/SHIM_ARCHITECTURE.md) documentation for deeper understanding
-- Check [Overlay Design](docs/OVERLAY_DESIGN.md) for filesystem isolation details
-- See [SHIMV2 Design](docs/SHIMV2_DESIGN.md) for runtime internals
+- Read the [Architecture](SHIM_ARCHITECTURE.md) documentation for deeper understanding
+- Check [Overlay Design](OVERLAY_DESIGN.md) for filesystem isolation details
+- See [SHIMV2 Design](SHIMV2_DESIGN.md) for runtime internals
