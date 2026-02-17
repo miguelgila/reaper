@@ -43,7 +43,7 @@ The test orchestration script for CI/CD. Orchestrates:
 ./scripts/run-integration-tests.sh --verbose      # Print debug output to stdout
 ```
 
-See [TESTING.md](../TESTING.md) for full documentation.
+See [TESTING.md](../docs/TESTING.md) for full documentation.
 
 ## Helper Scripts
 
@@ -83,4 +83,4 @@ Defines the Reaper runtime class and shim plugin configuration. Used by `configu
 
 ## Documentation
 
-For complete testing and development guidance, see [TESTING.md](../TESTING.md).
+For complete testing and development guidance, see [TESTING.md](../docs/TESTING.md).

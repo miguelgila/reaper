@@ -1,8 +1,8 @@
 # Run a host-monitoring daemon on every node in the cluster.
 #
 # Prerequisites:
-#   - Reaper installed on all target nodes (see ansible/README.md)
-#   - RuntimeClass applied: kubectl apply -f kubernetes/runtimeclass.yaml
+#   - Reaper installed on all target nodes (see deploy/ansible/README.md)
+#   - RuntimeClass applied: kubectl apply -f deploy/kubernetes/runtimeclass.yaml
 #
 # Usage:
 #   kubectl apply -f all-nodes-daemonset.yaml

@@ -43,8 +43,8 @@ phase_setup() {
     log_status "Kind cluster '$CLUSTER_NAME' already exists, reusing."
   else
     log_status "Creating kind cluster '$CLUSTER_NAME'..."
-    if [[ -f "kind-config.yaml" ]]; then
-      kind create cluster --name "$CLUSTER_NAME" --config kind-config.yaml >> "$LOG_FILE" 2>&1
+    if [[ -f "scripts/kind-config.yaml" ]]; then
+      kind create cluster --name "$CLUSTER_NAME" --config scripts/kind-config.yaml >> "$LOG_FILE" 2>&1
     else
       kind create cluster --name "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1
     fi

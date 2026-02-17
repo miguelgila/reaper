@@ -283,7 +283,7 @@ tracing-subscriber = "0.3"
 
 This orchestrates all testing including Rust unit tests, Kubernetes infrastructure setup, and comprehensive integration tests (DNS, overlay, host protection, UID/GID switching, privilege dropping, zombies, exec, etc.).
 
-For options and troubleshooting, see [TESTING.md](../TESTING.md).
+For options and troubleshooting, see [TESTING.md](TESTING.md).
 
 ## Security Features
 

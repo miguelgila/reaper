@@ -2,7 +2,7 @@
 # Ansible playbook for deploying Reaper runtime to Kubernetes cluster nodes
 #
 # Usage:
-#   ansible-playbook -i inventory.ini ansible/install-reaper.yml
+#   ansible-playbook -i inventory.ini deploy/ansible/install-reaper.yml
 #
 # This playbook:
 # - Detects node architecture
@@ -222,8 +222,8 @@
           - "Reaper runtime installation complete on all nodes!"
           - ""
           - "Next steps:"
-          - "1. Create RuntimeClass: kubectl apply -f kubernetes/runtimeclass.yaml"
-          - "2. Deploy test pod: kubectl apply -f kubernetes/runtimeclass.yaml"
+          - "1. Create RuntimeClass: kubectl apply -f deploy/kubernetes/runtimeclass.yaml"
+          - "2. Deploy test pod: kubectl apply -f deploy/kubernetes/runtimeclass.yaml"
           - "3. Verify: kubectl logs reaper-example"
           - ""
-          - "To rollback: ansible-playbook -i inventory.ini ansible/rollback-reaper.yml"
+          - "To rollback: ansible-playbook -i inventory.ini deploy/ansible/rollback-reaper.yml"

@@ -14,7 +14,7 @@ IMAGE_NAME=reaper-dev
 CACHE_VOL=reaper-cargo-cache
 
 echo "Building image ${IMAGE_NAME}..."
-docker build -q -t "${IMAGE_NAME}" .
+docker build -q -t "${IMAGE_NAME}" -f scripts/Dockerfile.coverage .
 
 # Create persistent cache volume for cargo registry (skip if exists)
 docker volume create "${CACHE_VOL}" > /dev/null 2>&1 || true

@@ -41,27 +41,27 @@ Ansible provides a unified, production-ready deployment method for both Kind and
 
 1. **Generate inventory automatically**:
    ```bash
-   ./scripts/generate-kind-inventory.sh <cluster-name> ansible/inventory-kind.ini
+   ./scripts/generate-kind-inventory.sh <cluster-name> deploy/ansible/inventory-kind.ini
    ```
 
 2. **Test connectivity**:
    ```bash
-   ansible -i ansible/inventory-kind.ini k8s_nodes -m ping
+   ansible -i deploy/ansible/inventory-kind.ini k8s_nodes -m ping
    ```
 
 3. **Run installation playbook**:
    ```bash
-   ansible-playbook -i ansible/inventory-kind.ini ansible/install-reaper.yml
+   ansible-playbook -i deploy/ansible/inventory-kind.ini deploy/ansible/install-reaper.yml
    ```
 
 4. **Create RuntimeClass**:
    ```bash
-   kubectl apply -f kubernetes/runtimeclass.yaml
+   kubectl apply -f deploy/kubernetes/runtimeclass.yaml
    ```
 
 5. **Verify**:
    ```bash
-   kubectl apply -f kubernetes/runtimeclass.yaml  # deploys test pod
+   kubectl apply -f deploy/kubernetes/runtimeclass.yaml  # deploys test pod
    kubectl logs reaper-example
    ```
 
@@ -69,28 +69,28 @@ Ansible provides a unified, production-ready deployment method for both Kind and
 
 1. **Create inventory file**:
    ```bash
-   cp ansible/inventory.ini.example ansible/inventory.ini
+   cp deploy/deploy/ansible/inventory.ini.example deploy/ansible/inventory.ini
    # Edit inventory.ini with your node details
    ```
 
 2. **Test connectivity**:
    ```bash
-   ansible -i ansible/inventory.ini k8s_nodes -m ping
+   ansible -i deploy/ansible/inventory.ini k8s_nodes -m ping
    ```
 
 3. **Run installation playbook**:
    ```bash
-   ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
+   ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/install-reaper.yml
    ```
 
 4. **Create RuntimeClass**:
    ```bash
-   kubectl apply -f kubernetes/runtimeclass.yaml
+   kubectl apply -f deploy/kubernetes/runtimeclass.yaml
    ```
 
 5. **Verify**:
    ```bash
-   kubectl apply -f kubernetes/runtimeclass.yaml  # deploys test pod
+   kubectl apply -f deploy/kubernetes/runtimeclass.yaml  # deploys test pod
    kubectl logs reaper-example
    ```
 
@@ -109,16 +109,16 @@ Main installation playbook that:
 **Usage:**
 ```bash
 # Standard installation
-ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/install-reaper.yml
 
 # Dry run (check mode)
-ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml --check
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/install-reaper.yml --check
 
 # Verbose output
-ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml -v
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/install-reaper.yml -v
 
 # Target specific nodes
-ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml --limit node1,node2
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/install-reaper.yml --limit node1,node2
 ```
 
 ### rollback-reaper.yml
@@ -132,13 +132,13 @@ Rollback playbook that:
 **Usage:**
 ```bash
 # Interactive rollback (prompts for confirmation)
-ansible-playbook -i ansible/inventory.ini ansible/rollback-reaper.yml
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/rollback-reaper.yml
 
 # Automatic rollback (no prompts)
-ansible-playbook -i ansible/inventory.ini ansible/rollback-reaper.yml -e 'ansible_check_mode=false'
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/rollback-reaper.yml -e 'ansible_check_mode=false'
 
 # Rollback specific nodes
-ansible-playbook -i ansible/inventory.ini ansible/rollback-reaper.yml --limit node3
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/rollback-reaper.yml --limit node3
 ```
 
 ## Inventory Configuration
@@ -149,7 +149,7 @@ For Kind clusters, use the Docker connection plugin instead of SSH:
 
 ```bash
 # Auto-generate inventory (recommended)
-./scripts/generate-kind-inventory.sh my-cluster ansible/inventory-kind.ini
+./scripts/generate-kind-inventory.sh my-cluster deploy/ansible/inventory-kind.ini
 ```
 
 Or create manually:
@@ -227,7 +227,7 @@ ansible_ssh_common_args='-o ProxyCommand="ssh -W %h:%p bastion.azure.example.com
 Deploy to nodes one at a time to minimize impact:
 
 ```bash
-ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml --forks=1
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/install-reaper.yml --forks=1
 ```
 
 ### Parallel Deployment
@@ -235,7 +235,7 @@ ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml --forks=1
 Deploy to multiple nodes in parallel (default is 5):
 
 ```bash
-ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml --forks=10
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/install-reaper.yml --forks=10
 ```
 
 ### Custom Binary Path
@@ -243,14 +243,14 @@ ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml --forks=10
 If binaries are in a different location:
 
 ```bash
-ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml \
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/install-reaper.yml \
   -e "local_binary_dir=/path/to/binaries"
 ```
 
 ### Custom Overlay Location
 
 ```bash
-ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml \
+ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/install-reaper.yml \
   -e "overlay_base=/custom/overlay/path"
 ```
 
@@ -260,26 +260,26 @@ ansible-playbook -i ansible/inventory.ini ansible/install-reaper.yml \
 
 Test SSH connectivity:
 ```bash
-ansible -i ansible/inventory.ini k8s_nodes -m ping
+ansible -i deploy/ansible/inventory.ini k8s_nodes -m ping
 ```
 
 Debug SSH issues:
 ```bash
-ansible -i ansible/inventory.ini k8s_nodes -m ping -vvv
+ansible -i deploy/ansible/inventory.ini k8s_nodes -m ping -vvv
 ```
 
 ### Sudo/Privilege Issues
 
 Test sudo access:
 ```bash
-ansible -i ansible/inventory.ini k8s_nodes -m shell -a "whoami" --become
+ansible -i deploy/ansible/inventory.ini k8s_nodes -m shell -a "whoami" --become
 ```
 
 ### Containerd Not Running
 
 Check containerd status on all nodes:
 ```bash
-ansible -i ansible/inventory.ini k8s_nodes -m systemd -a "name=containerd state=started" --become
+ansible -i deploy/ansible/inventory.ini k8s_nodes -m systemd -a "name=containerd state=started" --become
 ```
 
 ### Binary Verification Failed
@@ -295,7 +295,7 @@ cargo build --release --bin containerd-shim-reaper-v2 --bin reaper-runtime
 
 Manually check containerd config on a node:
 ```bash
-ansible -i ansible/inventory.ini k8s_nodes -m shell -a "containerd config dump | grep reaper" --become
+ansible -i deploy/ansible/inventory.ini k8s_nodes -m shell -a "containerd config dump | grep reaper" --become
 ```
 
 ## Why Unified Ansible Deployment?
@@ -325,6 +325,7 @@ The playbooks are connection-agnostic - they use Ansible modules that work equal
 
 ## See Also
 
-- [Main README](../README.md) - Project overview
+- [Main README](../../README.md) - Project overview
 - [Kubernetes README](../kubernetes/README.md) - Kubernetes integration guide
-- [Testing Guide](../TESTING.md) - Testing procedures
+- [Installation Plan](../../docs/plan-install-script.md) - Detailed implementation plan
+- [Testing Guide](../../docs/TESTING.md) - Testing procedures

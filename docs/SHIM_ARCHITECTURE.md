@@ -419,7 +419,7 @@ spec:
 
 This creates a kind cluster, builds the runtime, configures containerd, and runs comprehensive tests (DNS, overlay, host protection, zombie processes, etc.).
 
-For options and troubleshooting, see [TESTING.md](../TESTING.md).
+For options and troubleshooting, see [TESTING.md](TESTING.md).
 
 ## Troubleshooting
 

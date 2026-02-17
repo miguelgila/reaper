@@ -82,7 +82,7 @@ docker run --rm \
 
 ## Testing
 
-See [TESTING.md](../TESTING.md) for comprehensive testing documentation.
+See [TESTING.md](TESTING.md) for comprehensive testing documentation.
 
 ### Quick Reference
 
@@ -332,8 +332,9 @@ reaper/
 │   │       └── overlay.rs              # Overlay filesystem (Linux)
 ├── tests/                              # Integration tests
 ├── scripts/                            # Installation and testing scripts
-├── ansible/                            # Ansible playbooks for deployment
-├── kubernetes/                         # Kubernetes manifests
+├── deploy/
+│   ├── ansible/                        # Ansible playbooks for deployment
+│   └── kubernetes/                     # Kubernetes manifests
 ├── docs/                               # Documentation
 └── .githooks/                          # Git hooks (pre-commit, pre-push)
 ```

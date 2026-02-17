@@ -4,8 +4,8 @@
 # useful for running services only on login/gateway nodes.
 #
 # Prerequisites:
-#   - Reaper installed on target nodes (see ansible/README.md)
-#   - RuntimeClass applied: kubectl apply -f kubernetes/runtimeclass.yaml
+#   - Reaper installed on target nodes (see deploy/ansible/README.md)
+#   - RuntimeClass applied: kubectl apply -f deploy/kubernetes/runtimeclass.yaml
 #   - Target nodes labeled:
 #       kubectl label node <node-name> node-role=login
 #
