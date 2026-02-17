@@ -2,7 +2,7 @@ name: Build and Audit
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
@@ -11,7 +11,7 @@ on:
       - ".github/copilot-instructions.md"
       - ".github/claude-instructions.md"
   pull_request:
-    branches: [main, develop]
+    branches: [main]
     paths-ignore:
       - "**/*.md"
       - "docs/**"

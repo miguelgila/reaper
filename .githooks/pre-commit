@@ -9,10 +9,10 @@ if command -v cargo >/dev/null 2>&1; then
   echo "Running cargo fmt --all..."
   cargo fmt --all
 
-  # If formatting produced changes, stage them so they're included in the commit.
+  # If formatting produced changes, re-stage only the files that were already staged.
   if ! git diff --quiet; then
-    git add -A
-    echo "Applied rustfmt and staged changes. Continue commit."
+    git diff --name-only | xargs git add --
+    echo "Applied rustfmt and re-staged changed files. Continue commit."
   fi
 else
   echo "cargo not found in PATH; skipping rustfmt."

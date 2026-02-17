@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# install-reaper-ansible.sh - Deploy Reaper runtime using Ansible
+# install-reaper.sh - Deploy Reaper runtime using Ansible
 #
 # This is a unified installation script that uses Ansible for both Kind
 # and production clusters. It provides a single, consistent deployment method.
 #
 # Usage:
-#   ./scripts/install-reaper-ansible.sh --kind <cluster-name>
-#   ./scripts/install-reaper-ansible.sh --inventory <inventory-file>
+#   ./scripts/install-reaper.sh --kind <cluster-name>
+#   ./scripts/install-reaper.sh --inventory <inventory-file>
 #
 # For Kind clusters, this script auto-generates an inventory and uses
 # Ansible's Docker connection plugin. For production, it uses your provided

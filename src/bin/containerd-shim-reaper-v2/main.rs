@@ -859,13 +859,10 @@ impl Task for ReaperTask {
                                 let code = state["exit_code"].as_i64().unwrap_or(0) as i32;
                                 let pid = state["pid"].as_u64().unwrap_or(0) as u32;
                                 std::thread::sleep(std::time::Duration::from_millis(50));
-                                reap_orphaned_children();
                                 return (code, pid);
                             }
                         }
                     }
-                    // Reap any orphaned runtime daemons while we poll.
-                    reap_orphaned_children();
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
             })
@@ -929,16 +926,13 @@ impl Task for ReaperTask {
                                     container_id, code, pid
                                 );
                                 // Give the monitoring daemon a moment to exit after
-                                // writing "stopped", then reap it immediately.
+                                // writing "stopped".
                                 std::thread::sleep(std::time::Duration::from_millis(50));
-                                reap_orphaned_children();
                                 return (code, pid);
                             }
                         }
                     }
                 }
-                // Reap any orphaned runtime daemons while we poll.
-                reap_orphaned_children();
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         })

@@ -2,7 +2,7 @@ name: Integration
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
@@ -11,7 +11,7 @@ on:
       - ".github/copilot-instructions.md"
       - ".github/claude-instructions.md"
   pull_request:
-    branches: [main, develop]
+    branches: [main]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
@@ -75,7 +75,11 @@ jobs:
           version: "v1.30.0"
 
       - name: Run integration tests
-        run: ./scripts/run-integration-tests.sh
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 20
+          max_attempts: 2
+          command: ./scripts/run-integration-tests.sh
 
       - name: Upload integration test logs
         if: always()

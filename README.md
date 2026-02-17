@@ -6,6 +6,10 @@
 
 **Reaper is a lightweight Kubernetes container-less runtime that executes commands directly on cluster nodes without traditional container isolation.** Think of it as a way to run host-native processes through Kubernetes' orchestration layer.
 
+## Disclaimer
+
+Reaper is an experimental, personal project built to explore what's possible with AI-assisted development. It is under continuous development with no stability guarantees — there is no assurance it will work correctly in your environment. No support of any kind is provided. Unless you fully understand what Reaper does and how it works, you probably don't want to run it. Use entirely at your own risk. That said, the code is open — feel free to read it and send PRs.
+
 ## What is Reaper?
 
 Reaper is a containerd shim that runs processes directly on the host system while integrating with Kubernetes' workload management. Unlike traditional container runtimes that provide isolation through namespaces and cgroups, Reaper intentionally runs processes with full host access.
@@ -32,6 +36,30 @@ Reaper is a containerd shim that runs processes directly on the host system whil
 - ❌ Container image pulling
 
 ## Quick Start
+
+### 0. Build
+
+Reaper requires Rust. The toolchain version is pinned in `rust-toolchain.toml` and installed automatically.
+
+```bash
+git clone https://github.com/miguelgila/reaper
+cd reaper
+cargo build --release
+```
+
+Binaries are output to `target/release/`. Since Reaper runs on Linux Kubernetes nodes, you may need to cross-compile static musl binaries if building from macOS:
+
+```bash
+# For x86_64 nodes
+docker run --rm -v "$(pwd)":/work -w /work \
+  messense/rust-musl-cross:x86_64-musl \
+  cargo build --release --target x86_64-unknown-linux-musl
+
+# For aarch64 nodes
+docker run --rm -v "$(pwd)":/work -w /work \
+  messense/rust-musl-cross:aarch64-musl \
+  cargo build --release --target aarch64-unknown-linux-musl
+```
 
 ### 1. Install Reaper on a Kubernetes Cluster
 
@@ -137,20 +165,20 @@ Kubelet prepares volume content on the host and Reaper bind-mounts it into the s
 
 Reaper implements the Kubernetes Pod API but **ignores or doesn't support certain container-specific fields**:
 
-| Pod Field | Behavior |
-|-----------|----------|
-| `spec.containers[].image` | **Ignored by Reaper** — Kubelet pulls the image before the runtime runs, so a valid image is required. Use a lightweight image like `busybox`. Reaper does not use it. |
-| `spec.containers[].resources.limits` | **Ignored** — No cgroup enforcement; processes use host resources. |
-| `spec.containers[].resources.requests` | **Ignored** — Scheduling hints not used. |
-| `spec.containers[].volumeMounts` | ✅ **Supported** — Bind mounts for ConfigMap, Secret, hostPath, emptyDir. |
-| `spec.containers[].securityContext.capabilities` | **Ignored** — Processes run with host-level capabilities. |
-| `spec.containers[].livenessProbe` | **Ignored** — No health checking. |
-| `spec.containers[].readinessProbe` | **Ignored** — No readiness checks. |
-| `spec.containers[].command` | ✅ **Supported** — Program path on host (must exist). |
-| `spec.containers[].args` | ✅ **Supported** — Arguments to the command. |
-| `spec.containers[].env` | ✅ **Supported** — Environment variables. |
-| `spec.containers[].workingDir` | ✅ **Supported** — Working directory for the process. |
-| `spec.runtimeClassName` | ✅ **Required** — Must be set to `reaper-v2`. |
+| Pod Field                                        | Behavior                                                                                                                                                               |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spec.containers[].image`                        | **Ignored by Reaper** — Kubelet pulls the image before the runtime runs, so a valid image is required. Use a lightweight image like `busybox`. Reaper does not use it. |
+| `spec.containers[].resources.limits`             | **Ignored** — No cgroup enforcement; processes use host resources.                                                                                                     |
+| `spec.containers[].resources.requests`           | **Ignored** — Scheduling hints not used.                                                                                                                               |
+| `spec.containers[].volumeMounts`                 | ✅ **Supported** — Bind mounts for ConfigMap, Secret, hostPath, emptyDir.                                                                                               |
+| `spec.containers[].securityContext.capabilities` | **Ignored** — Processes run with host-level capabilities.                                                                                                              |
+| `spec.containers[].livenessProbe`                | **Ignored** — No health checking.                                                                                                                                      |
+| `spec.containers[].readinessProbe`               | **Ignored** — No readiness checks.                                                                                                                                     |
+| `spec.containers[].command`                      | ✅ **Supported** — Program path on host (must exist).                                                                                                                   |
+| `spec.containers[].args`                         | ✅ **Supported** — Arguments to the command.                                                                                                                            |
+| `spec.containers[].env`                          | ✅ **Supported** — Environment variables.                                                                                                                               |
+| `spec.containers[].workingDir`                   | ✅ **Supported** — Working directory for the process.                                                                                                                   |
+| `spec.runtimeClassName`                          | ✅ **Required** — Must be set to `reaper-v2`.                                                                                                                           |
 
 **Best practice:** Use a small, valid image like `busybox`. Kubelet pulls the image before handing off to the runtime, so the image must exist in a registry. Reaper itself ignores the image entirely — it runs the `command` directly on the host.
 
@@ -185,6 +213,8 @@ For architecture details, see [docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md) and
 - ✅ **Volume mount support** (ConfigMap, Secret, hostPath, emptyDir via OCI bind mounts)
 - ✅ **Container I/O capture** (stdout/stderr via FIFOs for `kubectl logs`)
 - ✅ **Interactive sessions** (PTY support for `kubectl run -it` and `kubectl exec -it`)
+- ✅ **UID/GID switching** (privilege dropping with `securityContext`)
+- ✅ **Sensitive file filtering** (hides SSH keys, passwords, SSL keys in overlay)
 - ✅ **Process monitoring** (fork-based with real exit code capture)
 - ✅ **Zombie process reaping** (proper process cleanup)
 - ✅ **End-to-end testing** (validated with kind cluster integration tests)
@@ -193,11 +223,12 @@ For architecture details, see [docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md) and
 
 The [examples/](examples/) directory contains runnable demos, each with a `setup.sh` that creates a Kind cluster with Reaper pre-installed:
 
-| Example | Description |
-|---------|-------------|
-| **[scheduling/](examples/scheduling/)** | DaemonSets on all nodes vs. a labeled subset |
-| **[client-server/](examples/client-server/)** | TCP server + clients communicating across nodes via host networking |
-| **[client-server-runas/](examples/client-server-runas/)** | Same as above, but running as a shared non-root user (LDAP-style UID/GID) |
+| Example                                                         | Description                                                                   |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| **[01-scheduling/](examples/01-scheduling/)**                   | DaemonSets on all nodes vs. a labeled subset                                  |
+| **[02-client-server/](examples/02-client-server/)**             | TCP server + clients communicating across nodes via host networking           |
+| **[03-client-server-runas/](examples/03-client-server-runas/)** | Same as above, but running as a shared non-root user (LDAP-style UID/GID)     |
+| **[04-volumes/](examples/04-volumes/)**                         | Kubernetes volume mounts (ConfigMap, Secret, hostPath, emptyDir) with overlay |
 
 ## Documentation
 
@@ -206,8 +237,8 @@ The [examples/](examples/) directory contains runnable demos, each with a `setup
 - **[TESTING.md](TESTING.md)** - Testing guide (unit tests, integration tests, coverage)
 - **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup, tooling, and contributing
 - **[docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md)** - Shim v2 protocol implementation details
+- **[docs/SHIM_ARCHITECTURE.md](docs/SHIM_ARCHITECTURE.md)** - Architecture deep-dive
 - **[docs/OVERLAY_DESIGN.md](docs/OVERLAY_DESIGN.md)** - Overlay filesystem design and architecture
-- **[docs/CURRENT_STATE.md](docs/CURRENT_STATE.md)** - Current implementation status and known issues
 
 ## Requirements
 

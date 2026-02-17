@@ -26,7 +26,7 @@ This document contains information for developers working on the Reaper project.
 ### Clone and Build
 
 ```bash
-git clone https://github.com/miguelgi/reaper
+git clone https://github.com/miguelgila/reaper
 cd reaper
 cargo build
 ```
@@ -107,6 +107,7 @@ cargo test
 - `tests/integration_shim.rs` - Shim-specific tests
 - `tests/integration_io.rs` - FIFO stdout/stderr redirection
 - `tests/integration_exec.rs` - Exec into running containers
+- `tests/integration_overlay.rs` - Overlay filesystem tests
 
 Run a specific test suite:
 
@@ -179,7 +180,7 @@ The pre-push hook mirrors the exact clippy invocation used in CI, so pushes that
 
 ### Customization
 
-- **pre-commit**: To fail on unformatted code instead of auto-fixing, change `cargo fmt --all` to `cargo fmt --all -- --check` and remove the `git add -A` line.
+- **pre-commit**: To fail on unformatted code instead of auto-fixing, change `cargo fmt --all` to `cargo fmt --all -- --check` and remove the re-staging logic.
 - **pre-push**: To skip clippy for a one-off push, use `git push --no-verify`.
 
 ## Docker (Optional)
@@ -203,50 +204,34 @@ This runs `cargo-tarpaulin` in a Linux container with appropriate capabilities.
 
 ### Recommended Extensions
 
-The workspace automatically recommends these extensions:
-
 - **rust-analyzer** — Main Rust language support
 - **CodeLLDB** (vadimcn.vscode-lldb) — Debug adapter for Rust
 - **Test Explorer UI** — Unified test UI
 
-### Workspace Settings
-
-Workspace settings enable:
-- CodeLens (inline run/debug buttons)
-- rust-analyzer configured to run clippy on save
-- Debug configurations in `launch.json` for testing binaries
+Configure rust-analyzer to run clippy on save and enable CodeLens for inline run/debug buttons.
 
 ## CI/CD
 
-GitHub Actions workflows are configured to run:
+GitHub Actions workflows run on pushes and pull requests to `main`:
 
-### Tests Workflow
+### Tests Workflow (`test.yml`)
 
-Runs on every push and pull request:
-```bash
-cargo test
-```
+- Builds and caches dependencies
+- Runs `cargo test` with coverage via `cargo-tarpaulin`
+- Uploads coverage to Codecov
+- Runs `cargo clippy -- -D warnings`
+- Checks formatting with `cargo fmt --all -- --check`
 
-### Build Workflow
+### Build and Audit Workflow (`build.yml`)
 
-Builds across OS/Rust matrix:
-- Checks formatting (`cargo fmt --all -- --check`)
-- Runs clippy (`cargo clippy --all-targets --all-features`)
-- Builds release binaries
-- Runs security audit (`cargo-audit`)
+- Runs `cargo audit` to scan dependencies for known vulnerabilities
 
-### Coverage Workflow
+### Integration Workflow (`integration.yml`)
 
-Generates code coverage report:
-- Runs `cargo-tarpaulin` in Docker
-- Uploads results to Codecov
-
-### Security Workflow
-
-Scans dependencies for known vulnerabilities:
-```bash
-cargo audit
-```
+- Builds static musl binaries (architecture-aware)
+- Creates a Kind cluster
+- Deploys Reaper via Ansible
+- Runs the full Kubernetes integration test suite
 
 ## Coverage
 
@@ -345,7 +330,6 @@ reaper/
 │   │       ├── main.rs                 # OCI runtime CLI
 │   │       ├── state.rs                # State persistence
 │   │       └── overlay.rs              # Overlay filesystem (Linux)
-│   └── lib.rs                          # Shared library code (if any)
 ├── tests/                              # Integration tests
 ├── scripts/                            # Installation and testing scripts
 ├── ansible/                            # Ansible playbooks for deployment
