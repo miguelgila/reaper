@@ -940,7 +940,7 @@ spec:
   containers:
     - name: test
       image: busybox
-      command: ["/bin/sh", "-c", "sleep 300 & sleep 300 & echo pgkill-children-started && wait"]
+      command: ["/bin/sh", "-c", "sleep 54321 & sleep 54321 & echo pgkill-children-started && wait"]
 YAML
 
   wait_for_pod_phase reaper-pgkill-test Running 60 2 || {
@@ -952,11 +952,11 @@ YAML
   # Verify child processes are running on the node
   sleep 2
   local before_count
-  before_count=$(docker exec "$NODE_ID" sh -c "ps aux | grep 'sleep 300' | grep -v grep | wc -l" 2>/dev/null || echo "0")
+  before_count=$(docker exec "$NODE_ID" sh -c "ps aux | grep 'sleep 54321' | grep -v grep | wc -l" 2>/dev/null || echo "0")
   log_verbose "Sleep processes before kill: $before_count"
 
   if [[ "$before_count" -lt 2 ]]; then
-    log_error "Expected at least 2 'sleep 300' processes, found: $before_count"
+    log_error "Expected at least 2 'sleep 54321' processes, found: $before_count"
     dump_pod_diagnostics reaper-pgkill-test
     return 1
   fi
@@ -977,12 +977,12 @@ YAML
 
   # Verify no orphaned sleep processes remain
   local after_count
-  after_count=$(docker exec "$NODE_ID" sh -c "ps aux | grep 'sleep 300' | grep -v grep | wc -l" 2>/dev/null || echo "0")
+  after_count=$(docker exec "$NODE_ID" sh -c "ps aux | grep 'sleep 54321' | grep -v grep | wc -l" 2>/dev/null || echo "0")
   log_verbose "Sleep processes after kill: $after_count"
 
   if [[ "$after_count" -gt 0 ]]; then
-    log_error "Found $after_count orphaned 'sleep 300' processes after pod deletion"
-    docker exec "$NODE_ID" ps aux 2>/dev/null | grep 'sleep 300' | grep -v grep | while IFS= read -r line; do
+    log_error "Found $after_count orphaned 'sleep 54321' processes after pod deletion"
+    docker exec "$NODE_ID" ps aux 2>/dev/null | grep 'sleep 54321' | grep -v grep | while IFS= read -r line; do
       log_error "  $line"
     done
     return 1
