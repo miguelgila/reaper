@@ -157,8 +157,6 @@ match unsafe { fork() }? {
 - `tests/integration_shim.rs` - Shim protocol tests
 
 ### Documentation
-- `.github/copilot-instructions.md` - GitHub Copilot context
-- `.github/claude-instructions.md` - Claude AI context
 - `docs/SHIM_ARCHITECTURE.md` - Shim v2 protocol details
 - `docs/SHIMV2_DESIGN.md` - Implementation milestones
 - `docs/NOTES_FUTURE.md` - Future enhancements
