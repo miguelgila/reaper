@@ -46,7 +46,8 @@ The [release workflow](../.github/workflows/release.yml) will automatically:
 3. Verify the version string is embedded in the binaries
 4. Package tarballs with LICENSE and README
 5. Generate SHA-256 checksums
-6. Create a GitHub Release with auto-generated release notes
+6. Sign the checksums file with [cosign](https://docs.sigstore.dev/cosign/overview/) (keyless, via GitHub OIDC)
+7. Create a GitHub Release with auto-generated release notes
 
 Monitor the workflow at: `https://github.com/miguelgila/reaper/actions/workflows/release.yml`
 
@@ -69,6 +70,8 @@ Each release produces:
 | `reaper-0.2.0-x86_64-unknown-linux-musl.tar.gz` | Binaries for x86_64 Linux |
 | `reaper-0.2.0-aarch64-unknown-linux-musl.tar.gz` | Binaries for aarch64 Linux |
 | `checksums-sha256.txt` | SHA-256 checksums for all tarballs |
+| `checksums-sha256.txt.sig` | Cosign signature for the checksums file |
+| `checksums-sha256.txt.pem` | Signing certificate (GitHub OIDC identity) |
 
 Each tarball contains:
 - `containerd-shim-reaper-v2` — the containerd shim binary
@@ -99,6 +102,43 @@ reaper-runtime --version
 
 containerd-shim-reaper-v2 --version
 # containerd-shim-reaper-v2 0.2.0 (abc1234 2026-02-18)
+```
+
+## Verifying Release Signatures
+
+Release artifacts are signed with [cosign](https://docs.sigstore.dev/cosign/overview/) using keyless signing via GitHub Actions OIDC. This proves the binaries were built by the official CI pipeline — no private keys to manage or leak.
+
+### Automatic verification
+
+The install script automatically verifies cosign signatures when `cosign` is available:
+
+```bash
+# cosign installed — signature verified automatically
+./scripts/install-reaper.sh --kind my-cluster --release v0.2.0
+
+# cosign not installed — skips with a warning, still verifies SHA-256 checksums
+./scripts/install-reaper.sh --kind my-cluster --release v0.2.0
+```
+
+### Manual verification
+
+```bash
+# Download the release files
+VERSION=v0.2.0
+curl -fsSLO "https://github.com/miguelgila/reaper/releases/download/${VERSION}/checksums-sha256.txt"
+curl -fsSLO "https://github.com/miguelgila/reaper/releases/download/${VERSION}/checksums-sha256.txt.sig"
+curl -fsSLO "https://github.com/miguelgila/reaper/releases/download/${VERSION}/checksums-sha256.txt.pem"
+
+# Verify the signature
+cosign verify-blob \
+  --certificate-identity-regexp '.*miguelgila/reaper.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --signature checksums-sha256.txt.sig \
+  --certificate checksums-sha256.txt.pem \
+  checksums-sha256.txt
+
+# Then verify tarballs against the signed checksums
+sha256sum -c checksums-sha256.txt
 ```
 
 ## Rollback

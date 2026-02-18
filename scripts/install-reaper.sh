@@ -241,6 +241,33 @@ download_release() {
       exit 1
     fi
     log_success "Checksum verified"
+
+    # Optional: verify cosign signature if cosign is installed
+    local sig_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/checksums-sha256.txt.sig"
+    local cert_url="https://github.com/${GITHUB_REPO}/releases/download/${version}/checksums-sha256.txt.pem"
+
+    if command -v cosign &>/dev/null; then
+      log_info "Verifying cosign signature..."
+      if curl -fsSL -o "$download_dir/checksums-sha256.txt.sig" "$sig_url" 2>/dev/null \
+         && curl -fsSL -o "$download_dir/checksums-sha256.txt.pem" "$cert_url" 2>/dev/null; then
+        if (cd "$download_dir" && cosign verify-blob \
+             --certificate-identity-regexp ".*${GITHUB_REPO}.*" \
+             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+             --signature checksums-sha256.txt.sig \
+             --certificate checksums-sha256.txt.pem \
+             checksums-sha256.txt); then
+          log_success "Cosign signature verified"
+        else
+          log_error "Cosign signature verification failed!"
+          rm -rf "$download_dir"
+          exit 1
+        fi
+      else
+        log_warn "Cosign signature/certificate not available, skipping signature verification"
+      fi
+    else
+      log_info "cosign not installed, skipping signature verification (install: https://docs.sigstore.dev/cosign/system_config/installation/)"
+    fi
   else
     log_warn "Checksums file not available, skipping verification"
   fi

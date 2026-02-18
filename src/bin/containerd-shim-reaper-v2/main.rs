@@ -82,6 +82,11 @@ struct ReaperShim {
     exit: Arc<ExitSignal>,
     runtime_path: String,
     namespace: String,
+    /// Whether the runtime binary version matches the shim version.
+    /// If false, all container creation will be refused.
+    compatible: bool,
+    /// The version string reported by the runtime binary (for error messages).
+    runtime_version: String,
 }
 
 #[async_trait::async_trait]
@@ -109,10 +114,60 @@ impl Shim for ReaperShim {
             info!("Runtime binary verified at: {}", runtime_path);
         }
 
+        // Version compatibility check: ensure shim and runtime were built from the same commit.
+        // The version string includes the git hash, so identical strings prove same build.
+        let shim_version = version_string();
+        let (compatible, runtime_version) = match std::process::Command::new(&runtime_path)
+            .arg("--version")
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                // reaper-runtime outputs "reaper-runtime <version>" — extract the version part
+                let full_output = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                let rt_version = full_output
+                    .strip_prefix("reaper-runtime ")
+                    .unwrap_or(&full_output)
+                    .to_string();
+                if rt_version == shim_version {
+                    info!(
+                        "Version check OK: shim and runtime both at {}",
+                        shim_version
+                    );
+                    (true, rt_version)
+                } else {
+                    tracing::error!(
+                        "CRITICAL: Version mismatch! shim={} runtime={}. \
+                         Both binaries must be from the same build.",
+                        shim_version,
+                        rt_version
+                    );
+                    (false, rt_version)
+                }
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                tracing::error!(
+                    "CRITICAL: reaper-runtime --version failed (exit {}): {}",
+                    output.status,
+                    stderr
+                );
+                (false, "unknown (--version failed)".to_string())
+            }
+            Err(e) => {
+                tracing::error!(
+                    "CRITICAL: Failed to execute reaper-runtime --version: {}",
+                    e
+                );
+                (false, format!("unknown ({})", e))
+            }
+        };
+
         ReaperShim {
             exit: Arc::new(ExitSignal::default()),
             runtime_path,
             namespace: args.namespace.clone(),
+            compatible,
+            runtime_version,
         }
     }
 
@@ -160,6 +215,8 @@ impl Shim for ReaperShim {
             publisher: Arc::new(publisher),
             namespace: self.namespace.clone(),
             exit: self.exit.clone(),
+            compatible: self.compatible,
+            runtime_version: self.runtime_version.clone(),
         }
     }
 }
@@ -186,6 +243,10 @@ struct ReaperTask {
     namespace: String,
     // Signal to tell the shim process to exit
     exit: Arc<ExitSignal>,
+    // Whether shim and runtime versions match (checked at startup)
+    compatible: bool,
+    // Runtime version string for error messages
+    runtime_version: String,
 }
 
 // Helper function to detect if a container is a sandbox/pause container
@@ -329,6 +390,22 @@ impl Task for ReaperTask {
             "create() called - container_id={}, bundle={}",
             req.id, req.bundle
         );
+
+        // Refuse all workloads if shim and runtime versions don't match.
+        // This prevents silent failures from mismatched binaries.
+        if !self.compatible {
+            let shim_version = version_string();
+            let msg = format!(
+                "Version mismatch: shim is {} but runtime is {}. \
+                 Both must be from the same build.",
+                shim_version, self.runtime_version
+            );
+            tracing::error!("create() refused: {}", msg);
+            return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::FAILED_PRECONDITION,
+                msg,
+            )));
+        }
 
         // Detect if this is a sandbox/pause container
         let is_sandbox = is_sandbox_container(&req.bundle);
