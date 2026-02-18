@@ -118,19 +118,25 @@ Status: [x] complete
 
 ## Release Workflow
 
+Releases are fully automated. Every PR merge to `main` triggers a patch release unless the PR has the `skip-release` label. Major and minor bumps are triggered manually via the GitHub Actions UI.
+
 ```
-1. Update version in Cargo.toml (e.g., 0.1.0 → 0.2.0)
-2. Commit: "chore: bump version to 0.2.0"
-3. Tag: git tag -a v0.2.0 -m "Release v0.2.0"
-4. Push: git push origin main --tags
-5. GitHub Actions builds artifacts and creates release automatically
-6. Users install: ./install-reaper.sh --kind my-cluster --release v0.2.0
+PR merges to main                    Manual trigger (Actions UI)
+        │                                     │
+   auto-release.yml                  manual-release.yml
+   (bump patch)                      (bump major/minor/patch)
+        │                                     │
+        └──────── both push v* tag ───────────┘
+                         │
+                   release.yml
+                   (build, sign, publish)
 ```
+
+See [RELEASING.md](RELEASING.md) for full details, setup instructions, and troubleshooting.
 
 ## What We're NOT Doing (and Why)
 
 - **No deb/rpm packages** — static musl binaries don't need them; tarballs suffice
 - **No container image** — Reaper is a host-level runtime, not a containerized service
-- **No automatic version bumping** — manual bump is simple and prevents accidental releases
 - **No changelog generation tool** — GitHub auto-generated release notes are sufficient for now
-- **No cargo-release or release-plz** — adds complexity; simple tag-based flow is enough
+- **No cargo-release or release-plz** — our own auto-release and manual-release workflows are simpler and purpose-built
