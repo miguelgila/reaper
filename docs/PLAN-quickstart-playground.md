@@ -185,6 +185,6 @@ Not in scope for this PR, but worth noting: all four example `setup.sh` scripts 
 
 - [x] Phase 1: Create `scripts/setup-playground.sh` → commit
 - [x] Phase 2: Add README.md playground section → commit
-- [ ] Phase 3: Refactor integration test script → commit
-- [ ] Phase 4: Mark TODO.md line 16 as done → (in final commit)
-- [ ] Verify: Run integration tests end-to-end
+- [x] Phase 3: Refactor integration test script → commit
+- [x] Phase 4: Mark TODO.md line 16 as done → (in final commit)
+- [x] Verify: Run integration tests end-to-end (27/27 PASS)

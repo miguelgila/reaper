@@ -13,4 +13,4 @@ List of tasks to do, not ordered in any specific way.
 [ ] Run a security analysis of the code
 [ ] Add examples that use jobs, deployments and daemonsets
 [ ] Add complex example (idea openldap server + sssd + something that uses users)
-[ ] Add quick-start guide with a playground kind cluster for doing fast testing
+[x] Add quick-start guide with a playground kind cluster for doing fast testing

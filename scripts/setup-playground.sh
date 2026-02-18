@@ -175,7 +175,9 @@ fi
 
 # Clean up generated config on exit
 cleanup_temp() {
-  [[ -n "$GENERATED_CONFIG" ]] && rm -f "$GENERATED_CONFIG"
+  if [[ -n "$GENERATED_CONFIG" ]]; then
+    rm -f "$GENERATED_CONFIG"
+  fi
 }
 trap cleanup_temp EXIT
 
@@ -379,9 +381,8 @@ if ! $QUIET; then
   echo "    --overrides='{\"spec\":{\"runtimeClassName\":\"reaper-v2\"}}' \\"
   echo "    -- /bin/bash"
   echo ""
-  echo "  ${B}# Run the examples${R}"
-  echo "  kubectl apply -f deploy/kubernetes/runtimeclass.yaml"
-  echo "  kubectl logs reaper-example"
+  echo "  ${B}# See the examples${R}"
+  echo "  ls examples/"
   echo ""
   echo "  ${B}# Clean up${R}"
   echo "  ./scripts/setup-playground.sh --cleanup"
