@@ -786,9 +786,9 @@ YAML
 
   # Verify first and last lines are present (proves no truncation)
   local first_line
-  first_line=$(echo "$logs" | head -1 | tr -d '[:space:]')
+  first_line=$(echo "$logs" 2>/dev/null | head -1 | tr -d '[:space:]')
   local last_line
-  last_line=$(echo "$logs" | tail -1 | tr -d '[:space:]')
+  last_line=$(echo "$logs" 2>/dev/null | tail -1 | tr -d '[:space:]')
 
   if [[ "$first_line" != "1" ]]; then
     log_error "Expected first line '1', got: '$first_line'"

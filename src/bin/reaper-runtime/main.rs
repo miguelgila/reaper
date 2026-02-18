@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use std::fs;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tracing::info;
@@ -197,6 +197,25 @@ fn open_log_file(path: &str) -> Result<std::fs::File> {
     }
 
     Ok(file)
+}
+
+/// Extract exit code from an ExitStatus, handling signal-killed processes.
+///
+/// When a process is killed by a signal, `ExitStatus::code()` returns `None`.
+/// PTY sessions commonly see SIGHUP (signal 1) during teardown — the kernel
+/// sends it when the controlling terminal's slave side closes. This is normal
+/// and should be treated as a clean exit (code 0), not an error.
+/// Other signals use the standard 128+signal convention.
+fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
+    if let Some(code) = status.code() {
+        return code;
+    }
+    // Process was killed by a signal
+    match status.signal() {
+        Some(nix::libc::SIGHUP) => 0, // PTY teardown — not an error
+        Some(sig) => 128 + sig,
+        None => 1,
+    }
 }
 
 fn do_create(
@@ -612,9 +631,29 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
 
                         std::thread::sleep(std::time::Duration::from_millis(500));
 
+                        // Hold the stdout FIFO write end open so containerd doesn't
+                        // see EOF when the relay thread exits. This prevents a race
+                        // where containerd tears down streams via stdout-EOF while
+                        // also receiving the TaskExit event. O_NONBLOCK because by
+                        // now containerd should have the read end open (via attach).
+                        let _stdout_holder = {
+                            use std::os::unix::fs::OpenOptionsExt;
+                            if let Some(ref state) = io_state {
+                                state.stdout.as_ref().and_then(|p| {
+                                    std::fs::OpenOptions::new()
+                                        .write(true)
+                                        .custom_flags(nix::libc::O_NONBLOCK)
+                                        .open(p)
+                                        .ok()
+                                })
+                            } else {
+                                None
+                            }
+                        };
+
                         match child.wait() {
                             Ok(exit_status) => {
-                                let exit_code = exit_status.code().unwrap_or(1);
+                                let exit_code = exit_code_from_status(exit_status);
                                 if let Ok(mut state) = load_state(&container_id) {
                                     state.status = "stopped".into();
                                     state.exit_code = Some(exit_code);
@@ -629,6 +668,13 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                                 }
                             }
                         }
+
+                        // Keep the daemon alive briefly so the shim can detect the
+                        // stopped state and publish the TaskExit event before we
+                        // drop _stdout_holder. This ensures containerd tears down
+                        // streams via the orderly TaskExit path, not a racy
+                        // stdout-EOF path.
+                        std::thread::sleep(std::time::Duration::from_secs(2));
                     }
                     Err(_e) => {
                         if let Ok(mut state) = load_state(&container_id) {
@@ -816,7 +862,7 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                         // We are the parent, so this will work correctly!
                         match child.wait() {
                             Ok(exit_status) => {
-                                let exit_code = exit_status.code().unwrap_or(1);
+                                let exit_code = exit_code_from_status(exit_status);
                                 if let Ok(mut state) = load_state(&container_id) {
                                     state.status = "stopped".into();
                                     state.exit_code = Some(exit_code);
@@ -1080,7 +1126,7 @@ fn exec_with_pty(
 
     // Wait for child
     match child.wait() {
-        Ok(status) => status.code().unwrap_or(1),
+        Ok(status) => exit_code_from_status(status),
         Err(_) => 1,
     }
 }
@@ -1209,7 +1255,7 @@ fn exec_without_pty(
     }
 
     match child.wait() {
-        Ok(status) => status.code().unwrap_or(1),
+        Ok(status) => exit_code_from_status(status),
         Err(_) => 1,
     }
 }

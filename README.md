@@ -37,6 +37,26 @@ Reaper is a containerd shim that runs processes directly on the host system whil
 
 ## Quick Start
 
+### Playground (try it locally)
+
+Spin up a 3-node Kind cluster with Reaper pre-installed:
+
+```bash
+# Prerequisites: Docker, kind, kubectl, ansible (pip install ansible)
+./scripts/setup-playground.sh
+```
+
+This builds Reaper, creates a Kind cluster with 1 control-plane + 2 worker nodes,
+installs the runtime on all nodes, and runs a smoke test. Once ready, try:
+
+```bash
+kubectl run hello --rm -it --image=busybox --restart=Never \
+  --overrides='{"spec":{"runtimeClassName":"reaper-v2"}}' \
+  -- /bin/sh -c "echo Hello from $(hostname) && uname -a"
+```
+
+To tear down: `./scripts/setup-playground.sh --cleanup`
+
 ### 0. Build
 
 Reaper requires Rust. The toolchain version is pinned in `rust-toolchain.toml` and installed automatically.
@@ -242,9 +262,16 @@ The [examples/](examples/) directory contains runnable demos, each with a `setup
 
 ## Requirements
 
+**Runtime (cluster nodes):**
 - **Linux kernel** with overlayfs support (standard since 3.18)
 - **Kubernetes cluster** with containerd runtime
 - **Root access** on cluster nodes (required for containerd shim installation)
+
+**Local development / playground:**
+- [Docker](https://docs.docker.com/get-docker/)
+- [kind](https://kind.sigs.k8s.io/) (Kubernetes in Docker)
+- [kubectl](https://kubernetes.io/docs/tasks/tools/)
+- [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/) (`pip install ansible`)
 
 **Note:** Overlay filesystem is Linux-only. On macOS, the runtime compiles but overlay features are disabled.
 
@@ -283,6 +310,10 @@ Enable runtime logging for debugging:
 export REAPER_SHIM_LOG=/var/log/reaper-shim.log
 export REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log
 ```
+
+## Known Issues
+
+- **"write on closed stream 0" warning on interactive exit**: When exiting an interactive PTY session (`kubectl run -it ... -- /bin/sh`, then typing `exit`), containerd may log `error stream protocol error: unknown error` and kubectl may print a brief warning. This is a cosmetic race condition in containerd's CRI streaming handler during FIFO teardown and does not affect the workload exit code or pod status.
 
 ## Contributing
 

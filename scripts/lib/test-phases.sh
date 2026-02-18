@@ -30,91 +30,27 @@ phase_setup() {
   log_status "========================================"
   ci_group_start "Phase 2: Infrastructure setup"
 
-  # Ensure kind is installed
-  if ! command -v kind >/dev/null 2>&1; then
-    log_status "Installing kind..."
-    curl -Lo ./kind "https://kind.sigs.k8s.io/dl/v0.23.0/kind-$(uname | tr '[:upper:]' '[:lower:]')-amd64" >> "$LOG_FILE" 2>&1
-    chmod +x ./kind
-    sudo mv ./kind /usr/local/bin/kind
+  # Delegate to the shared playground setup script.
+  # It handles: cluster creation, binary build, Ansible install, readiness, smoke test.
+  local setup_args=(
+    --cluster-name "$CLUSTER_NAME"
+    --quiet
+  )
+
+  # Use the single-node Kind config for CI (playground default is 3-node)
+  if [[ -f "scripts/kind-config.yaml" ]]; then
+    setup_args+=(--kind-config "scripts/kind-config.yaml")
   fi
 
-  # Create or reuse kind cluster
-  if kind get clusters 2>/dev/null | grep -q "^$CLUSTER_NAME\$"; then
-    log_status "Kind cluster '$CLUSTER_NAME' already exists, reusing."
-  else
-    log_status "Creating kind cluster '$CLUSTER_NAME'..."
-    if [[ -f "scripts/kind-config.yaml" ]]; then
-      kind create cluster --name "$CLUSTER_NAME" --config scripts/kind-config.yaml >> "$LOG_FILE" 2>&1
-    else
-      kind create cluster --name "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1
-    fi
-  fi
-
-  # Build static musl binaries for Kind (Linux containers)
-  # We must use static musl binaries to avoid glibc version mismatches
-  log_status "Detecting Kind node architecture..."
-  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
-  NODE_ARCH=$(docker exec "$NODE_ID" uname -m 2>&1) || {
-    log_error "Failed to detect node architecture"
+  log_status "Running setup-playground.sh for cluster '$CLUSTER_NAME'..."
+  ./scripts/setup-playground.sh "${setup_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
+    log_error "Cluster setup failed"
+    tail -100 "$LOG_FILE" >&2
     exit 1
   }
-  log_status "Node architecture: $NODE_ARCH"
 
-  log_status "Building static musl Linux binaries via Docker..."
-  case "$NODE_ARCH" in
-    aarch64)
-      TARGET_TRIPLE="aarch64-unknown-linux-musl"
-      MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
-      ;;
-    x86_64)
-      TARGET_TRIPLE="x86_64-unknown-linux-musl"
-      MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
-      ;;
-    *)
-      log_error "Unsupported node architecture: $NODE_ARCH"
-      exit 1
-      ;;
-  esac
-
-  docker run --rm \
-    -v "$(pwd)":/work \
-    -w /work \
-    "$MUSL_IMAGE" \
-    cargo build --release --bin containerd-shim-reaper-v2 --bin reaper-runtime --target "$TARGET_TRIPLE" \
-    >> "$LOG_FILE" 2>&1 || {
-      log_error "Failed to build binaries"
-      tail -50 "$LOG_FILE" >&2
-      exit 1
-    }
-
-  # Set binary directory for Ansible installer
-  # In CI, target/release may be owned by a different user (from cache), so we use the
-  # target-specific directory directly without copying
-  if [[ -n "${CI:-}" ]]; then
-    # CI mode: Use binaries directly from target/<triple>/release to avoid permission issues
-    export REAPER_BINARY_DIR="$(pwd)/target/$TARGET_TRIPLE/release"
-    log_status "Using binaries from $REAPER_BINARY_DIR (CI mode)..."
-  else
-    # Local mode: Copy to target/release for convenience
-    log_status "Copying binaries to target/release/ for installer..."
-    mkdir -p target/release
-    cp "target/$TARGET_TRIPLE/release/containerd-shim-reaper-v2" target/release/ 2>&1 | tee -a "$LOG_FILE"
-    cp "target/$TARGET_TRIPLE/release/reaper-runtime" target/release/ 2>&1 | tee -a "$LOG_FILE"
-    # REAPER_BINARY_DIR not needed in local mode (uses default)
-  fi
-
-  # Install Reaper using the unified Ansible installer
-  log_status "Installing Reaper runtime to Kind cluster (via Ansible)..."
-  if $VERBOSE; then
-    ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" --verbose 2>&1 | tee -a "$LOG_FILE"
-  else
-    # Show errors on stderr even in non-verbose mode
-    ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" 2>&1 | tee -a "$LOG_FILE" || {
-      log_error "Ansible installer failed"
-      tail -100 "$LOG_FILE" >&2
-      exit 1
-    }
-  fi
+  # Capture NODE_ID for diagnostics (used by cleanup trap and test functions)
+  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
 
   log_status "Infrastructure setup complete."
   ci_group_end
@@ -129,24 +65,10 @@ phase_readiness() {
   log_status "========================================"
   ci_group_start "Phase 3: Kubernetes readiness"
 
-  # Wait for API server
-  log_status "Waiting for Kubernetes API server..."
-  retry_kubectl kubectl wait --for=condition=Ready node --all --timeout=300s >> "$LOG_FILE" 2>&1 || {
-    log_verbose "Initial node wait failed, giving API server more time..."
-    sleep 10
-  }
-  sleep 30  # stability buffer
+  # Node readiness and RuntimeClass are already verified by setup-playground.sh.
+  # Here we handle test-specific readiness: stability buffer, ServiceAccount, stale pods.
 
-  # Verify RuntimeClass was created by install script
-  log_status "Verifying RuntimeClass..."
-  for i in $(seq 1 30); do
-    if kubectl get runtimeclass reaper-v2 &>/dev/null; then
-      log_status "RuntimeClass reaper-v2 ready."
-      break
-    fi
-    log_verbose "Waiting for RuntimeClass... ($i/30)"
-    sleep 1
-  done
+  sleep 30  # stability buffer for CI test reliability
 
   # Wait for default service account
   log_status "Waiting for default ServiceAccount..."
@@ -161,7 +83,7 @@ phase_readiness() {
     done
   }
 
-  # Clean stale pods
+  # Clean stale pods from previous runs (--no-cleanup reuse)
   log_verbose "Cleaning stale pods from previous runs..."
   kubectl delete pod reaper-example reaper-integration-test reaper-dns-check \
     reaper-overlay-writer reaper-overlay-reader reaper-exec-test \

@@ -70,6 +70,13 @@ jobs:
         with:
           version: "v1.30.0"
 
+      - name: Install kind
+        run: |
+          [ -x "$(command -v kind)" ] && exit 0
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
       - name: Run integration tests
         uses: nick-fields/retry@v3
         with:
