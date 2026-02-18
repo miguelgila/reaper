@@ -17,10 +17,22 @@ use state::{
 #[cfg(target_os = "linux")]
 mod overlay;
 
+fn version_string() -> &'static str {
+    const VERSION: &str = concat!(
+        env!("CARGO_PKG_VERSION"),
+        " (",
+        env!("GIT_HASH"),
+        " ",
+        env!("BUILD_DATE"),
+        ")"
+    );
+    VERSION
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "reaper-runtime",
-    version,
+    version = version_string(),
     about = "Minimal OCI-compatible runtime; runc-v2 shim compatible"
 )]
 struct Cli {

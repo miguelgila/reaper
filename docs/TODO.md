@@ -9,7 +9,7 @@ List of tasks to do, not ordered in any specific way.
 [x] Ensure uid and gid changes are validated in the integration tests
 [x] Filter out sensitive host files when mounting the overlay
 [ ] Add testing on a real kubernetes cluster (look at GKE, EKS, something free)
-[ ] Add versioning, packaging and release model and processes
+[x] Add versioning, packaging and release model and processes
 [ ] Run a security analysis of the code
 [ ] Add examples that use jobs, deployments and daemonsets
 [ ] Add complex example (idea openldap server + sssd + something that uses users)

@@ -1,0 +1,88 @@
+name: Auto Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  auto-patch-release:
+    if: >-
+      github.event.pull_request.merged == true &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-release')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+          fetch-depth: 2
+
+      - name: Check for release loop
+        id: loop-guard
+        run: |
+          LAST_MSG=$(git log -1 --pretty=%s)
+          if [[ "$LAST_MSG" == chore\(release\):* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping: last commit is already a release bump"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain
+        if: steps.loop-guard.outputs.skip != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read current version
+        if: steps.loop-guard.outputs.skip != 'true'
+        id: current
+        run: |
+          VERSION=$(sed -n '/^\[package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Current version: $VERSION"
+
+      - name: Bump patch version
+        if: steps.loop-guard.outputs.skip != 'true'
+        id: bump
+        run: |
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${{ steps.current.outputs.version }}"
+          PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bumping: ${{ steps.current.outputs.version }} → $NEW_VERSION"
+
+      - name: Update Cargo.toml
+        if: steps.loop-guard.outputs.skip != 'true'
+        run: |
+          sed -i "/^\[package\]/,/^\[/{s/^version = \".*\"/version = \"${{ steps.bump.outputs.version }}\"/}" Cargo.toml
+
+      - name: Update Cargo.lock
+        if: steps.loop-guard.outputs.skip != 'true'
+        run: cargo generate-lockfile
+
+      - name: Verify version update
+        if: steps.loop-guard.outputs.skip != 'true'
+        run: |
+          UPDATED=$(sed -n '/^\[package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          echo "Cargo.toml now shows: $UPDATED"
+          if [ "$UPDATED" != "${{ steps.bump.outputs.version }}" ]; then
+            echo "ERROR: Version update failed"
+            exit 1
+          fi
+
+      - name: Commit, tag, and push
+        if: steps.loop-guard.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): v${{ steps.bump.outputs.version }} [skip ci]"
+          git tag -a "v${{ steps.bump.outputs.version }}" -m "Release v${{ steps.bump.outputs.version }}"
+          git push origin main --follow-tags

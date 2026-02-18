@@ -98,7 +98,7 @@ jobs:
         run: cargo test --verbose
 
       - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin
+        uses: taiki-e/install-action@cargo-tarpaulin
 
       - name: Generate coverage
         run: cargo tarpaulin

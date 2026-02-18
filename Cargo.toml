@@ -28,10 +28,6 @@ tempfile = "3"
 serial_test = "3"
 
 [[bin]]
-name = "reaper"
-path = "src/main.rs"
-
-[[bin]]
 name = "reaper-runtime"
 path = "src/bin/reaper-runtime/main.rs"
 

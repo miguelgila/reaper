@@ -1,0 +1,111 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Dry run (show changes without committing)"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  manual-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read current version
+        id: current
+        run: |
+          VERSION=$(sed -n '/^\[package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Current version: $VERSION"
+
+      - name: Compute new version
+        id: bump
+        run: |
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${{ steps.current.outputs.version }}"
+          case "${{ inputs.bump }}" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bumping (${{ inputs.bump }}): ${{ steps.current.outputs.version }} → $NEW_VERSION"
+
+      - name: Update Cargo.toml
+        run: |
+          sed -i "/^\[package\]/,/^\[/{s/^version = \".*\"/version = \"${{ steps.bump.outputs.version }}\"/}" Cargo.toml
+
+      - name: Update Cargo.lock
+        run: cargo generate-lockfile
+
+      - name: Verify version update
+        run: |
+          UPDATED=$(sed -n '/^\[package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+          echo "Cargo.toml now shows: $UPDATED"
+          if [ "$UPDATED" != "${{ steps.bump.outputs.version }}" ]; then
+            echo "ERROR: Version update failed"
+            exit 1
+          fi
+
+      - name: Show diff (dry run)
+        if: inputs.dry_run
+        run: |
+          echo "=== DRY RUN — changes would be ==="
+          git diff
+          echo "=== Would create tag: v${{ steps.bump.outputs.version }} ==="
+
+      - name: Commit, tag, and push
+        if: ${{ !inputs.dry_run }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): v${{ steps.bump.outputs.version }} [skip ci]"
+          git tag -a "v${{ steps.bump.outputs.version }}" -m "Release v${{ steps.bump.outputs.version }}"
+          git push origin main --follow-tags
+
+      - name: Summary
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "### 🏃 Dry Run Complete" >> "$GITHUB_STEP_SUMMARY"
+            echo "Would bump **${{ inputs.bump }}**: \`${{ steps.current.outputs.version }}\` → \`${{ steps.bump.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Release v${{ steps.bump.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Bumped **${{ inputs.bump }}**: \`${{ steps.current.outputs.version }}\` → \`${{ steps.bump.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "[View release workflow →](https://github.com/${{ github.repository }}/actions/workflows/release.yml)" >> "$GITHUB_STEP_SUMMARY"
+          fi

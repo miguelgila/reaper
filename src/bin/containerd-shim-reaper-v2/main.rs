@@ -73,6 +73,61 @@ fn execute_and_reap_child(program: &str, args: Vec<&str>) -> std::io::Result<std
     Ok(output)
 }
 
+/// Parse the version string from `reaper-runtime --version` output.
+/// The runtime outputs "reaper-runtime <version>", and we strip the prefix.
+fn parse_runtime_version(output: &str) -> String {
+    let trimmed = output.trim();
+    trimmed
+        .strip_prefix("reaper-runtime ")
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// Check if the runtime version matches the shim version.
+/// Returns `(compatible, runtime_version_string)`.
+fn check_version_compatibility(runtime_path: &str, shim_version: &str) -> (bool, String) {
+    match std::process::Command::new(runtime_path)
+        .arg("--version")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let full_output = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let rt_version = parse_runtime_version(&full_output);
+            if rt_version == shim_version {
+                info!(
+                    "Version check OK: shim and runtime both at {}",
+                    shim_version
+                );
+                (true, rt_version)
+            } else {
+                tracing::error!(
+                    "CRITICAL: Version mismatch! shim={} runtime={}. \
+                     Both binaries must be from the same build.",
+                    shim_version,
+                    rt_version
+                );
+                (false, rt_version)
+            }
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            tracing::error!(
+                "CRITICAL: reaper-runtime --version failed (exit {}): {}",
+                output.status,
+                stderr
+            );
+            (false, "unknown (--version failed)".to_string())
+        }
+        Err(e) => {
+            tracing::error!(
+                "CRITICAL: Failed to execute reaper-runtime --version: {}",
+                e
+            );
+            (false, format!("unknown ({})", e))
+        }
+    }
+}
+
 fn runtime_state_dir() -> String {
     std::env::var("REAPER_RUNTIME_ROOT").unwrap_or_else(|_| "/run/reaper".to_string())
 }
@@ -82,6 +137,11 @@ struct ReaperShim {
     exit: Arc<ExitSignal>,
     runtime_path: String,
     namespace: String,
+    /// Whether the runtime binary version matches the shim version.
+    /// If false, all container creation will be refused.
+    compatible: bool,
+    /// The version string reported by the runtime binary (for error messages).
+    runtime_version: String,
 }
 
 #[async_trait::async_trait]
@@ -109,10 +169,18 @@ impl Shim for ReaperShim {
             info!("Runtime binary verified at: {}", runtime_path);
         }
 
+        // Version compatibility check: ensure shim and runtime were built from the same commit.
+        // The version string includes the git hash, so identical strings prove same build.
+        let shim_version = version_string();
+        let (compatible, runtime_version) =
+            check_version_compatibility(&runtime_path, &shim_version);
+
         ReaperShim {
             exit: Arc::new(ExitSignal::default()),
             runtime_path,
             namespace: args.namespace.clone(),
+            compatible,
+            runtime_version,
         }
     }
 
@@ -160,6 +228,8 @@ impl Shim for ReaperShim {
             publisher: Arc::new(publisher),
             namespace: self.namespace.clone(),
             exit: self.exit.clone(),
+            compatible: self.compatible,
+            runtime_version: self.runtime_version.clone(),
         }
     }
 }
@@ -186,6 +256,10 @@ struct ReaperTask {
     namespace: String,
     // Signal to tell the shim process to exit
     exit: Arc<ExitSignal>,
+    // Whether shim and runtime versions match (checked at startup)
+    compatible: bool,
+    // Runtime version string for error messages
+    runtime_version: String,
 }
 
 // Helper function to detect if a container is a sandbox/pause container
@@ -329,6 +403,22 @@ impl Task for ReaperTask {
             "create() called - container_id={}, bundle={}",
             req.id, req.bundle
         );
+
+        // Refuse all workloads if shim and runtime versions don't match.
+        // This prevents silent failures from mismatched binaries.
+        if !self.compatible {
+            let shim_version = version_string();
+            let msg = format!(
+                "Version mismatch: shim is {} but runtime is {}. \
+                 Both must be from the same build.",
+                shim_version, self.runtime_version
+            );
+            tracing::error!("create() refused: {}", msg);
+            return Err(ttrpc::Error::RpcStatus(ttrpc::get_status(
+                ttrpc::Code::FAILED_PRECONDITION,
+                msg,
+            )));
+        }
 
         // Detect if this is a sandbox/pause container
         let is_sandbox = is_sandbox_container(&req.bundle);
@@ -1395,8 +1485,22 @@ impl Task for ReaperTask {
     }
 }
 
+fn version_string() -> String {
+    format!(
+        "{} ({} {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("GIT_HASH"),
+        env!("BUILD_DATE"),
+    )
+}
+
 #[tokio::main]
 async fn main() {
+    // Handle --version before containerd-shim takes over arg parsing
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("containerd-shim-reaper-v2 {}", version_string());
+        return;
+    }
     // Setup tracing to log to a file instead of stdout/stderr
     // Containerd communicates with shims via stdout/stderr, so we can't pollute those streams
 
@@ -1681,5 +1785,154 @@ mod tests {
         let path = build_exec_state_path("ctr-1", "e1");
         assert_eq!(path, "/custom/path/ctr-1/exec-e1.json");
         std::env::remove_var("REAPER_RUNTIME_ROOT");
+    }
+
+    // --- version_string tests ---
+
+    #[test]
+    fn test_version_string_contains_version() {
+        let v = version_string();
+        assert!(
+            v.contains(env!("CARGO_PKG_VERSION")),
+            "version_string '{}' should contain cargo version '{}'",
+            v,
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    #[test]
+    fn test_version_string_format() {
+        // Expected format: "0.1.0 (abc1234 2026-02-18)"
+        let v = version_string();
+        assert!(v.contains('('), "version_string '{}' should contain '('", v);
+        assert!(v.contains(')'), "version_string '{}' should contain ')'", v);
+        // The git hash and date should be inside parentheses
+        let paren_start = v.find('(').unwrap();
+        let paren_end = v.find(')').unwrap();
+        let inner = &v[paren_start + 1..paren_end];
+        let parts: Vec<&str> = inner.split_whitespace().collect();
+        assert_eq!(
+            parts.len(),
+            2,
+            "parenthesized section '{}' should have exactly 2 parts (hash date)",
+            inner
+        );
+    }
+
+    // --- parse_runtime_version tests ---
+
+    #[test]
+    fn test_parse_runtime_version_with_prefix() {
+        assert_eq!(
+            parse_runtime_version("reaper-runtime 0.1.0 (abc1234 2026-02-18)"),
+            "0.1.0 (abc1234 2026-02-18)"
+        );
+    }
+
+    #[test]
+    fn test_parse_runtime_version_without_prefix() {
+        assert_eq!(
+            parse_runtime_version("0.1.0 (abc1234 2026-02-18)"),
+            "0.1.0 (abc1234 2026-02-18)"
+        );
+    }
+
+    #[test]
+    fn test_parse_runtime_version_trims_whitespace() {
+        assert_eq!(
+            parse_runtime_version("  reaper-runtime 0.1.0 (abc1234 2026-02-18)\n"),
+            "0.1.0 (abc1234 2026-02-18)"
+        );
+    }
+
+    #[test]
+    fn test_parse_runtime_version_empty() {
+        assert_eq!(parse_runtime_version(""), "");
+    }
+
+    // --- check_version_compatibility tests ---
+
+    #[test]
+    fn test_check_version_compatibility_nonexistent_binary() {
+        let (compatible, version) =
+            check_version_compatibility("/nonexistent/binary", "0.1.0 (abc1234 2026-02-18)");
+        assert!(!compatible, "nonexistent binary should be incompatible");
+        assert!(
+            version.contains("unknown"),
+            "version should indicate unknown: {}",
+            version
+        );
+    }
+
+    /// Helper to find the reaper-runtime binary in the same directory as the test binary.
+    /// CARGO_BIN_EXE_* is only available in integration tests, not unit tests.
+    fn find_runtime_binary() -> Option<String> {
+        let current_exe = std::env::current_exe().ok()?;
+        let dir = current_exe.parent()?;
+        // In test mode, binaries are in target/debug/deps/ — runtime is in target/debug/
+        let candidates = [
+            dir.join("reaper-runtime"),
+            dir.parent()?.join("reaper-runtime"),
+        ];
+        for candidate in &candidates {
+            if candidate.exists() {
+                return Some(candidate.to_str()?.to_string());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn test_check_version_compatibility_matching_version() {
+        // Use the real runtime binary built alongside the shim — versions must match
+        let runtime_bin = match find_runtime_binary() {
+            Some(p) => p,
+            None => {
+                eprintln!("Skipping: reaper-runtime binary not found in test directory");
+                return;
+            }
+        };
+        let shim_version = version_string();
+        let (compatible, rt_version) = check_version_compatibility(&runtime_bin, &shim_version);
+        assert!(
+            compatible,
+            "same-build binaries should be compatible: shim='{}' runtime='{}'",
+            shim_version, rt_version
+        );
+        assert_eq!(rt_version, shim_version);
+    }
+
+    #[test]
+    fn test_check_version_compatibility_mismatched_version() {
+        // Use the real runtime binary but compare against a fake shim version
+        let runtime_bin = match find_runtime_binary() {
+            Some(p) => p,
+            None => {
+                eprintln!("Skipping: reaper-runtime binary not found in test directory");
+                return;
+            }
+        };
+        let (compatible, rt_version) =
+            check_version_compatibility(&runtime_bin, "99.99.99 (fake123 2099-01-01)");
+        assert!(
+            !compatible,
+            "different versions should be incompatible: runtime='{}'",
+            rt_version
+        );
+        // runtime_version should be the real version, not the fake one
+        assert!(
+            rt_version.contains(env!("CARGO_PKG_VERSION")),
+            "runtime version '{}' should contain actual pkg version",
+            rt_version
+        );
+    }
+
+    #[test]
+    fn test_check_version_compatibility_failing_binary() {
+        // Use /usr/bin/false — exits non-zero
+        let (compatible, version) =
+            check_version_compatibility("/usr/bin/false", "0.1.0 (abc1234 2026-02-18)");
+        assert!(!compatible, "failing binary should be incompatible");
+        assert_eq!(version, "unknown (--version failed)");
     }
 }
