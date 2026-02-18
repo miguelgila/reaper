@@ -1395,8 +1395,22 @@ impl Task for ReaperTask {
     }
 }
 
+fn version_string() -> String {
+    format!(
+        "{} ({} {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("GIT_HASH"),
+        env!("BUILD_DATE"),
+    )
+}
+
 #[tokio::main]
 async fn main() {
+    // Handle --version before containerd-shim takes over arg parsing
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("containerd-shim-reaper-v2 {}", version_string());
+        return;
+    }
     // Setup tracing to log to a file instead of stdout/stderr
     // Containerd communicates with shims via stdout/stderr, so we can't pollute those streams
 
