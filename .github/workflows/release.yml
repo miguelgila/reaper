@@ -90,6 +90,20 @@ jobs:
       id-token: write  # Required for cosign keyless signing via GitHub OIDC
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install git-cliff
+        uses: kenji-miyake/setup-git-cliff@v2
+
+      - name: Generate release notes
+        id: release-notes
+        run: |
+          {
+            echo 'BODY<<EOF'
+            git-cliff --latest --strip header
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -117,7 +131,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body: ${{ steps.release-notes.outputs.BODY }}
           files: |
             artifacts/*.tar.gz
             artifacts/checksums-sha256.txt
