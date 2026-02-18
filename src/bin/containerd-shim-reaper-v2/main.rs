@@ -7,6 +7,8 @@ use containerd_shim_protos::{
     api, api::DeleteResponse, shim_async::Task, ttrpc::r#async::TtrpcContext,
 };
 use std::collections::HashMap;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing::info;
@@ -154,6 +156,7 @@ impl Shim for ReaperShim {
         ReaperTask {
             runtime_path: self.runtime_path.clone(),
             sandbox_state: Arc::new(Mutex::new(HashMap::new())),
+            stdin_holders: Arc::new(Mutex::new(HashMap::new())),
             publisher: Arc::new(publisher),
             namespace: self.namespace.clone(),
             exit: self.exit.clone(),
@@ -173,6 +176,10 @@ struct ReaperTask {
     runtime_path: String,
     // Track which containers are sandboxes (pause containers) vs real workloads
     sandbox_state: Arc<Mutex<HashMap<String, SandboxInfo>>>,
+    // Hold stdin FIFO read ends open so containerd doesn't get EPIPE
+    // when the daemon exits before containerd closes the write end.
+    // Dropped on close_io() or delete().
+    stdin_holders: Arc<Mutex<HashMap<String, std::fs::File>>>,
     // Publisher for sending task lifecycle events to containerd
     publisher: Arc<RemotePublisher>,
     // Namespace for events
@@ -432,6 +439,28 @@ impl Task for ReaperTask {
             )));
         }
 
+        // Hold the stdin FIFO read end open so containerd doesn't get EPIPE
+        // when the daemon exits. Opened non-blocking because the write end
+        // (containerd) may not be connected yet.
+        if !req.stdin.is_empty() {
+            match std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(nix::libc::O_NONBLOCK)
+                .open(&req.stdin)
+            {
+                Ok(file) => {
+                    info!("create() - holding stdin FIFO open: {}", req.stdin);
+                    self.stdin_holders
+                        .lock()
+                        .unwrap()
+                        .insert(req.id.clone(), file);
+                }
+                Err(e) => {
+                    tracing::warn!("create() - failed to open stdin FIFO {}: {}", req.stdin, e);
+                }
+            }
+        }
+
         let mut resp = api::CreateTaskResponse::new();
         resp.set_pid(0); // PID will be set on start
         info!("create() succeeded - container_id={}", req.id);
@@ -621,6 +650,9 @@ impl Task for ReaperTask {
                 ..Default::default()
             });
         }
+
+        // Clean up stdin holder if still present
+        self.stdin_holders.lock().unwrap().remove(&req.id);
 
         // Check if this is a sandbox container
         let is_sandbox = {
@@ -1248,6 +1280,23 @@ impl Task for ReaperTask {
         );
         // TODO: Propagate window size to PTY master (requires IPC with runtime daemon)
         // For now, return success - terminal works but won't resize dynamically
+        Ok(api::Empty::new())
+    }
+
+    async fn close_io(
+        &self,
+        _ctx: &TtrpcContext,
+        req: api::CloseIORequest,
+    ) -> TtrpcResult<api::Empty> {
+        info!(
+            "close_io() called - container_id={}, exec_id={}, stdin={}",
+            req.id, req.exec_id, req.stdin
+        );
+        // Drop our stdin FIFO read-end so containerd can detect the closed pipe
+        // and stop writing. Without this, the held fd prevents clean teardown.
+        if req.stdin && self.stdin_holders.lock().unwrap().remove(&req.id).is_some() {
+            info!("close_io() - released stdin FIFO holder for {}", req.id);
+        }
         Ok(api::Empty::new())
     }
 

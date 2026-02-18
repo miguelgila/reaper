@@ -311,6 +311,10 @@ export REAPER_SHIM_LOG=/var/log/reaper-shim.log
 export REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log
 ```
 
+## Known Issues
+
+- **"write on closed stream 0" warning on interactive exit**: When exiting an interactive PTY session (`kubectl run -it ... -- /bin/sh`, then typing `exit`), containerd may log `error stream protocol error: unknown error` and kubectl may print a brief warning. This is a cosmetic race condition in containerd's CRI streaming handler during FIFO teardown and does not affect the workload exit code or pod status.
+
 ## Contributing
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for:
