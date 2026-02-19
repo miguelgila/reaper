@@ -110,7 +110,8 @@ jobs:
           git add Cargo.toml Cargo.lock CHANGELOG.md
           git commit -m "chore(release): v${{ steps.bump.outputs.version }} [skip ci]"
           git tag -a "v${{ steps.bump.outputs.version }}" -m "Release v${{ steps.bump.outputs.version }}"
-          git push origin main --follow-tags
+          git push origin main
+          git push origin "v${{ steps.bump.outputs.version }}"
 
       - name: Summary
         run: |
