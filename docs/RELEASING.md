@@ -64,16 +64,31 @@ Monitor at: `https://github.com/miguelgila/reaper/actions/workflows/release.yml`
 
 ## Setup
 
-### `RELEASE_TOKEN` (one-time)
+### GitHub App credentials (one-time)
 
-The auto and manual release workflows require a Personal Access Token (PAT) stored as a repository secret named `RELEASE_TOKEN`. This is needed because pushes made with the default `GITHUB_TOKEN` do not trigger downstream workflows (the tag push must trigger `release.yml`).
+The auto and manual release workflows use a [GitHub App](https://docs.github.com/en/apps) to push version-bump commits and tags. This is needed because pushes made with the default `GITHUB_TOKEN` do not trigger downstream workflows (the tag push must trigger `release.yml`). A GitHub App token avoids the expiration headaches of classic PATs and scopes access to just this repository.
 
-1. Go to **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
-2. Create a token with:
-   - **Repository access**: Only this repository
-   - **Permissions**: Contents (read and write)
-3. Go to the repository → **Settings** → **Secrets and variables** → **Actions**
-4. Create a secret named `RELEASE_TOKEN` with the token value
+1. **Create a GitHub App** (if you haven't already):
+   - Go to **Settings** → **Developer settings** → **GitHub Apps** → **New GitHub App**
+   - Set **Homepage URL** to the repository URL
+   - Uncheck **Webhook → Active**
+   - Under **Repository permissions**, set **Contents** to **Read and write**
+   - Click **Create GitHub App** and note the **App ID**
+
+2. **Generate a private key**:
+   - On the app's settings page, scroll to **Private keys** → **Generate a private key**
+   - A `.pem` file downloads — keep it safe
+
+3. **Install the app on the repository**:
+   - Go to the app's **Install App** tab → select your account → **Only select repositories** → choose `reaper`
+
+4. **Store credentials as repository secrets**:
+   ```bash
+   gh secret set APP_ID --body "<your app id>"
+   gh secret set APP_PRIVATE_KEY < /path/to/downloaded-key.pem
+   ```
+
+The workflows use [`actions/create-github-app-token`](https://github.com/actions/create-github-app-token) to mint a short-lived token on each run — no manual rotation needed.
 
 ## Release Artifacts
 
@@ -175,12 +190,13 @@ To roll back a deployed version, re-run the install script with the previous ver
 
 - Check if the PR had the `skip-release` label
 - Check if the last commit on `main` was already a `chore(release):` commit (loop guard)
-- Verify the `RELEASE_TOKEN` secret is configured
+- Verify the `APP_ID` and `APP_PRIVATE_KEY` secrets are configured
 
 ### Release workflow didn't trigger after version bump
 
-- The `RELEASE_TOKEN` PAT may have expired — regenerate it
-- Pushes with the default `GITHUB_TOKEN` don't trigger downstream workflows; ensure auto/manual release uses `RELEASE_TOKEN`
+- Verify the GitHub App is installed on the repository and has **Contents: read & write** permission
+- Check that `APP_ID` and `APP_PRIVATE_KEY` secrets are set correctly
+- Pushes with the default `GITHUB_TOKEN` don't trigger downstream workflows — the workflows must use the GitHub App token
 
 ### Version bump commit triggered CI workflows
 
