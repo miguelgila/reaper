@@ -29,7 +29,6 @@ SKIP_BUILD=false
 QUIET=false
 CLEANUP=false
 RELEASE_VERSION=""      # empty = build from source; "latest" or "vX.Y.Z" = download
-GITHUB_REPO="miguelgila/reaper"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -216,27 +215,14 @@ fi
 # ---------------------------------------------------------------------------
 # Resolve "latest" release version
 # ---------------------------------------------------------------------------
-resolve_latest_release() {
-  local latest
-  # Prefer gh CLI if available (handles auth, rate limits)
-  if command -v gh >/dev/null 2>&1; then
-    latest=$(gh release view --repo "$GITHUB_REPO" --json tagName -q '.tagName' 2>/dev/null) || true
-  fi
-  # Fallback to GitHub API via curl
-  if [[ -z "${latest:-}" ]]; then
-    latest=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null \
-      | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/') || true
-  fi
-  if [[ -z "${latest:-}" ]]; then
-    fail "Could not determine latest release. Check https://github.com/${GITHUB_REPO}/releases or specify a version: --release v0.2.4"
-  fi
-  echo "$latest"
-}
+# shellcheck source=lib/release-utils.sh
+source "$SCRIPT_DIR/lib/release-utils.sh"
 
 if [[ -n "$RELEASE_VERSION" ]]; then
   if [[ "$RELEASE_VERSION" == "latest" ]]; then
     info "Resolving latest release..." | if_log
-    RELEASE_VERSION=$(resolve_latest_release)
+    RELEASE_VERSION=$(resolve_latest_release) || \
+      fail "Could not determine latest release. Check https://github.com/${GITHUB_REPO}/releases or specify a version: --release v0.2.4"
     ok "Latest release: $RELEASE_VERSION" | if_log
   fi
 fi
