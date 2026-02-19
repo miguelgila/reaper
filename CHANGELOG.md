@@ -5,10 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.3] - 2026-02-19
+## [0.2.4] - 2026-02-19
 
 ### Bug Fixes
 
+- Trigger release workflow via workflow_dispatch (c8cc0ce)
 - Push tag separately to trigger release workflow (e7636d7)
 - Use GitHub App token for release workflows (ea4efd9)
 ## [0.2.1] - 2026-02-18
