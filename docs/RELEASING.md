@@ -10,7 +10,8 @@ PR merges to main                    Manual trigger (Actions UI)
    auto-release.yml                  manual-release.yml
    (bump patch)                      (bump major/minor/patch)
         │                                     │
-        └──────── both push v* tag ───────────┘
+        └──── both push commit + tag ─────────┘
+              then trigger via workflow_dispatch
                          │
                    release.yml
                    (build, sign, publish)
@@ -24,7 +25,7 @@ Every PR merged to `main` triggers the [Auto Release](../.github/workflows/auto-
 2. Updates `Cargo.lock`
 3. Commits with `chore(release): vX.Y.Z [skip ci]`
 4. Creates an annotated tag `vX.Y.Z`
-5. Pushes — the tag push triggers the existing [release workflow](../.github/workflows/release.yml)
+5. Pushes commit and tag, then triggers the [release workflow](../.github/workflows/release.yml) via `workflow_dispatch`
 
 To **skip** the auto-release, add the `skip-release` label to your PR before merging.
 
@@ -50,7 +51,7 @@ The workflow performs the same steps as auto-release but supports all bump types
 
 ### Release Pipeline (build, sign, publish)
 
-Both auto and manual releases trigger the [Release](../.github/workflows/release.yml) workflow via tag push, which:
+Both auto and manual releases trigger the [Release](../.github/workflows/release.yml) workflow via `workflow_dispatch` (not tag push — see [Design Decisions](#design-decisions) below), which:
 
 1. Validates that the tag version matches `Cargo.toml`
 2. Builds static musl binaries for x86_64 and aarch64
@@ -66,13 +67,15 @@ Monitor at: `https://github.com/miguelgila/reaper/actions/workflows/release.yml`
 
 ### GitHub App credentials (one-time)
 
-The auto and manual release workflows use a [GitHub App](https://docs.github.com/en/apps) to push version-bump commits and tags. This is needed because pushes made with the default `GITHUB_TOKEN` do not trigger downstream workflows (the tag push must trigger `release.yml`). A GitHub App token avoids the expiration headaches of classic PATs and scopes access to just this repository.
+The auto and manual release workflows use a [GitHub App](https://docs.github.com/en/apps) to push version-bump commits and tags, and to trigger `release.yml` via `workflow_dispatch`. This is needed because the default `GITHUB_TOKEN` cannot push to protected branches or trigger downstream workflows. A GitHub App token avoids the expiration headaches of classic PATs and scopes access to just this repository.
 
 1. **Create a GitHub App** (if you haven't already):
    - Go to **Settings** → **Developer settings** → **GitHub Apps** → **New GitHub App**
    - Set **Homepage URL** to the repository URL
    - Uncheck **Webhook → Active**
-   - Under **Repository permissions**, set **Contents** to **Read and write**
+   - Under **Repository permissions**, set:
+     - **Contents** → **Read and write** (push commits and tags)
+     - **Actions** → **Read and write** (trigger `release.yml` via `workflow_dispatch`)
    - Click **Create GitHub App** and note the **App ID**
 
 2. **Generate a private key**:
@@ -82,7 +85,13 @@ The auto and manual release workflows use a [GitHub App](https://docs.github.com
 3. **Install the app on the repository**:
    - Go to the app's **Install App** tab → select your account → **Only select repositories** → choose `reaper`
 
-4. **Store credentials as repository secrets**:
+4. **Add the app to the branch protection bypass list**:
+   - Go to repo **Settings** → **Rules** → **Rulesets** → select the ruleset for `main`
+   - Under **Bypass list** → **Add bypass** → search for the app name
+   - Set to **Always** bypass
+   - Save — this allows the app to push release commits directly to `main`
+
+5. **Store credentials as repository secrets**:
    ```bash
    gh secret set APP_ID --body "<your app id>"
    gh secret set APP_PRIVATE_KEY < /path/to/downloaded-key.pem
@@ -194,9 +203,14 @@ To roll back a deployed version, re-run the install script with the previous ver
 
 ### Release workflow didn't trigger after version bump
 
-- Verify the GitHub App is installed on the repository and has **Contents: read & write** permission
+- Verify the GitHub App is installed on the repository with **Contents: read & write** and **Actions: read & write** permissions
 - Check that `APP_ID` and `APP_PRIVATE_KEY` secrets are set correctly
-- Pushes with the default `GITHUB_TOKEN` don't trigger downstream workflows — the workflows must use the GitHub App token
+- Check the auto/manual release run logs — the "Trigger release workflow" step should show success
+
+### Version bump commit was rejected by branch protection
+
+- The GitHub App must be in the branch protection **bypass list** (see [Setup](#github-app-credentials-one-time))
+- Without the bypass, the tag push succeeds but the commit push is rejected, leaving an orphaned tag — delete it with `git push origin :refs/tags/vX.Y.Z` and retry after fixing
 
 ### Version bump commit triggered CI workflows
 
@@ -207,6 +221,29 @@ To roll back a deployed version, re-run the install script with the previous ver
 
 - Both auto and manual release share the `version-bump` concurrency group
 - Only one version bump can run at a time; the second will queue (not cancel)
+
+## Design Decisions
+
+### Why `workflow_dispatch` instead of tag-push events
+
+The release workflow (`release.yml`) is triggered explicitly via `gh workflow run` rather than relying on `on: push: tags`. This is because:
+
+1. **`GITHUB_TOKEN` doesn't trigger workflows.** GitHub suppresses workflow triggers from pushes made with `GITHUB_TOKEN` to prevent infinite loops.
+
+2. **GitHub App tokens don't generate tag push events.** While App tokens _can_ trigger workflows for branch pushes, tag pushes via `git push origin <tag>` do not generate the `push` event that `on: push: tags` listens for. This is true even when the tag push succeeds — it lands on the remote but no event fires.
+
+3. **`--follow-tags` merges events.** Using `git push --follow-tags` sends the branch and tag in a single operation. GitHub generates a single push event for the branch ref, not a separate one for the tag.
+
+4. **Classic PATs work but have drawbacks.** A classic PAT with `repo` scope _does_ generate tag push events, but classic PATs expire (requiring manual rotation), grant broad access (all repos, not just this one), and are being deprecated in favor of fine-grained PATs and GitHub Apps.
+
+The `workflow_dispatch` approach is explicit, reliable, and works with any token type. The `on: push: tags` trigger is kept as a fallback (e.g., for manual `git push` of a tag with a classic PAT).
+
+### Why a GitHub App instead of a PAT
+
+- **No expiration** — App tokens are minted per-run, so there's nothing to rotate
+- **Scoped to one repo** — unlike classic PATs which grant access to all repos
+- **Fine-grained permissions** — only Contents and Actions, not full `repo` scope
+- **Audit trail** — actions appear as the app, not a personal account
 
 ## Version Scheme
 
