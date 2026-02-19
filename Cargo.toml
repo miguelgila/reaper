@@ -1,6 +1,6 @@
 [package]
 name = "reaper"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 authors = ["Miguel Gila <miguelgila@gmail.com>"]
 description = "A lightweight Kubernetes container-less runtime that executes commands directly on cluster nodes"
