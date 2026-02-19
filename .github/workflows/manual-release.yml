@@ -113,6 +113,12 @@ jobs:
           git push origin main
           git push origin "v${{ steps.bump.outputs.version }}"
 
+      - name: Trigger release workflow
+        if: ${{ !inputs.dry_run }}
+        run: gh workflow run release.yml -f tag="v${{ steps.bump.outputs.version }}"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+
       - name: Summary
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then

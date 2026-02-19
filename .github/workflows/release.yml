@@ -4,20 +4,45 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g., v0.2.3)"
+        required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  resolve-tag:
+    name: Resolve Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
   validate-tag:
     name: Validate Tag
+    needs: resolve-tag
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
 
       - name: Verify tag matches Cargo.toml version
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="${{ needs.resolve-tag.outputs.tag }}"
+          TAG_VERSION="${TAG_VERSION#v}"
           CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
             echo "ERROR: Tag version ($TAG_VERSION) does not match Cargo.toml version ($CARGO_VERSION)"
@@ -27,7 +52,7 @@ jobs:
 
   build:
     name: Build (${{ matrix.target }})
-    needs: validate-tag
+    needs: [resolve-tag, validate-tag]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -40,6 +65,8 @@ jobs:
             musl_image: messense/rust-musl-cross:aarch64-musl
     steps:
       - uses: actions/checkout@v3
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
 
       - name: Build static binaries
         run: |
@@ -55,7 +82,8 @@ jobs:
       - name: Verify version in binaries
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          TAG_VERSION="${{ needs.resolve-tag.outputs.tag }}"
+          TAG_VERSION="${TAG_VERSION#v}"
           BINARY_VERSION=$(./target/${{ matrix.target }}/release/reaper-runtime --version 2>&1 | head -1)
           echo "Binary reports: $BINARY_VERSION"
           echo "$BINARY_VERSION" | grep -q "$TAG_VERSION" || {
@@ -65,7 +93,8 @@ jobs:
 
       - name: Package tarball
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ needs.resolve-tag.outputs.tag }}"
+          VERSION="${VERSION#v}"
           DIRNAME="reaper-${VERSION}-${{ matrix.target }}"
           mkdir -p "$DIRNAME"
           cp target/${{ matrix.target }}/release/containerd-shim-reaper-v2 "$DIRNAME/"
@@ -83,7 +112,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [resolve-tag, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -91,6 +120,7 @@ jobs:
     steps:
       - uses: actions/checkout@v3
         with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
           fetch-depth: 0
 
       - name: Install git-cliff
@@ -131,6 +161,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.resolve-tag.outputs.tag }}
           body: ${{ steps.release-notes.outputs.BODY }}
           files: |
             artifacts/*.tar.gz

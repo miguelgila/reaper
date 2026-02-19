@@ -102,3 +102,9 @@ jobs:
           git tag -a "v${{ steps.bump.outputs.version }}" -m "Release v${{ steps.bump.outputs.version }}"
           git push origin main
           git push origin "v${{ steps.bump.outputs.version }}"
+
+      - name: Trigger release workflow
+        if: steps.loop-guard.outputs.skip != 'true'
+        run: gh workflow run release.yml -f tag="v${{ steps.bump.outputs.version }}"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
