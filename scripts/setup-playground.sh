@@ -2,7 +2,9 @@
 # setup-playground.sh — Create a Reaper-enabled Kind cluster for manual testing.
 #
 # Usage:
-#   ./scripts/setup-playground.sh                          # Create 3-node playground
+#   ./scripts/setup-playground.sh                          # Build from source + create cluster
+#   ./scripts/setup-playground.sh --release                # Use latest GitHub release (no build)
+#   ./scripts/setup-playground.sh --release v0.2.4         # Use specific GitHub release
 #   ./scripts/setup-playground.sh --cleanup                # Delete playground cluster
 #   ./scripts/setup-playground.sh --cluster-name my-test   # Custom cluster name
 #   ./scripts/setup-playground.sh --kind-config <path>     # Custom Kind config
@@ -13,6 +15,7 @@
 #   - kind (https://kind.sigs.k8s.io/)
 #   - kubectl
 #   - ansible-playbook (pip install ansible)
+#   - curl (for --release mode)
 #   - Run from the repository root
 
 set -euo pipefail
@@ -25,6 +28,8 @@ KIND_CONFIG=""          # empty = generate default 3-node config
 SKIP_BUILD=false
 QUIET=false
 CLEANUP=false
+RELEASE_VERSION=""      # empty = build from source; "latest" or "vX.Y.Z" = download
+GITHUB_REPO="miguelgila/reaper"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -86,6 +91,16 @@ while [[ $# -gt 0 ]]; do
       [[ ! -f "$KIND_CONFIG" ]] && fail "Kind config not found: $KIND_CONFIG"
       shift 2
       ;;
+    --release)
+      # Accept optional version argument; default to "latest"
+      if [[ -n "${2:-}" ]] && [[ "$2" != --* ]]; then
+        RELEASE_VERSION="$2"
+        shift 2
+      else
+        RELEASE_VERSION="latest"
+        shift
+      fi
+      ;;
     --skip-build)
       SKIP_BUILD=true
       shift
@@ -100,10 +115,11 @@ while [[ $# -gt 0 ]]; do
       echo "Create a Reaper-enabled Kind cluster for testing."
       echo ""
       echo "Options:"
+      echo "  --release [version]     Use pre-built binaries from GitHub Releases (default: latest)"
       echo "  --cleanup               Delete the playground cluster"
       echo "  --cluster-name <name>   Cluster name (default: reaper-playground)"
       echo "  --kind-config <path>    Custom Kind config file (default: 3-node cluster)"
-      echo "  --skip-build            Skip binary cross-compilation"
+      echo "  --skip-build            Skip binary cross-compilation (when building from source)"
       echo "  --quiet                 Suppress output (for scripted use)"
       echo "  -h, --help              Show this help"
       echo ""
@@ -198,12 +214,45 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Build static musl binaries
+# Resolve "latest" release version
 # ---------------------------------------------------------------------------
-if ! $SKIP_BUILD; then
-  info "Building Reaper binaries for Kind nodes" | if_log
+resolve_latest_release() {
+  local latest
+  # Prefer gh CLI if available (handles auth, rate limits)
+  if command -v gh >/dev/null 2>&1; then
+    latest=$(gh release view --repo "$GITHUB_REPO" --json tagName -q '.tagName' 2>/dev/null) || true
+  fi
+  # Fallback to GitHub API via curl
+  if [[ -z "${latest:-}" ]]; then
+    latest=$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null \
+      | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/') || true
+  fi
+  if [[ -z "${latest:-}" ]]; then
+    fail "Could not determine latest release. Check https://github.com/${GITHUB_REPO}/releases or specify a version: --release v0.2.4"
+  fi
+  echo "$latest"
+}
 
-  cd "$REPO_ROOT"
+if [[ -n "$RELEASE_VERSION" ]]; then
+  if [[ "$RELEASE_VERSION" == "latest" ]]; then
+    info "Resolving latest release..." | if_log
+    RELEASE_VERSION=$(resolve_latest_release)
+    ok "Latest release: $RELEASE_VERSION" | if_log
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Obtain binaries (release download OR build from source)
+# ---------------------------------------------------------------------------
+cd "$REPO_ROOT"
+
+if [[ -n "$RELEASE_VERSION" ]]; then
+  # --release mode: delegate to install-reaper.sh which handles download
+  info "Using pre-built release $RELEASE_VERSION (skipping build)" | if_log
+  INSTALL_RELEASE_ARGS="--release $RELEASE_VERSION"
+
+elif ! $SKIP_BUILD; then
+  info "Building Reaper binaries for Kind nodes" | if_log
 
   NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
   NODE_ARCH=$(docker exec "$NODE_ID" uname -m 2>&1) || fail "Cannot detect node architecture"
@@ -259,9 +308,10 @@ if ! $SKIP_BUILD; then
   fi
 
   ok "Binaries built." | if_log
+  INSTALL_RELEASE_ARGS=""
 else
   info "Skipping build (--skip-build)" | if_log
-  cd "$REPO_ROOT"
+  INSTALL_RELEASE_ARGS=""
 fi
 
 # ---------------------------------------------------------------------------
@@ -269,12 +319,13 @@ fi
 # ---------------------------------------------------------------------------
 info "Installing Reaper runtime on all nodes" | if_log
 
+# shellcheck disable=SC2086
 if $QUIET; then
-  ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1 || {
+  ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" $INSTALL_RELEASE_ARGS >> "$LOG_FILE" 2>&1 || {
     fail "Ansible install failed. See $LOG_FILE for details."
   }
 else
-  ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" 2>&1 | tee -a "$LOG_FILE" || {
+  ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" $INSTALL_RELEASE_ARGS 2>&1 | tee -a "$LOG_FILE" || {
     fail "Ansible install failed. See $LOG_FILE for details."
   }
 fi

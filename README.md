@@ -39,15 +39,23 @@ Reaper is a containerd shim that runs processes directly on the host system whil
 
 ### Playground (try it locally)
 
-Spin up a 3-node Kind cluster with Reaper pre-installed:
+Spin up a 3-node Kind cluster with Reaper pre-installed. No Rust toolchain needed.
+
+**Quickest way** — download pre-built binaries from the latest [GitHub Release](https://github.com/miguelgila/reaper/releases):
 
 ```bash
 # Prerequisites: Docker, kind, kubectl, ansible (pip install ansible)
+./scripts/setup-playground.sh --release
+```
+
+**Build from source** — compiles inside Docker (still no local Rust needed):
+
+```bash
 ./scripts/setup-playground.sh
 ```
 
-This builds Reaper, creates a Kind cluster with 1 control-plane + 2 worker nodes,
-installs the runtime on all nodes, and runs a smoke test. Once ready, try:
+Both create a Kind cluster with 1 control-plane + 2 worker nodes, install the
+runtime on all nodes, and run a smoke test. Once ready, try:
 
 ```bash
 kubectl run hello --rm -it --image=busybox --restart=Never \
@@ -267,11 +275,14 @@ The [examples/](examples/) directory contains runnable demos, each with a `setup
 - **Kubernetes cluster** with containerd runtime
 - **Root access** on cluster nodes (required for containerd shim installation)
 
-**Local development / playground:**
+**Playground (no Rust needed):**
 - [Docker](https://docs.docker.com/get-docker/)
 - [kind](https://kind.sigs.k8s.io/) (Kubernetes in Docker)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
 - [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/) (`pip install ansible`)
+
+**Local development (building from source natively):**
+- All of the above, plus [Rust](https://www.rust-lang.org/tools/install) (toolchain version pinned in `rust-toolchain.toml`)
 
 **Note:** Overlay filesystem is Linux-only. On macOS, the runtime compiles but overlay features are disabled.
 
