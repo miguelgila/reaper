@@ -1,0 +1,193 @@
+# OpenLDAP server — runs with the DEFAULT container runtime (not Reaper).
+#
+# This demonstrates mixed runtime engines in the same cluster: a standard
+# containerized service alongside Reaper workloads that consume it.
+#
+# Three resources:
+#   1. ConfigMap with bootstrap LDIF (users and groups)
+#   2. Deployment with Bitnami OpenLDAP
+#   3. Service with fixed ClusterIP (Reaper pods can't resolve DNS)
+#
+# Prerequisites:
+#   - Run setup.sh first (creates cluster and labels nodes)
+#
+# Usage:
+#   kubectl apply -f openldap.yaml
+#   kubectl rollout status deployment/openldap --timeout=120s
+#   kubectl exec deploy/openldap -- ldapsearch -x -H ldap://localhost:1389 \
+#     -b "dc=reaper,dc=local" "(objectClass=posixAccount)" uid uidNumber
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openldap-bootstrap-ldif
+data:
+  bootstrap.ldif: |
+    # Organizational Units
+    dn: ou=users,dc=reaper,dc=local
+    objectClass: organizationalUnit
+    ou: users
+
+    dn: ou=groups,dc=reaper,dc=local
+    objectClass: organizationalUnit
+    ou: groups
+
+    # Group for LDAP users
+    dn: cn=ldapusr,ou=groups,dc=reaper,dc=local
+    objectClass: posixGroup
+    cn: ldapusr
+    gidNumber: 5000
+    memberUid: user1
+    memberUid: user2
+    memberUid: user3
+    memberUid: user4
+    memberUid: user5
+
+    # User 1
+    dn: uid=user1,ou=users,dc=reaper,dc=local
+    objectClass: inetOrgPerson
+    objectClass: posixAccount
+    objectClass: shadowAccount
+    uid: user1
+    sn: One
+    givenName: User
+    cn: User One
+    displayName: User One
+    uidNumber: 10001
+    gidNumber: 5000
+    userPassword: password1
+    loginShell: /bin/bash
+    homeDirectory: /home/user1
+
+    # User 2
+    dn: uid=user2,ou=users,dc=reaper,dc=local
+    objectClass: inetOrgPerson
+    objectClass: posixAccount
+    objectClass: shadowAccount
+    uid: user2
+    sn: Two
+    givenName: User
+    cn: User Two
+    displayName: User Two
+    uidNumber: 10002
+    gidNumber: 5000
+    userPassword: password2
+    loginShell: /bin/bash
+    homeDirectory: /home/user2
+
+    # User 3
+    dn: uid=user3,ou=users,dc=reaper,dc=local
+    objectClass: inetOrgPerson
+    objectClass: posixAccount
+    objectClass: shadowAccount
+    uid: user3
+    sn: Three
+    givenName: User
+    cn: User Three
+    displayName: User Three
+    uidNumber: 10003
+    gidNumber: 5000
+    userPassword: password3
+    loginShell: /bin/bash
+    homeDirectory: /home/user3
+
+    # User 4
+    dn: uid=user4,ou=users,dc=reaper,dc=local
+    objectClass: inetOrgPerson
+    objectClass: posixAccount
+    objectClass: shadowAccount
+    uid: user4
+    sn: Four
+    givenName: User
+    cn: User Four
+    displayName: User Four
+    uidNumber: 10004
+    gidNumber: 5000
+    userPassword: password4
+    loginShell: /bin/bash
+    homeDirectory: /home/user4
+
+    # User 5
+    dn: uid=user5,ou=users,dc=reaper,dc=local
+    objectClass: inetOrgPerson
+    objectClass: posixAccount
+    objectClass: shadowAccount
+    uid: user5
+    sn: Five
+    givenName: User
+    cn: User Five
+    displayName: User Five
+    uidNumber: 10005
+    gidNumber: 5000
+    userPassword: password5
+    loginShell: /bin/bash
+    homeDirectory: /home/user5
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openldap
+  labels:
+    app: openldap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: openldap
+  template:
+    metadata:
+      labels:
+        app: openldap
+    spec:
+      # No runtimeClassName — uses default containerd/runc runtime
+      nodeSelector:
+        role: login
+      containers:
+        - name: openldap
+          image: bitnami/openldap:2.6
+          env:
+            - name: LDAP_ROOT
+              value: "dc=reaper,dc=local"
+            - name: LDAP_ADMIN_USERNAME
+              value: "admin"
+            - name: LDAP_ADMIN_PASSWORD
+              value: "adminpassword"
+            - name: LDAP_CUSTOM_LDIF_DIR
+              value: "/ldifs"
+            - name: LDAP_ALLOW_ANON_BINDING
+              value: "yes"
+          ports:
+            - containerPort: 1389
+              name: ldap
+          volumeMounts:
+            - name: bootstrap-ldif
+              mountPath: /ldifs
+              readOnly: true
+      volumes:
+        - name: bootstrap-ldif
+          configMap:
+            name: openldap-bootstrap-ldif
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openldap
+  labels:
+    app: openldap
+spec:
+  type: ClusterIP
+  # Fixed ClusterIP for predictability. Reaper workloads run with host
+  # networking and can reach ClusterIPs (kube-proxy iptables), but cannot
+  # resolve Kubernetes DNS names (the node's /etc/resolv.conf doesn't
+  # point to CoreDNS). A fixed IP avoids DNS-based service discovery.
+  clusterIP: 10.96.100.100
+  selector:
+    app: openldap
+  ports:
+    - port: 389
+      targetPort: 1389
+      protocol: TCP
+      name: ldap

@@ -115,6 +115,21 @@ kubectl apply -f examples/07-ansible-complex/
 kubectl rollout status daemonset/nginx-login --timeout=300s
 ```
 
+### [08-mix-container-runtime-engines/](08-mix-container-runtime-engines/) — Mixed Runtime Engines
+
+Demonstrates **mixed runtime engines** in the same cluster: a standard containerized OpenLDAP server (default containerd/runc) alongside Reaper workloads that configure SSSD on every node. Reaper pods consume the LDAP service via a fixed ClusterIP, enabling `getent passwd` to resolve LDAP users on the host.
+
+- **4-node cluster** (1 control-plane + 3 workers: 1 login, 2 compute)
+- OpenLDAP Deployment (default runtime) with 5 posixAccount users
+- Reaper DaemonSets: Ansible bootstrap + SSSD configuration (all workers)
+- Init containers handle dependency ordering (Ansible + LDAP readiness)
+
+```bash
+./examples/08-mix-container-runtime-engines/setup.sh
+kubectl apply -f examples/08-mix-container-runtime-engines/
+kubectl rollout status daemonset/base-config --timeout=300s
+```
+
 ## Cleanup
 
 Each example can be cleaned up independently:
@@ -127,4 +142,5 @@ Each example can be cleaned up independently:
 ./examples/05-kubemix/setup.sh --cleanup
 ./examples/06-ansible-jobs/setup.sh --cleanup
 ./examples/07-ansible-complex/setup.sh --cleanup
+./examples/08-mix-container-runtime-engines/setup.sh --cleanup
 ```
