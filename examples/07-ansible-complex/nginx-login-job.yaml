@@ -1,19 +1,19 @@
 # Run an Ansible playbook to install nginx on login nodes only.
 #
-# Each pod reads the playbook from the 'nginx-login-playbook' ConfigMap
-# and runs it locally with ansible-playbook. Ansible must already be
-# installed in the overlay (by the ansible-bootstrap DaemonSet).
+# Each pod has an init container that waits for Ansible to appear in the
+# shared overlay (installed by the ansible-bootstrap DaemonSet). This
+# means you can deploy the DaemonSet and this Job simultaneously —
+# the Job pods block until Ansible is ready.
 #
 # Targets only nodes labeled role=login (2 nodes).
 #
 # Prerequisites:
 #   - Reaper installed on all nodes
-#   - ansible-bootstrap DaemonSet running (Ansible available in overlay)
 #   - ConfigMap 'nginx-login-playbook' created by setup.sh
 #   - Nodes labeled role=login
 #
 # Usage:
-#   kubectl apply -f nginx-login-job.yaml
+#   kubectl apply -f examples/07-ansible-complex/   # deploy everything at once
 #   kubectl wait --for=condition=Complete job/nginx-login --timeout=300s
 #   kubectl logs -l job-name=nginx-login --all-containers --prefix
 #   kubectl delete job nginx-login
@@ -42,6 +42,23 @@ spec:
           labelSelector:
             matchLabels:
               app: nginx-login
+      initContainers:
+        - name: wait-for-ansible
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Waiting for Ansible in shared overlay (installed by bootstrap DaemonSet)..."
+              ATTEMPTS=0
+              until command -v ansible-playbook >/dev/null 2>&1; do
+                ATTEMPTS=$((ATTEMPTS + 1))
+                if [ $ATTEMPTS -ge 150 ]; then
+                  echo "ERROR: Timed out after 300s waiting for ansible-playbook"
+                  exit 1
+                fi
+                sleep 2
+              done
+              echo "Ansible found: $(ansible --version | head -1)"
       containers:
         - name: playbook-runner
           image: busybox
@@ -53,12 +70,6 @@ spec:
               echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
               echo ""
 
-              echo "--- Checking Ansible is available (installed by bootstrap DaemonSet) ---"
-              if ! command -v ansible-playbook >/dev/null 2>&1; then
-                echo "ERROR: ansible-playbook not found."
-                echo "Deploy the ansible-bootstrap DaemonSet first."
-                exit 1
-              fi
               ansible --version | head -1
               echo ""
 

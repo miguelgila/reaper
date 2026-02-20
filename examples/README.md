@@ -111,9 +111,8 @@ Builds on 06 with a **DaemonSet** for reboot-resilient Ansible installation and 
 
 ```bash
 ./examples/07-ansible-complex/setup.sh
-kubectl apply -f examples/07-ansible-complex/ansible-bootstrap-daemonset.yaml
-kubectl rollout status daemonset/ansible-bootstrap --timeout=300s
-kubectl apply -f examples/07-ansible-complex/nginx-login-job.yaml
+kubectl apply -f examples/07-ansible-complex/
+kubectl wait --for=condition=Complete job/nginx-login --timeout=300s
 ```
 
 ## Cleanup
