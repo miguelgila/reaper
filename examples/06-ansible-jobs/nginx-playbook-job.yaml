@@ -1,0 +1,85 @@
+# Run an Ansible playbook to install nginx on all worker nodes.
+#
+# Each pod reads the playbook from the 'nginx-playbook' ConfigMap and runs
+# it locally with ansible-playbook. Ansible must already be installed in the
+# overlay (by the install-ansible Job).
+#
+# The playbook installs nginx, creates a custom index page, starts nginx,
+# verifies it responds, and stops it — all inside the shared overlay.
+#
+# Prerequisites:
+#   - Reaper installed on all nodes
+#   - install-ansible Job completed (Ansible available in overlay)
+#   - ConfigMap 'nginx-playbook' created by setup.sh
+#
+# Usage:
+#   kubectl apply -f nginx-playbook-job.yaml
+#   kubectl wait --for=condition=Complete job/nginx-playbook --timeout=300s
+#   kubectl logs -l job-name=nginx-playbook --all-containers --prefix
+#   kubectl delete job nginx-playbook
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nginx-playbook
+  labels:
+    app: nginx-playbook
+spec:
+  completions: 9
+  parallelism: 9
+  template:
+    metadata:
+      labels:
+        app: nginx-playbook
+    spec:
+      runtimeClassName: reaper-v2
+      restartPolicy: Never
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: nginx-playbook
+      containers:
+        - name: playbook-runner
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "=== Ansible Playbook Runner ==="
+              echo "Node: $(hostname)"
+              echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              echo ""
+
+              echo "--- Checking Ansible is available (installed by previous Job) ---"
+              if ! command -v ansible-playbook >/dev/null 2>&1; then
+                echo "ERROR: ansible-playbook not found."
+                echo "Run the install-ansible Job first."
+                exit 1
+              fi
+              ansible --version | head -1
+              echo ""
+
+              echo "--- Playbook from ConfigMap ---"
+              cat /playbook/playbook.yml
+              echo ""
+
+              echo "--- Running playbook ---"
+              ansible-playbook /playbook/playbook.yml -v
+              RESULT=$?
+              echo ""
+
+              if [ $RESULT -eq 0 ]; then
+                echo "=== Playbook completed successfully on $(hostname) ==="
+              else
+                echo "=== Playbook FAILED on $(hostname) (exit code: $RESULT) ==="
+                exit $RESULT
+              fi
+          volumeMounts:
+            - name: playbook
+              mountPath: /playbook
+              readOnly: true
+      volumes:
+        - name: playbook
+          configMap:
+            name: nginx-playbook

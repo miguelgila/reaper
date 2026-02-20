@@ -86,6 +86,21 @@ kubectl apply -f examples/05-kubemix/
 kubectl get pods -o wide
 ```
 
+### [06-ansible-jobs/](06-ansible-jobs/) — Ansible Jobs
+
+Demonstrates overlay persistence by running **sequential Jobs**: the first installs Ansible via apt, the second runs an Ansible playbook (from a ConfigMap) to install and verify nginx. Packages installed by Job 1 persist in the shared overlay for Job 2.
+
+- **10-node cluster** (1 control-plane + 9 workers)
+- Job 1: installs Ansible on all workers (persists in overlay)
+- Job 2: runs Ansible playbook from ConfigMap to install nginx
+
+```bash
+./examples/06-ansible-jobs/setup.sh
+kubectl apply -f examples/06-ansible-jobs/install-ansible-job.yaml
+kubectl wait --for=condition=Complete job/install-ansible --timeout=300s
+kubectl apply -f examples/06-ansible-jobs/nginx-playbook-job.yaml
+```
+
 ## Cleanup
 
 Each example can be cleaned up independently:
@@ -96,4 +111,5 @@ Each example can be cleaned up independently:
 ./examples/03-client-server-runas/setup.sh --cleanup
 ./examples/04-volumes/setup.sh --cleanup
 ./examples/05-kubemix/setup.sh --cleanup
+./examples/06-ansible-jobs/setup.sh --cleanup
 ```
