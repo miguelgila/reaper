@@ -157,3 +157,12 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt -- --check
+
+  playground-release:
+    name: Playground Release Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Test --release resolution modes
+        run: ./scripts/test-playground-release.sh
