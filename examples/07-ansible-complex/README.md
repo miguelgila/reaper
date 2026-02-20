@@ -2,25 +2,28 @@
 
 Builds on [06-ansible-jobs](../06-ansible-jobs/) with three key improvements:
 
-1. **Reboot-resilient Ansible installation** — uses a DaemonSet instead of a Job so Ansible is automatically reinstalled if a node reboots.
+1. **Fully reboot-resilient** — all workloads are DaemonSets, so Ansible, nginx, and htop are all automatically reinstalled if a node reboots.
 2. **Role-based node targeting** — workers are labeled `login` or `compute`, and workloads target specific node roles.
-3. **Init container dependencies** — the nginx Job uses an init container that waits for Ansible to appear in the shared overlay, so everything can be deployed with a single `kubectl apply -f`.
+3. **Init container dependencies** — the nginx and htop DaemonSets use init containers that wait for Ansible to appear in the shared overlay, so everything can be deployed with a single `kubectl apply -f`.
 
-## Why a DaemonSet Instead of a Job?
+## Why DaemonSets for Everything?
 
-Reaper's overlay filesystem lives on tmpfs (`/run/reaper/overlay`). When a node reboots, tmpfs is wiped and the overlay resets — any packages installed by a previous Job are gone.
+Reaper's overlay filesystem lives on tmpfs (`/run/reaper/overlay`). When a node reboots, tmpfs is wiped and the overlay resets — any packages installed by a previous workload are gone.
 
-| Approach | Runs once | Survives reboot | Stays running |
-|----------|-----------|-----------------|---------------|
-| **Job** | Yes | No — overlay resets, Ansible is lost | No |
-| **DaemonSet** | Yes, and re-runs after restart | **Yes** — kubelet restarts pod, reinstalls | Yes |
+| Approach | Survives reboot | Stays running |
+|----------|-----------------|---------------|
+| **Job** | No — overlay resets, packages lost | No — completed, kubelet won't re-run |
+| **DaemonSet** | **Yes** — kubelet restarts pod, reinstalls | Yes — sleeps after install |
 
-The `ansible-bootstrap` DaemonSet installs Ansible and then sleeps. Kubelet keeps the pod alive and restarts it after any node reboot, which re-enters a fresh overlay and reinstalls Ansible automatically.
+All three DaemonSets install their packages and then sleep. Kubelet keeps them alive and restarts them after any node reboot, which re-enters a fresh overlay and reinstalls everything automatically.
 
 ```
-Node boots → kubelet starts DaemonSet pod → Ansible installed in overlay
-     ↓
-Node reboots → tmpfs wiped → overlay resets → kubelet restarts pod → Ansible reinstalled
+Node boots → kubelet starts all DaemonSet pods
+  ├─ ansible-bootstrap: installs Ansible
+  ├─ nginx-login (init container waits for Ansible) → runs nginx playbook
+  └─ htop-compute (init container waits for Ansible) → runs htop playbook
+
+Node reboots → tmpfs wiped → overlay resets → kubelet restarts all pods → everything reinstalled
 ```
 
 ## Topology
@@ -41,8 +44,8 @@ Node reboots → tmpfs wiped → overlay resets → kubelet restarts pod → Ans
 │              │  7 nodes                                  │
 ├──────────────┴───────────────────────────────────────────┤
 │  ansible-bootstrap DaemonSet (ALL 9 workers)             │
-│  nginx-login Job (login nodes only)                      │
-│  htop-compute Job (compute nodes only)                   │
+│  nginx-login DaemonSet (login nodes only)                │
+│  htop-compute DaemonSet (compute nodes only)             │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -51,23 +54,23 @@ Node reboots → tmpfs wiped → overlay resets → kubelet restarts pod → Ans
 | Kind | Name | Target nodes | What it does |
 |------|------|-------------|-------------|
 | **DaemonSet** | `ansible-bootstrap` | All workers (9 pods) | Installs Ansible, sleeps; survives reboots |
-| **Job** | `nginx-login` | `role=login` (2 pods) | Waits for Ansible (init container), then installs nginx |
-| **Job** | `htop-compute` | `role=compute` (7 pods) | Waits for Ansible (init container), then installs htop |
+| **DaemonSet** | `nginx-login` | `role=login` (2 pods) | Waits for Ansible, installs nginx via playbook, sleeps |
+| **DaemonSet** | `htop-compute` | `role=compute` (7 pods) | Waits for Ansible, installs htop via playbook, sleeps |
 
-### Init Container Dependency
+### Init Container Dependencies
 
-The `nginx-login` Job pods have an init container that polls for `ansible-playbook` in the shared overlay. This creates an implicit dependency on the `ansible-bootstrap` DaemonSet without requiring sequential `kubectl apply`:
+The `nginx-login` and `htop-compute` DaemonSets have init containers that poll for `ansible-playbook` in the shared overlay. This creates an implicit dependency on the `ansible-bootstrap` DaemonSet without requiring sequential `kubectl apply`:
 
 ```
 kubectl apply -f examples/07-ansible-complex/
   │
   ├─ DaemonSet: ansible-bootstrap pods start installing Ansible
   │
-  ├─ Job: nginx-login pods start on login nodes, init container polls...
-  │    └─ Init container sees ansible-playbook → main container runs nginx playbook
+  ├─ DaemonSet: nginx-login pods start on login nodes, init container polls...
+  │    └─ Init container sees ansible-playbook → main container runs nginx playbook → sleeps
   │
-  └─ Job: htop-compute pods start on compute nodes, init container polls...
-       └─ Init container sees ansible-playbook → main container runs htop playbook
+  └─ DaemonSet: htop-compute pods start on compute nodes, init container polls...
+       └─ Init container sees ansible-playbook → main container runs htop playbook → sleeps
 ```
 
 ## Setup
@@ -100,70 +103,53 @@ This creates:
 
 ### Deploy everything at once
 
-The init container dependency means a single apply is all you need:
-
 ```bash
 kubectl apply -f examples/07-ansible-complex/
 ```
 
-The DaemonSet pods start installing Ansible immediately. The Job pods start too, but their init containers block until Ansible appears in the overlay. Once the DaemonSet finishes on a login node, the Job pod on that node proceeds.
+The bootstrap DaemonSet pods start installing Ansible immediately. The nginx and htop DaemonSet pods start too, but their init containers block until Ansible appears in the overlay. Once the bootstrap finishes on a node, the role-specific DaemonSet on that node proceeds.
 
-Wait for both Jobs to complete:
+### Check rollout status
 
 ```bash
-kubectl wait --for=condition=Complete job/nginx-login job/htop-compute --timeout=300s
+kubectl rollout status daemonset/ansible-bootstrap --timeout=300s
+kubectl rollout status daemonset/nginx-login --timeout=300s
+kubectl rollout status daemonset/htop-compute --timeout=300s
 ```
 
 ### Check the output
 
 ```bash
-# DaemonSet bootstrap logs (all 9 workers)
+# Bootstrap logs (all 9 workers)
 kubectl logs -l app=ansible-bootstrap --all-containers --prefix
 
 # nginx playbook logs (login nodes)
-kubectl logs -l job-name=nginx-login --all-containers --prefix
+kubectl logs -l app=nginx-login --all-containers --prefix
 
 # htop playbook logs (compute nodes)
-kubectl logs -l job-name=htop-compute --all-containers --prefix
+kubectl logs -l app=htop-compute --all-containers --prefix
 ```
-
-The nginx Job pods (login nodes) install nginx, create a custom index page, verify it responds, and stop it. The htop Job pods (compute nodes) install htop and verify the installation.
 
 ### Verify node placement
 
 ```bash
-# DaemonSet should have 9 pods (all workers)
+# Bootstrap: 9 pods (all workers)
 kubectl get pods -l app=ansible-bootstrap -o wide
 
-# nginx Job should have 2 pods (login nodes only)
-kubectl get pods -l job-name=nginx-login -o wide
+# nginx: 2 pods (login nodes only)
+kubectl get pods -l app=nginx-login -o wide
 
-# htop Job should have 7 pods (compute nodes only)
-kubectl get pods -l job-name=htop-compute -o wide
-```
-
-### Step-by-step alternative
-
-If you prefer sequential deployment:
-
-```bash
-# Step 1: Bootstrap Ansible
-kubectl apply -f examples/07-ansible-complex/ansible-bootstrap-daemonset.yaml
-kubectl rollout status daemonset/ansible-bootstrap --timeout=300s
-
-# Step 2: Run playbooks
-kubectl apply -f examples/07-ansible-complex/nginx-login-job.yaml
-kubectl apply -f examples/07-ansible-complex/htop-compute-job.yaml
-kubectl wait --for=condition=Complete job/nginx-login job/htop-compute --timeout=300s
+# htop: 7 pods (compute nodes only)
+kubectl get pods -l app=htop-compute -o wide
 ```
 
 ### Simulate a reboot (optional)
 
-To see the DaemonSet recover after an overlay reset:
+To verify everything recovers after an overlay reset:
 
 ```bash
-# Pick a worker node
-NODE=$(kubectl get pods -l app=ansible-bootstrap -o wide --no-headers | head -1 | awk '{print $7}')
+# Pick a login node
+NODE=$(kubectl get pods -l app=nginx-login -o wide --no-headers | head -1 | awk '{print $7}')
 
 # Restart the docker container (simulates reboot, wipes tmpfs)
 docker restart "$NODE"
@@ -171,8 +157,9 @@ docker restart "$NODE"
 # Wait for the node to come back
 kubectl wait --for=condition=Ready node "$NODE" --timeout=60s
 
-# The DaemonSet pod is restarted by kubelet, reinstalls Ansible
-kubectl logs -l app=ansible-bootstrap --all-containers --prefix | grep "$NODE"
+# All three DaemonSets restart: Ansible, then nginx (after init container)
+kubectl get pods -o wide --field-selector spec.nodeName="$NODE"
+kubectl logs -l app=nginx-login --all-containers --prefix | grep "$NODE"
 ```
 
 ## Cleanup

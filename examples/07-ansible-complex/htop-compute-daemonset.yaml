@@ -1,47 +1,39 @@
-# Run an Ansible playbook to install nginx on login nodes only.
+# Install htop on compute nodes via Ansible playbook — reboot-resilient.
 #
-# Each pod has an init container that waits for Ansible to appear in the
-# shared overlay (installed by the ansible-bootstrap DaemonSet). This
-# means you can deploy the DaemonSet and this Job simultaneously —
-# the Job pods block until Ansible is ready.
+# A DaemonSet (not a Job) so kubelet restarts it after a node reboot,
+# reinstalling htop into the fresh overlay. The init container waits
+# for Ansible to appear (installed by the ansible-bootstrap DaemonSet),
+# so everything can be deployed with a single kubectl apply -f.
 #
-# Targets only nodes labeled role=login (2 nodes).
+# Targets only nodes labeled role=compute (7 nodes).
 #
 # Prerequisites:
 #   - Reaper installed on all nodes
-#   - ConfigMap 'nginx-login-playbook' created by setup.sh
-#   - Nodes labeled role=login
+#   - ConfigMap 'htop-compute-playbook' created by setup.sh
+#   - Nodes labeled role=compute
 #
 # Usage:
-#   kubectl apply -f examples/07-ansible-complex/   # deploy everything at once
-#   kubectl wait --for=condition=Complete job/nginx-login --timeout=300s
-#   kubectl logs -l job-name=nginx-login --all-containers --prefix
-#   kubectl delete job nginx-login
-apiVersion: batch/v1
-kind: Job
+#   kubectl apply -f examples/07-ansible-complex/
+#   kubectl logs -l app=htop-compute --all-containers --prefix
+#   kubectl delete daemonset htop-compute
+apiVersion: apps/v1
+kind: DaemonSet
 metadata:
-  name: nginx-login
+  name: htop-compute
   labels:
-    app: nginx-login
+    app: htop-compute
 spec:
-  completions: 2
-  parallelism: 2
+  selector:
+    matchLabels:
+      app: htop-compute
   template:
     metadata:
       labels:
-        app: nginx-login
+        app: htop-compute
     spec:
       runtimeClassName: reaper-v2
-      restartPolicy: Never
       nodeSelector:
-        role: login
-      topologySpreadConstraints:
-        - maxSkew: 1
-          topologyKey: kubernetes.io/hostname
-          whenUnsatisfiable: DoNotSchedule
-          labelSelector:
-            matchLabels:
-              app: nginx-login
+        role: compute
       initContainers:
         - name: wait-for-ansible
           image: busybox
@@ -65,16 +57,12 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              echo "=== Ansible Playbook Runner (login node) ==="
+              echo "=== Ansible Playbook Runner (compute node) ==="
               echo "Node: $(hostname)"
               echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
               echo ""
 
               ansible --version | head -1
-              echo ""
-
-              echo "--- Playbook from ConfigMap ---"
-              cat /playbook/playbook.yml
               echo ""
 
               echo "--- Running playbook ---"
@@ -83,11 +71,14 @@ spec:
               echo ""
 
               if [ $RESULT -eq 0 ]; then
-                echo "=== Playbook completed successfully on $(hostname) ==="
+                echo "=== Playbook completed successfully on $(hostname) — sleeping ==="
               else
                 echo "=== Playbook FAILED on $(hostname) (exit code: $RESULT) ==="
                 exit $RESULT
               fi
+
+              # Stay alive so kubelet restarts us after reboot
+              exec sleep infinity
           volumeMounts:
             - name: playbook
               mountPath: /playbook
@@ -95,4 +86,4 @@ spec:
       volumes:
         - name: playbook
           configMap:
-            name: nginx-login-playbook
+            name: htop-compute-playbook
