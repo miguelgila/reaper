@@ -1,0 +1,104 @@
+# Batch report Job — collects node information and produces a summary report.
+#
+# Reads configuration from the 'batch-config' ConfigMap to determine which
+# metrics to collect. Runs once on each batch node (one pod per node via
+# indexed completion) and exits.
+#
+# Prerequisites:
+#   - Reaper installed on all target nodes
+#   - ConfigMap 'batch-config' created by setup.sh
+#   - Nodes labeled workload-type=batch
+#
+# Usage:
+#   kubectl apply -f batch-report-job.yaml
+#   kubectl logs -l job-name=batch-report --all-containers --prefix
+#   kubectl delete job batch-report
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: batch-report
+  labels:
+    app: batch-report
+spec:
+  completions: 3
+  parallelism: 3
+  template:
+    metadata:
+      labels:
+        app: batch-report
+    spec:
+      runtimeClassName: reaper-v2
+      nodeSelector:
+        workload-type: batch
+      restartPolicy: Never
+      containers:
+        - name: reporter
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "=== Batch Report ==="
+              echo "Node: $(hostname)"
+              echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              echo ""
+
+              echo "--- Loading config from ConfigMap ---"
+              if [ -f /config/report.conf ]; then
+                echo "Config found at /config/report.conf"
+                . /config/report.conf
+                echo "Report title: $REPORT_TITLE"
+                echo "Output format: $OUTPUT_FORMAT"
+              else
+                echo "ERROR: Config not found at /config/report.conf"
+                exit 1
+              fi
+              echo ""
+
+              echo "========================================"
+              echo "  $REPORT_TITLE"
+              echo "  Node: $(hostname)"
+              echo "  Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              echo "========================================"
+              echo ""
+
+              if [ "$COLLECT_LOAD" = "true" ]; then
+                echo "[Load Average]"
+                cat /proc/loadavg
+                echo ""
+              fi
+
+              if [ "$COLLECT_MEMORY" = "true" ]; then
+                echo "[Memory]"
+                grep -E '^(MemTotal|MemFree|MemAvailable|Buffers|Cached):' /proc/meminfo
+                echo ""
+              fi
+
+              if [ "$COLLECT_DISK" = "true" ]; then
+                echo "[Disk Usage]"
+                df -h / /tmp 2>/dev/null || df -h /
+                echo ""
+              fi
+
+              if [ "$COLLECT_NETWORK" = "true" ]; then
+                echo "[Network Interfaces]"
+                ip -brief addr show 2>/dev/null || ifconfig -a 2>/dev/null || echo "(network info unavailable)"
+                echo ""
+              fi
+
+              echo "[System]"
+              echo "Kernel: $(uname -r)"
+              echo "Uptime: $(cat /proc/uptime | cut -d' ' -f1)s"
+              echo "CPUs: $(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)"
+              echo ""
+
+              echo "========================================"
+              echo "  Report complete"
+              echo "========================================"
+          volumeMounts:
+            - name: batch-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: batch-config
+          configMap:
+            name: batch-config

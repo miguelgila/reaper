@@ -72,6 +72,20 @@ kubectl apply -f examples/04-volumes/configmap-nginx.yaml
 kubectl logs configmap-nginx -f
 ```
 
+### [05-kubemix/](05-kubemix/) — Kubernetes Workload Mix
+
+Demonstrates running **Jobs**, **DaemonSets**, and **Deployments** simultaneously on a 10-node cluster. Each workload type targets a different set of labeled nodes, showcasing Reaper across diverse Kubernetes workload modes. All workloads read configuration from dedicated ConfigMap volumes.
+
+- **10-node cluster** (1 control-plane + 9 workers)
+- Workers partitioned: 3 batch (Jobs), 3 daemon (DaemonSets), 3 service (Deployments)
+- Each workload reads config from its own ConfigMap volume
+
+```bash
+./examples/05-kubemix/setup.sh
+kubectl apply -f examples/05-kubemix/
+kubectl get pods -o wide
+```
+
 ## Cleanup
 
 Each example can be cleaned up independently:
@@ -81,4 +95,5 @@ Each example can be cleaned up independently:
 ./examples/02-client-server/setup.sh --cleanup
 ./examples/03-client-server-runas/setup.sh --cleanup
 ./examples/04-volumes/setup.sh --cleanup
+./examples/05-kubemix/setup.sh --cleanup
 ```
