@@ -72,6 +72,64 @@ kubectl apply -f examples/04-volumes/configmap-nginx.yaml
 kubectl logs configmap-nginx -f
 ```
 
+### [05-kubemix/](05-kubemix/) — Kubernetes Workload Mix
+
+Demonstrates running **Jobs**, **DaemonSets**, and **Deployments** simultaneously on a 10-node cluster. Each workload type targets a different set of labeled nodes, showcasing Reaper across diverse Kubernetes workload modes. All workloads read configuration from dedicated ConfigMap volumes.
+
+- **10-node cluster** (1 control-plane + 9 workers)
+- Workers partitioned: 3 batch (Jobs), 3 daemon (DaemonSets), 3 service (Deployments)
+- Each workload reads config from its own ConfigMap volume
+
+```bash
+./examples/05-kubemix/setup.sh
+kubectl apply -f examples/05-kubemix/
+kubectl get pods -o wide
+```
+
+### [06-ansible-jobs/](06-ansible-jobs/) — Ansible Jobs
+
+Demonstrates overlay persistence by running **sequential Jobs**: the first installs Ansible via apt, the second runs an Ansible playbook (from a ConfigMap) to install and verify nginx. Packages installed by Job 1 persist in the shared overlay for Job 2.
+
+- **10-node cluster** (1 control-plane + 9 workers)
+- Job 1: installs Ansible on all workers (persists in overlay)
+- Job 2: runs Ansible playbook from ConfigMap to install nginx
+
+```bash
+./examples/06-ansible-jobs/setup.sh
+kubectl apply -f examples/06-ansible-jobs/install-ansible-job.yaml
+kubectl wait --for=condition=Complete job/install-ansible --timeout=300s
+kubectl apply -f examples/06-ansible-jobs/nginx-playbook-job.yaml
+```
+
+### [07-ansible-complex/](07-ansible-complex/) — Ansible Complex (Reboot-Resilient)
+
+Fully reboot-resilient Ansible deployment using only DaemonSets. A bootstrap DaemonSet installs Ansible, then role-specific DaemonSets run playbooks (nginx on login nodes, htop on compute nodes). Init containers create implicit dependencies so a single `kubectl apply -f` deploys everything in the right order. All packages survive node reboots.
+
+- **10-node cluster** (1 control-plane + 9 workers: 2 login, 7 compute)
+- 3 DaemonSets: Ansible bootstrap (all), nginx (login), htop (compute)
+- Init container dependencies — no manual ordering needed
+
+```bash
+./examples/07-ansible-complex/setup.sh
+kubectl apply -f examples/07-ansible-complex/
+kubectl rollout status daemonset/nginx-login --timeout=300s
+```
+
+### [08-mix-container-runtime-engines/](08-mix-container-runtime-engines/) — Mixed Runtime Engines
+
+Demonstrates **mixed runtime engines** in the same cluster: a standard containerized OpenLDAP server (default containerd/runc) alongside Reaper workloads that configure SSSD on every node. Reaper pods consume the LDAP service via a fixed ClusterIP, enabling `getent passwd` to resolve LDAP users on the host.
+
+- **4-node cluster** (1 control-plane + 3 workers: 1 login, 2 compute)
+- OpenLDAP Deployment (default runtime) with 5 posixAccount users
+- Reaper DaemonSets: Ansible bootstrap + SSSD configuration (all workers)
+- Init containers handle dependency ordering (Ansible + LDAP readiness)
+
+```bash
+./examples/08-mix-container-runtime-engines/setup.sh
+kubectl apply -f examples/08-mix-container-runtime-engines/
+kubectl rollout status daemonset/base-config --timeout=300s
+```
+
 ## Cleanup
 
 Each example can be cleaned up independently:
@@ -81,4 +139,8 @@ Each example can be cleaned up independently:
 ./examples/02-client-server/setup.sh --cleanup
 ./examples/03-client-server-runas/setup.sh --cleanup
 ./examples/04-volumes/setup.sh --cleanup
+./examples/05-kubemix/setup.sh --cleanup
+./examples/06-ansible-jobs/setup.sh --cleanup
+./examples/07-ansible-complex/setup.sh --cleanup
+./examples/08-mix-container-runtime-engines/setup.sh --cleanup
 ```

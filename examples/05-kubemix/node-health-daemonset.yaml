@@ -1,0 +1,107 @@
+# Node health DaemonSet — continuously monitors node health metrics.
+#
+# Reads monitoring thresholds from the 'monitor-config' ConfigMap and reports
+# node health status at a configurable interval. Runs on all nodes labeled
+# workload-type=daemon.
+#
+# Prerequisites:
+#   - Reaper installed on all target nodes
+#   - ConfigMap 'monitor-config' created by setup.sh
+#   - Nodes labeled workload-type=daemon
+#
+# Usage:
+#   kubectl apply -f node-health-daemonset.yaml
+#   kubectl logs -l app=node-health --all-containers --prefix -f
+#   kubectl delete daemonset node-health
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-health
+  labels:
+    app: node-health
+spec:
+  selector:
+    matchLabels:
+      app: node-health
+  template:
+    metadata:
+      labels:
+        app: node-health
+    spec:
+      runtimeClassName: reaper-v2
+      nodeSelector:
+        workload-type: daemon
+      containers:
+        - name: monitor
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "=== Node Health Monitor ==="
+
+              if [ -f /config/monitor.conf ]; then
+                echo "Loading config from /config/monitor.conf"
+                . /config/monitor.conf
+              else
+                echo "ERROR: Config not found at /config/monitor.conf"
+                exit 1
+              fi
+
+              echo "Interval: ${CHECK_INTERVAL_SECONDS}s"
+              echo "Load thresholds: warn=${LOAD_WARN_THRESHOLD} crit=${LOAD_CRIT_THRESHOLD}"
+              echo "Memory thresholds: warn=${MEM_WARN_PERCENT}% crit=${MEM_CRIT_PERCENT}%"
+              echo ""
+
+              while true; do
+                TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+                # Collect load average
+                LOAD_1M=$(cat /proc/loadavg | cut -d' ' -f1)
+
+                # Collect memory usage
+                MEM_TOTAL=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+                MEM_AVAIL=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
+                MEM_USED=$((MEM_TOTAL - MEM_AVAIL))
+                MEM_PERCENT=$((MEM_USED * 100 / MEM_TOTAL))
+
+                # Determine status
+                STATUS="OK"
+
+                # Check load (compare integers: multiply by 10 to avoid float math)
+                LOAD_INT=$(echo "$LOAD_1M" | sed 's/\.//' | sed 's/^0*//' )
+                LOAD_INT=${LOAD_INT:-0}
+                CRIT_INT=$(echo "$LOAD_CRIT_THRESHOLD" | sed 's/\.//' | sed 's/^0*//')
+                WARN_INT=$(echo "$LOAD_WARN_THRESHOLD" | sed 's/\.//' | sed 's/^0*//')
+
+                if [ "$LOAD_INT" -ge "$CRIT_INT" ] 2>/dev/null; then
+                  STATUS="CRITICAL"
+                elif [ "$LOAD_INT" -ge "$WARN_INT" ] 2>/dev/null; then
+                  STATUS="WARNING"
+                fi
+
+                # Check memory
+                if [ "$MEM_PERCENT" -ge "$MEM_CRIT_PERCENT" ] 2>/dev/null; then
+                  STATUS="CRITICAL"
+                elif [ "$MEM_PERCENT" -ge "$MEM_WARN_PERCENT" ] 2>/dev/null; then
+                  if [ "$STATUS" = "OK" ]; then
+                    STATUS="WARNING"
+                  fi
+                fi
+
+                HOSTNAME_STR=""
+                if [ "$REPORT_HOSTNAME" = "true" ]; then
+                  HOSTNAME_STR="node=$(hostname) "
+                fi
+
+                echo "${TIMESTAMP} ${HOSTNAME_STR}status=${STATUS} load=${LOAD_1M} mem=${MEM_PERCENT}% (${MEM_USED}/${MEM_TOTAL} kB)"
+
+                sleep "$CHECK_INTERVAL_SECONDS"
+              done
+          volumeMounts:
+            - name: monitor-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: monitor-config
+          configMap:
+            name: monitor-config

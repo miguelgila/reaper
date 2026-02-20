@@ -126,7 +126,11 @@ reaper/
 │   ├── 01-scheduling/           # DaemonSet on all/subset of nodes
 │   ├── 02-client-server/        # TCP server + clients across nodes
 │   ├── 03-client-server-runas/  # Same as above, running as non-root user
-│   └── 04-volumes/              # Kubernetes volume mounts with overlay
+│   ├── 04-volumes/              # Kubernetes volume mounts with overlay
+│   ├── 05-kubemix/              # Jobs, DaemonSets, and Deployments on 10-node cluster
+│   ├── 06-ansible-jobs/         # Sequential Jobs: install Ansible, then run playbook
+│   ├── 07-ansible-complex/     # DaemonSet bootstrap + role-based Ansible playbooks
+│   └── 08-mix-container-runtime-engines/  # Mixed runtimes: OpenLDAP (default) + SSSD (Reaper)
 ├── scripts/
 │   ├── run-integration-tests.sh # Full integration test suite
 │   └── install-reaper.sh        # Installation script (Ansible wrapper)

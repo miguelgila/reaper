@@ -1,0 +1,73 @@
+---
+# Ansible playbook to install and verify nginx on login nodes.
+#
+# Designed to run locally on Kind worker nodes labeled role=login.
+# Since Reaper executes inside the shared overlay namespace, all changes
+# (installed packages, config files) go to the overlay upper layer —
+# the host filesystem is never modified.
+- name: Install and verify nginx on login node
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  tasks:
+    - name: Install nginx and curl
+      ansible.builtin.apt:
+        name:
+          - nginx
+          - curl
+        state: present
+        update_cache: true
+
+    - name: Create custom login-node index page
+      ansible.builtin.copy:
+        content: |
+          <html>
+          <head><title>Reaper Login Node</title></head>
+          <body>
+          <h1>Login Node: {{ ansible_hostname }}</h1>
+          <p>This is a login/bastion node managed by Ansible via Reaper.</p>
+          <p>Ansible version: {{ ansible_version.full }}</p>
+          <p>Node role: login</p>
+          </body>
+          </html>
+        dest: /var/www/html/index.html
+        mode: "0644"
+
+    - name: Remove default nginx site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Write nginx server block
+      ansible.builtin.copy:
+        content: |
+          server {
+              listen 8080;
+              server_name _;
+              root /var/www/html;
+              index index.html;
+          }
+        dest: /etc/nginx/conf.d/login-node.conf
+        mode: "0644"
+
+    - name: Start nginx
+      ansible.builtin.command: nginx
+      changed_when: true
+
+    - name: Wait for nginx to be ready
+      ansible.builtin.command: sleep 1
+      changed_when: false
+
+    - name: Verify nginx responds on port 8080
+      ansible.builtin.command: curl -s http://localhost:8080
+      register: curl_result
+      changed_when: false
+
+    - name: Display nginx response
+      ansible.builtin.debug:
+        msg: "{{ curl_result.stdout }}"
+
+    - name: Stop nginx
+      ansible.builtin.command: nginx -s stop
+      changed_when: true

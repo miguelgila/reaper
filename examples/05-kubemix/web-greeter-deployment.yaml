@@ -1,0 +1,81 @@
+# Web greeter Deployment — a simple service that logs periodic greetings.
+#
+# Reads service configuration from the 'greeter-config' ConfigMap including
+# the greeting message, service name, and version. Runs 3 replicas across
+# the service nodes to demonstrate Deployment scaling with Reaper.
+#
+# Prerequisites:
+#   - Reaper installed on all target nodes
+#   - ConfigMap 'greeter-config' created by setup.sh
+#   - Nodes labeled workload-type=service
+#
+# Usage:
+#   kubectl apply -f web-greeter-deployment.yaml
+#   kubectl logs -l app=web-greeter --all-containers --prefix -f
+#   kubectl delete deployment web-greeter
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-greeter
+  labels:
+    app: web-greeter
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-greeter
+  template:
+    metadata:
+      labels:
+        app: web-greeter
+    spec:
+      runtimeClassName: reaper-v2
+      nodeSelector:
+        workload-type: service
+      containers:
+        - name: greeter
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "=== Web Greeter Service ==="
+
+              if [ -f /config/greeter.conf ]; then
+                echo "Loading config from /config/greeter.conf"
+                . /config/greeter.conf
+              else
+                echo "ERROR: Config not found at /config/greeter.conf"
+                exit 1
+              fi
+
+              echo "Service: ${SERVICE_NAME} v${SERVICE_VERSION}"
+              echo "Node: $(hostname)"
+              echo "Greeting: ${GREETING_MESSAGE}"
+              echo ""
+
+              REQUEST_COUNT=0
+              while true; do
+                REQUEST_COUNT=$((REQUEST_COUNT + 1))
+                TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+                if [ "$LOG_REQUESTS" = "true" ]; then
+                  echo "${TIMESTAMP} [${SERVICE_NAME}] node=$(hostname) request=#${REQUEST_COUNT} message=\"${GREETING_MESSAGE}\""
+                fi
+
+                # Simulate periodic health check logging
+                if [ $((REQUEST_COUNT % 5)) -eq 0 ]; then
+                  UPTIME=$(cat /proc/uptime | cut -d' ' -f1)
+                  LOAD=$(cat /proc/loadavg | cut -d' ' -f1)
+                  echo "${TIMESTAMP} [${SERVICE_NAME}] health_check=${HEALTH_CHECK_PATH} status=ok uptime=${UPTIME}s load=${LOAD} requests_served=${REQUEST_COUNT}"
+                fi
+
+                sleep 10
+              done
+          volumeMounts:
+            - name: greeter-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: greeter-config
+          configMap:
+            name: greeter-config

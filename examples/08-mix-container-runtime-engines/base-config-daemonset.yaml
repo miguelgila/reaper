@@ -1,0 +1,110 @@
+# SSSD configuration DaemonSet — configures LDAP authentication on every worker.
+#
+# Runs an Ansible playbook that installs SSSD, configures it to authenticate
+# against the OpenLDAP service (running with the default container runtime),
+# and verifies that LDAP users are resolvable via getent.
+#
+# Two init containers handle dependency ordering:
+#   1. wait-for-ansible — polls until ansible-playbook is available in the
+#      shared overlay (installed by the base-deps DaemonSet)
+#   2. wait-for-ldap — polls TCP connectivity to the OpenLDAP ClusterIP
+#      until the service is ready to accept connections
+#
+# Prerequisites:
+#   - Reaper installed on all nodes
+#   - ConfigMap 'base-config-playbook' created by setup.sh
+#   - OpenLDAP service running (openldap.yaml)
+#   - base-deps DaemonSet running (base-deps-daemonset.yaml)
+#
+# Usage:
+#   kubectl apply -f examples/08-mix-container-runtime-engines/
+#   kubectl rollout status daemonset/base-config --timeout=300s
+#   kubectl logs -l app=base-config --all-containers --prefix
+#   kubectl delete daemonset base-config
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: base-config
+  labels:
+    app: base-config
+spec:
+  selector:
+    matchLabels:
+      app: base-config
+  template:
+    metadata:
+      labels:
+        app: base-config
+    spec:
+      runtimeClassName: reaper-v2
+      initContainers:
+        - name: wait-for-ansible
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Waiting for Ansible in shared overlay (installed by base-deps DaemonSet)..."
+              ATTEMPTS=0
+              until command -v ansible-playbook >/dev/null 2>&1; do
+                ATTEMPTS=$((ATTEMPTS + 1))
+                if [ $ATTEMPTS -ge 150 ]; then
+                  echo "ERROR: Timed out after 300s waiting for ansible-playbook"
+                  exit 1
+                fi
+                sleep 2
+              done
+              echo "Ansible found: $(ansible --version | head -1)"
+
+        - name: wait-for-ldap
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Waiting for OpenLDAP service at 10.96.100.100:389..."
+              ATTEMPTS=0
+              until bash -c "echo > /dev/tcp/10.96.100.100/389" 2>/dev/null; do
+                ATTEMPTS=$((ATTEMPTS + 1))
+                if [ $ATTEMPTS -ge 60 ]; then
+                  echo "ERROR: Timed out after 300s waiting for OpenLDAP"
+                  exit 1
+                fi
+                sleep 5
+              done
+              echo "OpenLDAP is reachable at 10.96.100.100:389"
+
+      containers:
+        - name: playbook-runner
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "=== SSSD Configuration Playbook Runner ==="
+              echo "Node: $(hostname)"
+              echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              echo ""
+
+              ansible --version | head -1
+              echo ""
+
+              echo "--- Running playbook ---"
+              ansible-playbook /playbook/playbook.yml -v
+              RESULT=$?
+              echo ""
+
+              if [ $RESULT -eq 0 ]; then
+                echo "=== Playbook completed successfully on $(hostname) — sleeping ==="
+              else
+                echo "=== Playbook FAILED on $(hostname) (exit code: $RESULT) ==="
+                exit $RESULT
+              fi
+
+              # Stay alive so kubelet restarts us after reboot
+              exec sleep infinity
+          volumeMounts:
+            - name: playbook
+              mountPath: /playbook
+              readOnly: true
+      volumes:
+        - name: playbook
+          configMap:
+            name: base-config-playbook

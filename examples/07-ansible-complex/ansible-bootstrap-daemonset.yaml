@@ -1,0 +1,69 @@
+# Ansible bootstrap DaemonSet — installs Ansible on every worker and stays running.
+#
+# Unlike a Job (which runs once and exits), a DaemonSet is restarted by
+# kubelet after a node reboot. Since Reaper's overlay lives on tmpfs
+# (/run/reaper/overlay), it resets on reboot — the DaemonSet reinstalls
+# Ansible into the fresh overlay automatically.
+#
+# The pod installs Ansible, prints its version, then sleeps. Subsequent
+# workloads on the same node find Ansible in the shared overlay.
+#
+# Prerequisites:
+#   - Reaper installed on all nodes
+#   - Run setup.sh first
+#
+# Usage:
+#   kubectl apply -f ansible-bootstrap-daemonset.yaml
+#   kubectl rollout status daemonset/ansible-bootstrap --timeout=300s
+#   kubectl logs -l app=ansible-bootstrap --all-containers --prefix
+#   kubectl delete daemonset ansible-bootstrap
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ansible-bootstrap
+  labels:
+    app: ansible-bootstrap
+spec:
+  selector:
+    matchLabels:
+      app: ansible-bootstrap
+  template:
+    metadata:
+      labels:
+        app: ansible-bootstrap
+    spec:
+      runtimeClassName: reaper-v2
+      containers:
+        - name: bootstrap
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "=== Ansible Bootstrap ==="
+              echo "Node: $(hostname)"
+              echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              echo ""
+
+              # Idempotent: skip install if Ansible is already present
+              # (overlay may have persisted from a previous run without reboot)
+              if command -v ansible-playbook >/dev/null 2>&1; then
+                echo "Ansible already installed in overlay, skipping install"
+              else
+                echo "--- Installing Ansible via apt ---"
+                apt-get update -qq 2>&1 | tail -1
+                apt-get install -y -qq ansible > /dev/null 2>&1
+              fi
+              echo ""
+
+              echo "--- Ansible version ---"
+              ansible --version
+              echo ""
+
+              echo "=== Bootstrap complete on $(hostname) — sleeping ==="
+              echo "  (DaemonSet stays running so kubelet restarts it after reboot)"
+
+              # Stay alive. On node reboot:
+              #   1. Overlay resets (tmpfs wiped)
+              #   2. Kubelet restarts this pod
+              #   3. Ansible gets reinstalled into fresh overlay
+              exec sleep infinity

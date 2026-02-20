@@ -1,0 +1,81 @@
+---
+# Ansible playbook to install and configure SSSD for LDAP authentication.
+#
+# Configures each worker node to authenticate users against the OpenLDAP
+# service running in the cluster (default container runtime). After this
+# playbook runs, `getent passwd user1` resolves LDAP users on the node.
+#
+# Designed to run locally on Kind worker nodes via Reaper. Since Reaper
+# executes inside the shared overlay namespace, all changes (installed
+# packages, config files, running daemons) go to the overlay upper layer —
+# the host filesystem is never modified.
+- name: Configure SSSD for LDAP authentication
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  tasks:
+    - name: Install SSSD and LDAP packages
+      ansible.builtin.apt:
+        name:
+          - sssd-ldap
+          - ldap-utils
+          - libnss-sss
+          - libpam-sss
+        state: present
+        update_cache: true
+
+    - name: Write SSSD configuration
+      ansible.builtin.copy:
+        content: |
+          [sssd]
+          config_file_version = 2
+          domains = reaper.local
+          services = nss, pam
+
+          [domain/reaper.local]
+          id_provider = ldap
+          auth_provider = ldap
+          ldap_uri = ldap://10.96.100.100:389
+          ldap_search_base = dc=reaper,dc=local
+          ldap_default_bind_dn = cn=admin,dc=reaper,dc=local
+          ldap_default_authtok = adminpassword
+          ldap_tls_reqcert = never
+          cache_credentials = true
+          enumerate = true
+        dest: /etc/sssd/sssd.conf
+        mode: "0600"
+
+    - name: Update nsswitch.conf for SSS
+      ansible.builtin.lineinfile:
+        path: /etc/nsswitch.conf
+        regexp: "^{{ item }}:"
+        line: "{{ item }}:         files sss"
+      loop:
+        - passwd
+        - group
+        - shadow
+
+    - name: Start SSSD daemon (idempotent)
+      ansible.builtin.shell: |
+        if pgrep -x sssd >/dev/null 2>&1; then
+          echo "SSSD already running"
+        else
+          sssd -D
+          echo "SSSD started"
+        fi
+      register: sssd_start
+      changed_when: "'SSSD started' in sssd_start.stdout"
+
+    - name: Wait for SSSD initialization
+      ansible.builtin.command: sleep 3
+      changed_when: false
+
+    - name: Verify LDAP user resolution
+      ansible.builtin.command: getent passwd user1
+      register: getent_result
+      changed_when: false
+
+    - name: Display verification result
+      ansible.builtin.debug:
+        msg: "LDAP user resolved on {{ ansible_hostname }}: {{ getent_result.stdout }}"
