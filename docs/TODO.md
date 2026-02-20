@@ -14,3 +14,5 @@ List of tasks to do, not ordered in any specific way.
 [x] Add examples that use jobs, deployments and daemonsets
 [ ] Add complex example (idea openldap server + sssd + something that uses users)
 [x] Add quick-start guide with a playground kind cluster for doing fast testing
+[ ] Evaluate if it would make sense ot isolate overlays by namespace
+[ ] Manage DNS settings, currently relying on host DNS instead of k8s DNS settings.

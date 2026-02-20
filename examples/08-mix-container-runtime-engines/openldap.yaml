@@ -5,8 +5,12 @@
 #
 # Three resources:
 #   1. ConfigMap with bootstrap LDIF (users and groups)
-#   2. Deployment with Bitnami OpenLDAP
+#   2. Deployment with osixia/openldap + ldap-seeder sidecar
 #   3. Service with fixed ClusterIP (Reaper pods can't resolve DNS)
+#
+# The main container runs OpenLDAP. A sidecar container waits for LDAP
+# to be ready, then loads the custom LDIF with ldapadd -c (idempotent).
+# This avoids osixia's fragile bootstrap mechanism (status 68 failures).
 #
 # Prerequisites:
 #   - Run setup.sh first (creates cluster and labels nodes)
@@ -14,7 +18,7 @@
 # Usage:
 #   kubectl apply -f openldap.yaml
 #   kubectl rollout status deployment/openldap --timeout=120s
-#   kubectl exec deploy/openldap -- ldapsearch -x -H ldap://localhost:1389 \
+#   kubectl exec deploy/openldap -c openldap -- ldapsearch -x -H ldap://localhost \
 #     -b "dc=reaper,dc=local" "(objectClass=posixAccount)" uid uidNumber
 
 ---
@@ -24,7 +28,13 @@ metadata:
   name: openldap-bootstrap-ldif
 data:
   bootstrap.ldif: |
-    # Organizational Units
+    dn: dc=reaper,dc=local
+    objectClass: top
+    objectClass: dcObject
+    objectClass: organization
+    dc: reaper
+    o: Reaper
+
     dn: ou=users,dc=reaper,dc=local
     objectClass: organizationalUnit
     ou: users
@@ -33,7 +43,6 @@ data:
     objectClass: organizationalUnit
     ou: groups
 
-    # Group for LDAP users
     dn: cn=ldapusr,ou=groups,dc=reaper,dc=local
     objectClass: posixGroup
     cn: ldapusr
@@ -44,7 +53,6 @@ data:
     memberUid: user4
     memberUid: user5
 
-    # User 1
     dn: uid=user1,ou=users,dc=reaper,dc=local
     objectClass: inetOrgPerson
     objectClass: posixAccount
@@ -60,7 +68,6 @@ data:
     loginShell: /bin/bash
     homeDirectory: /home/user1
 
-    # User 2
     dn: uid=user2,ou=users,dc=reaper,dc=local
     objectClass: inetOrgPerson
     objectClass: posixAccount
@@ -76,7 +83,6 @@ data:
     loginShell: /bin/bash
     homeDirectory: /home/user2
 
-    # User 3
     dn: uid=user3,ou=users,dc=reaper,dc=local
     objectClass: inetOrgPerson
     objectClass: posixAccount
@@ -92,7 +98,6 @@ data:
     loginShell: /bin/bash
     homeDirectory: /home/user3
 
-    # User 4
     dn: uid=user4,ou=users,dc=reaper,dc=local
     objectClass: inetOrgPerson
     objectClass: posixAccount
@@ -108,7 +113,6 @@ data:
     loginShell: /bin/bash
     homeDirectory: /home/user4
 
-    # User 5
     dn: uid=user5,ou=users,dc=reaper,dc=local
     objectClass: inetOrgPerson
     objectClass: posixAccount
@@ -146,21 +150,55 @@ spec:
         role: login
       containers:
         - name: openldap
-          image: bitnami/openldap:2.6
+          image: osixia/openldap:1.5.0
           env:
-            - name: LDAP_ROOT
-              value: "dc=reaper,dc=local"
-            - name: LDAP_ADMIN_USERNAME
-              value: "admin"
+            - name: LDAP_ORGANISATION
+              value: "Reaper"
+            - name: LDAP_DOMAIN
+              value: "reaper.local"
             - name: LDAP_ADMIN_PASSWORD
               value: "adminpassword"
-            - name: LDAP_CUSTOM_LDIF_DIR
-              value: "/ldifs"
-            - name: LDAP_ALLOW_ANON_BINDING
-              value: "yes"
           ports:
-            - containerPort: 1389
+            - containerPort: 389
               name: ldap
+
+        # Sidecar: waits for LDAP, then seeds users via ldapadd.
+        # Uses -c (continue on error) so re-runs are idempotent.
+        - name: ldap-seeder
+          image: osixia/openldap:1.5.0
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              echo "Waiting for OpenLDAP to be ready..."
+              until ldapsearch -x -H ldap://localhost -b "" -s base namingContexts >/dev/null 2>&1; do
+                sleep 2
+              done
+              echo "OpenLDAP is ready. Loading bootstrap LDIF..."
+
+              ldapadd -x -H ldap://localhost \
+                -D "cn=admin,dc=reaper,dc=local" \
+                -w adminpassword \
+                -c \
+                -f /ldifs/bootstrap.ldif
+
+              RESULT=$?
+              if [ $RESULT -eq 0 ]; then
+                echo "LDIF loaded successfully."
+              else
+                echo "ldapadd exited with $RESULT (non-zero may be OK with -c if entries already exist)."
+              fi
+
+              # Verify (authenticated — osixia ACLs block anonymous reads)
+              echo ""
+              echo "=== LDAP Users ==="
+              ldapsearch -x -H ldap://localhost \
+                -D "cn=admin,dc=reaper,dc=local" -w adminpassword \
+                -b "dc=reaper,dc=local" \
+                "(objectClass=posixAccount)" uid uidNumber gidNumber 2>/dev/null \
+                | grep -E "^(dn:|uid:|uidNumber:|gidNumber:|$)"
+              echo ""
+              echo "Seeder done — sleeping."
+              exec sleep infinity
           volumeMounts:
             - name: bootstrap-ldif
               mountPath: /ldifs
@@ -188,6 +226,6 @@ spec:
     app: openldap
   ports:
     - port: 389
-      targetPort: 1389
+      targetPort: 389
       protocol: TCP
       name: ldap

@@ -59,7 +59,7 @@ All three workloads deploy simultaneously with `kubectl apply -f`. Init containe
 
 ```
 openldap Deployment + Service start (default runtime, login node)
-  └── Bitnami OpenLDAP boots → loads LDIF → users ready
+  └── OpenLDAP boots → loads LDIF → users ready
 
 base-deps DaemonSet starts (Reaper, all 3 workers)
   └── apt-get install ansible → sleep infinity
@@ -107,7 +107,8 @@ kubectl rollout status daemonset/base-config --timeout=300s
 kubectl get pods -o wide
 
 # 2. Verify OpenLDAP has users
-kubectl exec deploy/openldap -- ldapsearch -x -H ldap://localhost:1389 \
+kubectl exec deploy/openldap -c openldap -- ldapsearch -x -H ldap://localhost \
+  -D "cn=admin,dc=reaper,dc=local" -w adminpassword \
   -b "dc=reaper,dc=local" "(objectClass=posixAccount)" uid uidNumber gidNumber
 
 # 3. Check SSSD configuration logs
