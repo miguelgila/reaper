@@ -115,9 +115,10 @@ kubectl exec deploy/openldap -c openldap -- ldapsearch -x -H ldap://localhost \
 kubectl logs -l app=base-config --all-containers --prefix
 
 # 4. Verify user resolution from any worker node
+# (sleep gives SSSD's NSS responder time to connect on first lookup)
 kubectl run ldap-test --image=busybox --restart=Never --rm -it \
   --overrides='{"spec":{"runtimeClassName":"reaper-v2"}}' \
-  -- getent passwd user1
+  -- sh -c 'sleep 1 && getent passwd user1'
 ```
 
 Expected output for `getent passwd user1`:
