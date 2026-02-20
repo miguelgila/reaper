@@ -125,7 +125,7 @@ Each pod reads the playbook from the ConfigMap, runs it with `ansible-playbook`,
 The Ansible playbook is stored as a file in the example directory and loaded into the ConfigMap by `setup.sh`:
 
 ```bash
-cat examples/06-ansible-jobs/nginx-playbook.yml
+cat examples/06-ansible-jobs/nginx-playbook.ansible.yml
 ```
 
 Or read it from the ConfigMap:

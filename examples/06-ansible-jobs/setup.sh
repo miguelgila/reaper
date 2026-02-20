@@ -160,7 +160,7 @@ info "Creating ConfigMap 'nginx-playbook'"
 
 kubectl delete configmap nginx-playbook --ignore-not-found >> "$LOG_FILE" 2>&1
 kubectl create configmap nginx-playbook \
-  --from-file=playbook.yml="$SCRIPT_DIR/nginx-playbook.yml" >> "$LOG_FILE" 2>&1
+  --from-file=playbook.yml="$SCRIPT_DIR/nginx-playbook.ansible.yml" >> "$LOG_FILE" 2>&1
 
 ok "ConfigMap nginx-playbook created"
 
