@@ -101,6 +101,21 @@ kubectl wait --for=condition=Complete job/install-ansible --timeout=300s
 kubectl apply -f examples/06-ansible-jobs/nginx-playbook-job.yaml
 ```
 
+### [07-ansible-complex/](07-ansible-complex/) — Ansible Complex (Reboot-Resilient)
+
+Builds on 06 with a **DaemonSet** for reboot-resilient Ansible installation and role-based node targeting. Workers are labeled `login` (2) or `compute` (7), and a bootstrap DaemonSet ensures Ansible survives node reboots by reinstalling into the fresh overlay.
+
+- **10-node cluster** (1 control-plane + 9 workers: 2 login, 7 compute)
+- DaemonSet: installs Ansible on all workers, survives reboots
+- Job: runs Ansible playbook on login nodes only
+
+```bash
+./examples/07-ansible-complex/setup.sh
+kubectl apply -f examples/07-ansible-complex/ansible-bootstrap-daemonset.yaml
+kubectl rollout status daemonset/ansible-bootstrap --timeout=300s
+kubectl apply -f examples/07-ansible-complex/nginx-login-job.yaml
+```
+
 ## Cleanup
 
 Each example can be cleaned up independently:
@@ -112,4 +127,5 @@ Each example can be cleaned up independently:
 ./examples/04-volumes/setup.sh --cleanup
 ./examples/05-kubemix/setup.sh --cleanup
 ./examples/06-ansible-jobs/setup.sh --cleanup
+./examples/07-ansible-complex/setup.sh --cleanup
 ```

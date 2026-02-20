@@ -128,7 +128,8 @@ reaper/
 │   ├── 03-client-server-runas/  # Same as above, running as non-root user
 │   ├── 04-volumes/              # Kubernetes volume mounts with overlay
 │   ├── 05-kubemix/              # Jobs, DaemonSets, and Deployments on 10-node cluster
-│   └── 06-ansible-jobs/         # Sequential Jobs: install Ansible, then run playbook
+│   ├── 06-ansible-jobs/         # Sequential Jobs: install Ansible, then run playbook
+│   └── 07-ansible-complex/     # DaemonSet bootstrap + role-based Ansible playbooks
 ├── scripts/
 │   ├── run-integration-tests.sh # Full integration test suite
 │   └── install-reaper.sh        # Installation script (Ansible wrapper)
