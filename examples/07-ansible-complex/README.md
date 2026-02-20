@@ -42,6 +42,7 @@ Node reboots → tmpfs wiped → overlay resets → kubelet restarts pod → Ans
 ├──────────────┴───────────────────────────────────────────┤
 │  ansible-bootstrap DaemonSet (ALL 9 workers)             │
 │  nginx-login Job (login nodes only)                      │
+│  htop-compute Job (compute nodes only)                   │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -50,7 +51,8 @@ Node reboots → tmpfs wiped → overlay resets → kubelet restarts pod → Ans
 | Kind | Name | Target nodes | What it does |
 |------|------|-------------|-------------|
 | **DaemonSet** | `ansible-bootstrap` | All workers (9 pods) | Installs Ansible, sleeps; survives reboots |
-| **Job** | `nginx-login` | `role=login` (2 pods) | Waits for Ansible (init container), then runs playbook |
+| **Job** | `nginx-login` | `role=login` (2 pods) | Waits for Ansible (init container), then installs nginx |
+| **Job** | `htop-compute` | `role=compute` (7 pods) | Waits for Ansible (init container), then installs htop |
 
 ### Init Container Dependency
 
@@ -61,9 +63,11 @@ kubectl apply -f examples/07-ansible-complex/
   │
   ├─ DaemonSet: ansible-bootstrap pods start installing Ansible
   │
-  └─ Job: nginx-login pods start, init container polls...
-       │
-       └─ Init container sees ansible-playbook → main container runs playbook
+  ├─ Job: nginx-login pods start on login nodes, init container polls...
+  │    └─ Init container sees ansible-playbook → main container runs nginx playbook
+  │
+  └─ Job: htop-compute pods start on compute nodes, init container polls...
+       └─ Init container sees ansible-playbook → main container runs htop playbook
 ```
 
 ## Setup
@@ -82,7 +86,7 @@ This creates:
 - A 10-node Kind cluster (1 control-plane + 9 workers)
 - Downloads and installs pre-built Reaper binaries from [GitHub Releases](https://github.com/miguelgila/reaper/releases)
 - Node labels: 2 workers as `role=login`, 7 as `role=compute`
-- ConfigMap `nginx-login-playbook` containing the Ansible playbook
+- ConfigMaps `nginx-login-playbook` and `htop-compute-playbook` containing the Ansible playbooks
 
 ### Prerequisites
 
@@ -104,10 +108,10 @@ kubectl apply -f examples/07-ansible-complex/
 
 The DaemonSet pods start installing Ansible immediately. The Job pods start too, but their init containers block until Ansible appears in the overlay. Once the DaemonSet finishes on a login node, the Job pod on that node proceeds.
 
-Wait for the Job to complete:
+Wait for both Jobs to complete:
 
 ```bash
-kubectl wait --for=condition=Complete job/nginx-login --timeout=300s
+kubectl wait --for=condition=Complete job/nginx-login job/htop-compute --timeout=300s
 ```
 
 ### Check the output
@@ -116,11 +120,14 @@ kubectl wait --for=condition=Complete job/nginx-login --timeout=300s
 # DaemonSet bootstrap logs (all 9 workers)
 kubectl logs -l app=ansible-bootstrap --all-containers --prefix
 
-# Job playbook logs (login nodes only)
+# nginx playbook logs (login nodes)
 kubectl logs -l job-name=nginx-login --all-containers --prefix
+
+# htop playbook logs (compute nodes)
+kubectl logs -l job-name=htop-compute --all-containers --prefix
 ```
 
-Each Job pod on a login node reads the playbook from the ConfigMap, runs it with `ansible-playbook`, and the playbook installs nginx, creates a custom index page, verifies it responds, and stops it.
+The nginx Job pods (login nodes) install nginx, create a custom index page, verify it responds, and stop it. The htop Job pods (compute nodes) install htop and verify the installation.
 
 ### Verify node placement
 
@@ -128,8 +135,11 @@ Each Job pod on a login node reads the playbook from the ConfigMap, runs it with
 # DaemonSet should have 9 pods (all workers)
 kubectl get pods -l app=ansible-bootstrap -o wide
 
-# Job should have 2 pods (login nodes only)
+# nginx Job should have 2 pods (login nodes only)
 kubectl get pods -l job-name=nginx-login -o wide
+
+# htop Job should have 7 pods (compute nodes only)
+kubectl get pods -l job-name=htop-compute -o wide
 ```
 
 ### Step-by-step alternative
@@ -141,9 +151,10 @@ If you prefer sequential deployment:
 kubectl apply -f examples/07-ansible-complex/ansible-bootstrap-daemonset.yaml
 kubectl rollout status daemonset/ansible-bootstrap --timeout=300s
 
-# Step 2: Run playbook
+# Step 2: Run playbooks
 kubectl apply -f examples/07-ansible-complex/nginx-login-job.yaml
-kubectl wait --for=condition=Complete job/nginx-login --timeout=300s
+kubectl apply -f examples/07-ansible-complex/htop-compute-job.yaml
+kubectl wait --for=condition=Complete job/nginx-login job/htop-compute --timeout=300s
 ```
 
 ### Simulate a reboot (optional)

@@ -1,0 +1,97 @@
+# Run an Ansible playbook to install htop on compute nodes.
+#
+# Each pod has an init container that waits for Ansible to appear in the
+# shared overlay (installed by the ansible-bootstrap DaemonSet). This
+# means you can deploy everything simultaneously with kubectl apply -f.
+#
+# Targets only nodes labeled role=compute (7 nodes).
+#
+# Prerequisites:
+#   - Reaper installed on all nodes
+#   - ConfigMap 'htop-compute-playbook' created by setup.sh
+#   - Nodes labeled role=compute
+#
+# Usage:
+#   kubectl apply -f examples/07-ansible-complex/
+#   kubectl wait --for=condition=Complete job/htop-compute --timeout=300s
+#   kubectl logs -l job-name=htop-compute --all-containers --prefix
+#   kubectl delete job htop-compute
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: htop-compute
+  labels:
+    app: htop-compute
+spec:
+  completions: 7
+  parallelism: 7
+  template:
+    metadata:
+      labels:
+        app: htop-compute
+    spec:
+      runtimeClassName: reaper-v2
+      restartPolicy: Never
+      nodeSelector:
+        role: compute
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: htop-compute
+      initContainers:
+        - name: wait-for-ansible
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "Waiting for Ansible in shared overlay (installed by bootstrap DaemonSet)..."
+              ATTEMPTS=0
+              until command -v ansible-playbook >/dev/null 2>&1; do
+                ATTEMPTS=$((ATTEMPTS + 1))
+                if [ $ATTEMPTS -ge 150 ]; then
+                  echo "ERROR: Timed out after 300s waiting for ansible-playbook"
+                  exit 1
+                fi
+                sleep 2
+              done
+              echo "Ansible found: $(ansible --version | head -1)"
+      containers:
+        - name: playbook-runner
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              echo "=== Ansible Playbook Runner (compute node) ==="
+              echo "Node: $(hostname)"
+              echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              echo ""
+
+              ansible --version | head -1
+              echo ""
+
+              echo "--- Playbook from ConfigMap ---"
+              cat /playbook/playbook.yml
+              echo ""
+
+              echo "--- Running playbook ---"
+              ansible-playbook /playbook/playbook.yml -v
+              RESULT=$?
+              echo ""
+
+              if [ $RESULT -eq 0 ]; then
+                echo "=== Playbook completed successfully on $(hostname) ==="
+              else
+                echo "=== Playbook FAILED on $(hostname) (exit code: $RESULT) ==="
+                exit $RESULT
+              fi
+          volumeMounts:
+            - name: playbook
+              mountPath: /playbook
+              readOnly: true
+      volumes:
+        - name: playbook
+          configMap:
+            name: htop-compute-playbook

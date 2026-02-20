@@ -1,0 +1,37 @@
+---
+# Ansible playbook to install and verify htop on compute nodes.
+#
+# Designed to run locally on Kind worker nodes labeled role=compute.
+# Since Reaper executes inside the shared overlay namespace, all changes
+# go to the overlay upper layer — the host filesystem is never modified.
+- name: Install and verify htop on compute node
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  tasks:
+    - name: Install htop
+      ansible.builtin.apt:
+        name: htop
+        state: present
+        update_cache: true
+
+    - name: Verify htop is installed
+      ansible.builtin.command: htop --version
+      register: htop_version
+      changed_when: false
+
+    - name: Display htop version
+      ansible.builtin.debug:
+        msg: "{{ htop_version.stdout }}"
+
+    - name: Capture system snapshot with htop (batch mode)
+      ansible.builtin.command: htop --no-color --no-mouse -d 1 -t
+      register: htop_output
+      timeout: 3
+      failed_when: false
+      changed_when: false
+
+    - name: Display system snapshot
+      ansible.builtin.debug:
+        msg: "htop ran successfully on {{ ansible_hostname }} (compute node)"

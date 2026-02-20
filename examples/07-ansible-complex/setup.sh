@@ -56,6 +56,7 @@ fail()  { echo " ${Y}ERR${R} $*" >&2; exit 1; }
 if [[ "${1:-}" == "--cleanup" ]]; then
   info "Deleting Kind cluster '$CLUSTER_NAME'..."
   kubectl delete configmap nginx-login-playbook --ignore-not-found 2>/dev/null || true
+  kubectl delete configmap htop-compute-playbook --ignore-not-found 2>/dev/null || true
   kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null && ok "Cluster deleted." || warn "Cluster not found."
   exit 0
 fi
@@ -188,6 +189,14 @@ kubectl create configmap nginx-login-playbook \
 
 ok "ConfigMap nginx-login-playbook created"
 
+info "Creating ConfigMap 'htop-compute-playbook'"
+
+kubectl delete configmap htop-compute-playbook --ignore-not-found >> "$LOG_FILE" 2>&1
+kubectl create configmap htop-compute-playbook \
+  --from-file=playbook.yml="$SCRIPT_DIR/htop-compute-playbook.ansible" >> "$LOG_FILE" 2>&1
+
+ok "ConfigMap htop-compute-playbook created"
+
 # ---------------------------------------------------------------------------
 # Verify RuntimeClass
 # ---------------------------------------------------------------------------
@@ -227,7 +236,8 @@ echo "  ${G}compute${R} (workers 3-9)  ←  compute/batch nodes"
 
 echo ""
 echo "${B}ConfigMaps:${R}"
-echo "  nginx-login-playbook  (Ansible playbook for login nodes)"
+echo "  nginx-login-playbook   (Ansible playbook for login nodes)"
+echo "  htop-compute-playbook  (Ansible playbook for compute nodes)"
 
 echo ""
 echo "${B}RuntimeClass:${R}"
@@ -240,11 +250,12 @@ echo "Run the demo (single apply — init containers handle ordering):"
 echo ""
 echo "  ${B}# Deploy everything at once${R}"
 echo "  kubectl apply -f examples/07-ansible-complex/"
-echo "  kubectl wait --for=condition=Complete job/nginx-login --timeout=300s"
+echo "  kubectl wait --for=condition=Complete job/nginx-login job/htop-compute --timeout=300s"
 echo ""
 echo "  ${B}# Check output${R}"
 echo "  kubectl logs -l app=ansible-bootstrap --all-containers --prefix"
 echo "  kubectl logs -l job-name=nginx-login --all-containers --prefix"
+echo "  kubectl logs -l job-name=htop-compute --all-containers --prefix"
 echo ""
 echo "  ${B}# Clean up${R}"
 echo "  kubectl delete -f examples/07-ansible-complex/"
