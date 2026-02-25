@@ -57,6 +57,24 @@ warn()  { echo " ${Y}!!${R}  $*"; }
 fail()  { echo " ${Y}ERR${R} $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
+# Help
+# ---------------------------------------------------------------------------
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  echo "Usage: $0 [VERSION] [OPTIONS]"
+  echo ""
+  echo "Create a 3-node Kind cluster for the client-server runAs demo."
+  echo ""
+  echo "Arguments:"
+  echo "  VERSION      Release version to install (e.g., v0.2.5). Default: latest"
+  echo ""
+  echo "Options:"
+  echo "  --build      Build binaries from source instead of downloading a release"
+  echo "  --cleanup    Delete the Kind cluster"
+  echo "  -h, --help   Show this help message"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # Cleanup mode
 # ---------------------------------------------------------------------------
 if [[ "${1:-}" == "--cleanup" ]]; then
@@ -65,6 +83,20 @@ if [[ "${1:-}" == "--cleanup" ]]; then
   kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null && ok "Cluster deleted." || warn "Cluster not found."
   exit 0
 fi
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+BUILD_MODE=false
+RELEASE_VERSION="latest"
+
+for arg in "$@"; do
+  case "$arg" in
+    --build)   BUILD_MODE=true ;;
+    --cleanup|--help|-h) ;;  # already handled above
+    *)         RELEASE_VERSION="$arg" ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -82,6 +114,23 @@ if [[ ! -f "$REPO_ROOT/scripts/install-reaper.sh" ]]; then
 fi
 
 ok "All prerequisites found."
+
+# ---------------------------------------------------------------------------
+# Resolve release version
+# ---------------------------------------------------------------------------
+if ! $BUILD_MODE; then
+  # shellcheck source=../../scripts/lib/release-utils.sh
+  source "$REPO_ROOT/scripts/lib/release-utils.sh"
+
+  if [[ "$RELEASE_VERSION" == "latest" ]]; then
+    info "Resolving latest release..."
+    RELEASE_VERSION=$(resolve_latest_release) || \
+      fail "Could not determine latest release. Specify a version or use --build."
+    ok "Latest release: $RELEASE_VERSION"
+  else
+    ok "Using release: $RELEASE_VERSION"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # Create Kind config for 4 nodes (1 control-plane + 3 workers)
@@ -113,55 +162,61 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Build static musl binaries for Kind nodes
+# Install Reaper on all nodes
 # ---------------------------------------------------------------------------
-info "Building Reaper binaries for Kind nodes"
+if $BUILD_MODE; then
+  info "Building Reaper binaries for Kind nodes"
+
+  cd "$REPO_ROOT"
+
+  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
+  NODE_ARCH=$(docker exec "$NODE_ID" uname -m 2>&1) || fail "Cannot detect node architecture"
+
+  case "$NODE_ARCH" in
+    aarch64)
+      TARGET_TRIPLE="aarch64-unknown-linux-musl"
+      MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
+      ;;
+    x86_64)
+      TARGET_TRIPLE="x86_64-unknown-linux-musl"
+      MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
+      ;;
+    *)
+      fail "Unsupported architecture: $NODE_ARCH"
+      ;;
+  esac
+
+  echo "  Architecture: $NODE_ARCH ($TARGET_TRIPLE)"
+
+  docker run --rm \
+    -v "$(pwd)":/work \
+    -w /work \
+    "$MUSL_IMAGE" \
+    cargo build --release \
+      --bin containerd-shim-reaper-v2 \
+      --bin reaper-runtime \
+      --target "$TARGET_TRIPLE" \
+    >> "$LOG_FILE" 2>&1 || {
+      fail "Build failed. See $LOG_FILE for details."
+    }
+
+  mkdir -p target/release
+  cp "target/$TARGET_TRIPLE/release/containerd-shim-reaper-v2" target/release/
+  cp "target/$TARGET_TRIPLE/release/reaper-runtime" target/release/
+
+  ok "Binaries built."
+fi
+
+info "Installing Reaper on all nodes"
 
 cd "$REPO_ROOT"
 
-NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
-NODE_ARCH=$(docker exec "$NODE_ID" uname -m 2>&1) || fail "Cannot detect node architecture"
+INSTALL_ARGS=(--kind "$CLUSTER_NAME")
+if ! $BUILD_MODE; then
+  INSTALL_ARGS+=(--release "$RELEASE_VERSION")
+fi
 
-case "$NODE_ARCH" in
-  aarch64)
-    TARGET_TRIPLE="aarch64-unknown-linux-musl"
-    MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
-    ;;
-  x86_64)
-    TARGET_TRIPLE="x86_64-unknown-linux-musl"
-    MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
-    ;;
-  *)
-    fail "Unsupported architecture: $NODE_ARCH"
-    ;;
-esac
-
-echo "  Architecture: $NODE_ARCH ($TARGET_TRIPLE)"
-
-docker run --rm \
-  -v "$(pwd)":/work \
-  -w /work \
-  "$MUSL_IMAGE" \
-  cargo build --release \
-    --bin containerd-shim-reaper-v2 \
-    --bin reaper-runtime \
-    --target "$TARGET_TRIPLE" \
-  >> "$LOG_FILE" 2>&1 || {
-    fail "Build failed. See $LOG_FILE for details."
-  }
-
-mkdir -p target/release
-cp "target/$TARGET_TRIPLE/release/containerd-shim-reaper-v2" target/release/
-cp "target/$TARGET_TRIPLE/release/reaper-runtime" target/release/
-
-ok "Binaries built."
-
-# ---------------------------------------------------------------------------
-# Install Reaper on all nodes via Ansible
-# ---------------------------------------------------------------------------
-info "Installing Reaper runtime on all nodes"
-
-./scripts/install-reaper.sh --kind "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1 || {
+./scripts/install-reaper.sh "${INSTALL_ARGS[@]}" >> "$LOG_FILE" 2>&1 || {
   fail "Ansible install failed. See $LOG_FILE for details."
 }
 
@@ -288,6 +343,12 @@ echo "${C}========================================${R}"
 echo "${B}Cluster ready: $CLUSTER_NAME${R}"
 echo "${C}========================================${R}"
 echo ""
+
+if ! $BUILD_MODE; then
+  echo "${B}Reaper release: $RELEASE_VERSION${R}"
+else
+  echo "${B}Reaper: built from source${R}"
+fi
 
 echo "${B}Nodes:${R}"
 kubectl get nodes -o custom-columns=\

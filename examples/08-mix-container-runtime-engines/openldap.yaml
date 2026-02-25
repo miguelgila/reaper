@@ -6,7 +6,7 @@
 # Three resources:
 #   1. ConfigMap with bootstrap LDIF (users and groups)
 #   2. Deployment with osixia/openldap + ldap-seeder sidecar
-#   3. Service with fixed ClusterIP (Reaper pods can't resolve DNS)
+#   3. Service (Reaper pods resolve it via Kubernetes DNS with REAPER_DNS_MODE=kubernetes)
 #
 # The main container runs OpenLDAP. A sidecar container waits for LDAP
 # to be ready, then loads the custom LDIF with ldapadd -c (idempotent).
@@ -217,11 +217,10 @@ metadata:
     app: openldap
 spec:
   type: ClusterIP
-  # Fixed ClusterIP for predictability. Reaper workloads run with host
-  # networking and can reach ClusterIPs (kube-proxy iptables), but cannot
-  # resolve Kubernetes DNS names (the node's /etc/resolv.conf doesn't
-  # point to CoreDNS). A fixed IP avoids DNS-based service discovery.
-  clusterIP: 10.96.100.100
+  # Reaper workloads resolve this service via Kubernetes DNS when
+  # REAPER_DNS_MODE=kubernetes (the default for Ansible-deployed clusters).
+  # The kubelet-prepared resolv.conf is written into the overlay, pointing
+  # to CoreDNS for service name resolution.
   selector:
     app: openldap
   ports:

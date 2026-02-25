@@ -12,6 +12,7 @@
 # Usage:
 #   ./examples/07-ansible-complex/setup.sh              # Create cluster (latest release)
 #   ./examples/07-ansible-complex/setup.sh v0.2.5       # Create cluster (specific release)
+#   ./examples/07-ansible-complex/setup.sh --build      # Build binaries from source
 #   ./examples/07-ansible-complex/setup.sh --cleanup    # Delete cluster
 #
 # Prerequisites:
@@ -51,6 +52,24 @@ warn()  { echo " ${Y}!!${R}  $*"; }
 fail()  { echo " ${Y}ERR${R} $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
+# Help
+# ---------------------------------------------------------------------------
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  echo "Usage: $0 [VERSION] [OPTIONS]"
+  echo ""
+  echo "Create a 4-node Kind cluster for the complex Ansible demo."
+  echo ""
+  echo "Arguments:"
+  echo "  VERSION      Release version to install (e.g., v0.2.5). Default: latest"
+  echo ""
+  echo "Options:"
+  echo "  --build      Build binaries from source instead of downloading a release"
+  echo "  --cleanup    Delete the Kind cluster"
+  echo "  -h, --help   Show this help message"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # Cleanup mode
 # ---------------------------------------------------------------------------
 if [[ "${1:-}" == "--cleanup" ]]; then
@@ -60,6 +79,17 @@ if [[ "${1:-}" == "--cleanup" ]]; then
   kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null && ok "Cluster deleted." || warn "Cluster not found."
   exit 0
 fi
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+BUILD_MODE=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --build) BUILD_MODE=true ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # Preflight checks
@@ -79,21 +109,29 @@ fi
 ok "All prerequisites found."
 
 # ---------------------------------------------------------------------------
-# Resolve release version
+# Resolve release version (skip when building from source)
 # ---------------------------------------------------------------------------
-# shellcheck source=../../scripts/lib/release-utils.sh
-source "$REPO_ROOT/scripts/lib/release-utils.sh"
+if ! $BUILD_MODE; then
+  # shellcheck source=../../scripts/lib/release-utils.sh
+  source "$REPO_ROOT/scripts/lib/release-utils.sh"
 
-# Accept optional version argument (first non-flag arg)
-RELEASE_VERSION="${1:-latest}"
+  # Accept optional version argument (first non-flag arg)
+  RELEASE_VERSION="latest"
+  for arg in "$@"; do
+    case "$arg" in
+      --build|--cleanup|--help|-h) ;;
+      *) RELEASE_VERSION="$arg" ;;
+    esac
+  done
 
-if [[ "$RELEASE_VERSION" == "latest" ]]; then
-  info "Resolving latest release..."
-  RELEASE_VERSION=$(resolve_latest_release) || \
-    fail "Could not determine latest release. Specify a version: ./examples/07-ansible-complex/setup.sh v0.2.5"
-  ok "Latest release: $RELEASE_VERSION"
-else
-  ok "Using release: $RELEASE_VERSION"
+  if [[ "$RELEASE_VERSION" == "latest" ]]; then
+    info "Resolving latest release..."
+    RELEASE_VERSION=$(resolve_latest_release) || \
+      fail "Could not determine latest release. Specify a version: ./examples/07-ansible-complex/setup.sh v0.2.5"
+    ok "Latest release: $RELEASE_VERSION"
+  else
+    ok "Using release: $RELEASE_VERSION"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -132,13 +170,68 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Install Reaper on all nodes via Ansible (pre-built release)
+# Build from source (--build mode)
 # ---------------------------------------------------------------------------
-info "Installing Reaper $RELEASE_VERSION on all nodes (pre-built release)"
+if $BUILD_MODE; then
+  info "Building Reaper binaries for Kind nodes"
+
+  cd "$REPO_ROOT"
+
+  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
+  NODE_ARCH=$(docker exec "$NODE_ID" uname -m 2>&1) || fail "Cannot detect node architecture"
+
+  case "$NODE_ARCH" in
+    aarch64)
+      TARGET_TRIPLE="aarch64-unknown-linux-musl"
+      MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
+      ;;
+    x86_64)
+      TARGET_TRIPLE="x86_64-unknown-linux-musl"
+      MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
+      ;;
+    *)
+      fail "Unsupported architecture: $NODE_ARCH"
+      ;;
+  esac
+
+  echo "  Architecture: $NODE_ARCH ($TARGET_TRIPLE)"
+
+  docker run --rm \
+    -v "$(pwd)":/work \
+    -w /work \
+    "$MUSL_IMAGE" \
+    cargo build --release \
+      --bin containerd-shim-reaper-v2 \
+      --bin reaper-runtime \
+      --target "$TARGET_TRIPLE" \
+    >> "$LOG_FILE" 2>&1 || {
+      fail "Build failed. See $LOG_FILE for details."
+    }
+
+  mkdir -p target/release
+  cp "target/$TARGET_TRIPLE/release/containerd-shim-reaper-v2" target/release/
+  cp "target/$TARGET_TRIPLE/release/reaper-runtime" target/release/
+
+  ok "Binaries built."
+fi
+
+# ---------------------------------------------------------------------------
+# Install Reaper on all nodes via Ansible
+# ---------------------------------------------------------------------------
+if $BUILD_MODE; then
+  info "Installing Reaper on all nodes (built from source)"
+else
+  info "Installing Reaper $RELEASE_VERSION on all nodes (pre-built release)"
+fi
 
 cd "$REPO_ROOT"
 
-./scripts/install-reaper.sh --kind "$CLUSTER_NAME" --release "$RELEASE_VERSION" >> "$LOG_FILE" 2>&1 || {
+INSTALL_ARGS=(--kind "$CLUSTER_NAME")
+if ! $BUILD_MODE; then
+  INSTALL_ARGS+=(--release "$RELEASE_VERSION")
+fi
+
+./scripts/install-reaper.sh "${INSTALL_ARGS[@]}" >> "$LOG_FILE" 2>&1 || {
   fail "Ansible install failed. See $LOG_FILE for details."
 }
 
@@ -218,7 +311,11 @@ kubectl get runtimeclass reaper-v2 &>/dev/null || fail "RuntimeClass reaper-v2 n
 echo ""
 echo "${C}========================================${R}"
 echo "${B}Cluster ready: $CLUSTER_NAME${R}"
-echo "${B}Reaper release: $RELEASE_VERSION${R}"
+if $BUILD_MODE; then
+  echo "${B}Reaper: built from source${R}"
+else
+  echo "${B}Reaper release: $RELEASE_VERSION${R}"
+fi
 echo "${C}========================================${R}"
 echo ""
 

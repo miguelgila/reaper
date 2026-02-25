@@ -61,6 +61,96 @@ pub enum FilterMode {
     Replace,
 }
 
+/// DNS resolution mode for Reaper workloads.
+#[derive(Debug, PartialEq)]
+pub enum DnsMode {
+    /// Use the host node's /etc/resolv.conf (default)
+    Host,
+    /// Use the kubelet-prepared resolv.conf pointing to CoreDNS
+    Kubernetes,
+}
+
+/// DNS configuration, read from environment variables.
+pub struct DnsConfig {
+    /// Which DNS resolver to use
+    pub mode: DnsMode,
+}
+
+/// Read DNS configuration from environment variables.
+///
+/// - `REAPER_DNS_MODE`: "host" (default), "kubernetes", or "k8s"
+pub fn read_dns_config() -> DnsConfig {
+    let mode = std::env::var("REAPER_DNS_MODE")
+        .map(|v| match v.to_ascii_lowercase().as_str() {
+            "kubernetes" | "k8s" => DnsMode::Kubernetes,
+            _ => DnsMode::Host,
+        })
+        .unwrap_or(DnsMode::Host);
+
+    DnsConfig { mode }
+}
+
+/// Apply Kubernetes DNS by writing the kubelet-prepared resolv.conf into the overlay.
+///
+/// Finds the `/etc/resolv.conf` mount in the OCI mounts array, reads its content
+/// from the host namespace via `/proc/1/root/<source>`, and writes it as a regular
+/// file into `/etc/resolv.conf` in the overlay. This avoids bind-mount stale mount
+/// issues in the shared namespace.
+///
+/// Must be called AFTER entering the overlay namespace and AFTER applying volume
+/// mounts. DNS failure is fatal when the admin explicitly opted into kubernetes DNS.
+///
+/// Tested by kind-integration tests (requires root + Linux namespaces + CoreDNS).
+#[cfg(not(tarpaulin_include))]
+pub fn apply_kubernetes_dns(oci_mounts: &[super::OciMount]) -> Result<()> {
+    // Find the /etc/resolv.conf mount in the OCI config
+    let resolv_mount = oci_mounts
+        .iter()
+        .find(|m| m.destination == "/etc/resolv.conf");
+
+    let resolv_mount = match resolv_mount {
+        Some(m) => m,
+        None => {
+            bail!(
+                "dns: REAPER_DNS_MODE=kubernetes but no /etc/resolv.conf mount found in OCI config; \
+                 kubelet may not have prepared per-pod DNS"
+            );
+        }
+    };
+
+    let source = resolv_mount.source.as_deref().unwrap_or("");
+    if source.is_empty() {
+        bail!("dns: /etc/resolv.conf mount has no source path in OCI config");
+    }
+
+    // Read content from host namespace via /proc/1/root/<source>
+    let host_path = format!("/proc/1/root{}", source);
+    let content = fs::read(&host_path).with_context(|| {
+        format!(
+            "dns: failed to read kubelet resolv.conf from {} (source: {})",
+            host_path, source
+        )
+    })?;
+
+    if content.is_empty() {
+        bail!(
+            "dns: kubelet resolv.conf at {} is empty; CoreDNS may not be running",
+            host_path
+        );
+    }
+
+    // Write into the overlay as a regular file (not a bind mount)
+    fs::write("/etc/resolv.conf", &content)
+        .context("dns: failed to write /etc/resolv.conf in overlay")?;
+
+    info!(
+        "dns: wrote kubelet resolv.conf ({} bytes) to /etc/resolv.conf",
+        content.len()
+    );
+
+    Ok(())
+}
+
 /// Read overlay configuration from environment variables.
 ///
 /// - `REAPER_OVERLAY_BASE`: base dir for overlay (default: "/run/reaper/overlay")
@@ -1414,5 +1504,68 @@ mod tests {
             filtered[2].destination,
             "/var/run/secrets/kubernetes.io/serviceaccount"
         );
+    }
+
+    // --- DNS configuration tests ---
+
+    #[test]
+    fn test_read_dns_config_default_is_host() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("REAPER_DNS_MODE");
+
+        let config = super::read_dns_config();
+        assert_eq!(config.mode, super::DnsMode::Host);
+    }
+
+    #[test]
+    fn test_read_dns_config_kubernetes() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("REAPER_DNS_MODE", "kubernetes");
+        let config = super::read_dns_config();
+        assert_eq!(config.mode, super::DnsMode::Kubernetes);
+
+        std::env::remove_var("REAPER_DNS_MODE");
+    }
+
+    #[test]
+    fn test_read_dns_config_k8s_shorthand() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("REAPER_DNS_MODE", "k8s");
+        let config = super::read_dns_config();
+        assert_eq!(config.mode, super::DnsMode::Kubernetes);
+
+        std::env::remove_var("REAPER_DNS_MODE");
+    }
+
+    #[test]
+    fn test_read_dns_config_case_insensitive() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("REAPER_DNS_MODE", "Kubernetes");
+        let config = super::read_dns_config();
+        assert_eq!(config.mode, super::DnsMode::Kubernetes);
+
+        std::env::set_var("REAPER_DNS_MODE", "K8S");
+        let config = super::read_dns_config();
+        assert_eq!(config.mode, super::DnsMode::Kubernetes);
+
+        std::env::remove_var("REAPER_DNS_MODE");
+    }
+
+    #[test]
+    fn test_read_dns_config_unknown_value_defaults_to_host() {
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        std::env::set_var("REAPER_DNS_MODE", "invalid");
+        let config = super::read_dns_config();
+        assert_eq!(config.mode, super::DnsMode::Host);
+
+        std::env::set_var("REAPER_DNS_MODE", "host");
+        let config = super::read_dns_config();
+        assert_eq!(config.mode, super::DnsMode::Host);
+
+        std::env::remove_var("REAPER_DNS_MODE");
     }
 }
