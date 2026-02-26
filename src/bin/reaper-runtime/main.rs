@@ -17,6 +17,9 @@ use state::{
 #[cfg(target_os = "linux")]
 mod overlay;
 
+#[path = "../../config.rs"]
+mod config;
+
 fn version_string() -> &'static str {
     const VERSION: &str = concat!(
         env!("CARGO_PKG_VERSION"),
@@ -1412,6 +1415,9 @@ fn do_exec(container_id: &str, exec_id: &str) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    // Load config file before anything else (env vars override file values)
+    config::load_config();
+
     // Setup tracing similar to shim: use REAPER_RUNTIME_LOG env var
     // If not set, use null writer to prevent stdout pollution
     if let Ok(log_path) = std::env::var("REAPER_RUNTIME_LOG") {

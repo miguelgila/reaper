@@ -84,6 +84,9 @@ Host Root (/) ─── read-only lower layer
 - `/tmp` is NOT bind-mounted (protected by overlay)
 
 **Configuration:**
+- Config file: `/etc/reaper/reaper.conf` (cross-distro, `KEY=VALUE` format)
+- Config load order: config file defaults → env vars override
+- `REAPER_CONFIG`: Override config file path (default: `/etc/reaper/reaper.conf`)
 - `REAPER_OVERLAY_BASE`: Default `/run/reaper/overlay`
 - `REAPER_DNS_MODE`: DNS resolution mode — `host` (default) uses node's resolv.conf, `kubernetes`/`k8s` writes kubelet-prepared resolv.conf (pointing to CoreDNS) into the overlay
 - Overlay is mandatory on Linux (no fail-open)
@@ -109,9 +112,11 @@ Kubernetes volumes (ConfigMap, Secret, hostPath, emptyDir, etc.) are supported v
 
 ```
 reaper/
-├── src/bin/
-│   ├── containerd-shim-reaper-v2/
-│   │   └── main.rs              # Shim implementation (ttrpc server, Task trait)
+├── src/
+│   ├── config.rs                    # Shared config file loader (/etc/reaper/reaper.conf)
+│   └── bin/
+│       ├── containerd-shim-reaper-v2/
+│       │   └── main.rs              # Shim implementation (ttrpc server, Task trait)
 │   └── reaper-runtime/
 │       ├── main.rs              # OCI runtime CLI (fork-first architecture)
 │       ├── state.rs             # State persistence (/run/reaper/<id>/)
