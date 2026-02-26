@@ -151,6 +151,14 @@
         create: yes
         mode: '0644'
 
+    - name: Set Reaper DNS mode for containerd
+      lineinfile:
+        path: /etc/default/containerd
+        line: "REAPER_DNS_MODE={{ reaper_dns_mode | default('kubernetes') }}"
+        regexp: "^REAPER_DNS_MODE="
+        create: yes
+        mode: '0644'
+
     - name: Ensure containerd service picks up environment file
       shell: |
         mkdir -p /etc/systemd/system/containerd.service.d

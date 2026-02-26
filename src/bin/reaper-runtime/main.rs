@@ -461,6 +461,24 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                         }
                         info!("do_start() - volume mounts applied");
                     }
+
+                    // Apply Kubernetes DNS if configured (FATAL on failure)
+                    let dns_config = overlay::read_dns_config();
+                    if dns_config.mode == overlay::DnsMode::Kubernetes {
+                        if let Err(e) = overlay::apply_kubernetes_dns(&oci_mounts) {
+                            tracing::error!(
+                                "do_start() - kubernetes DNS setup failed: {:#}, refusing to start workload",
+                                e
+                            );
+                            if let Ok(mut state) = load_state(&container_id) {
+                                state.status = "stopped".into();
+                                state.exit_code = Some(1);
+                                let _ = save_state(&state);
+                            }
+                            std::process::exit(1);
+                        }
+                        info!("do_start() - kubernetes DNS configured");
+                    }
                 }
             }
 

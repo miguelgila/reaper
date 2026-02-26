@@ -12,7 +12,7 @@ This is the first example showing Reaper workloads consuming a service from a tr
 | Service consumption | Reaper workloads reach a ClusterIP service via kube-proxy iptables |
 | Host-level system changes | SSSD packages, config files, and daemon installed on each node via overlay |
 | Dependency ordering | Init containers poll for Ansible availability and LDAP connectivity |
-| Fixed ClusterIP | Avoids DNS — Reaper pods use host networking, not CoreDNS |
+| Kubernetes DNS | Reaper pods resolve services via CoreDNS (REAPER_DNS_MODE=kubernetes) |
 
 ## Topology
 
@@ -66,7 +66,7 @@ base-deps DaemonSet starts (Reaper, all 3 workers)
 
 base-config DaemonSet starts (Reaper, all 3 workers)
   ├── Init 1: wait-for-ansible → polls until ansible-playbook found (up to 300s)
-  ├── Init 2: wait-for-ldap → polls TCP 10.96.100.100:389 (up to 300s)
+  ├── Init 2: wait-for-ldap → resolves openldap DNS + polls TCP (up to 300s)
   └── Main: ansible-playbook → install SSSD → configure → start → verify → sleep
 ```
 

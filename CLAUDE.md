@@ -85,6 +85,7 @@ Host Root (/) ─── read-only lower layer
 
 **Configuration:**
 - `REAPER_OVERLAY_BASE`: Default `/run/reaper/overlay`
+- `REAPER_DNS_MODE`: DNS resolution mode — `host` (default) uses node's resolv.conf, `kubernetes`/`k8s` writes kubelet-prepared resolv.conf (pointing to CoreDNS) into the overlay
 - Overlay is mandatory on Linux (no fail-open)
 - Not available on macOS (code gated with `#[cfg(target_os = "linux")]`)
 

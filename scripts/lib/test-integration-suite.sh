@@ -60,6 +60,89 @@ YAML
   fi
 }
 
+test_kubernetes_dns_resolution() {
+  # Create a target service for DNS resolution testing
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Service
+metadata:
+  name: reaper-dns-target
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      protocol: TCP
+YAML
+
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-k8s-dns-check
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: busybox
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "=== Kubernetes DNS Resolution Check ==="
+          echo "resolv.conf contents:"
+          cat /etc/resolv.conf
+          echo ""
+
+          # Verify resolv.conf points to CoreDNS (not host DNS)
+          if ! grep -q 'nameserver 10\.' /etc/resolv.conf; then
+            echo "FAIL: resolv.conf does not point to cluster DNS"
+            exit 1
+          fi
+          echo "resolv.conf points to cluster DNS"
+
+          # Resolve the kubernetes service (always exists)
+          echo "Resolving kubernetes.default.svc.cluster.local..."
+          if getent hosts kubernetes.default.svc.cluster.local; then
+            echo "kubernetes.default resolved OK"
+          else
+            echo "FAIL: could not resolve kubernetes.default.svc.cluster.local"
+            exit 1
+          fi
+
+          # Resolve our test service
+          echo "Resolving reaper-dns-target.default.svc.cluster.local..."
+          if getent hosts reaper-dns-target.default.svc.cluster.local; then
+            echo "reaper-dns-target resolved OK"
+          else
+            echo "FAIL: could not resolve reaper-dns-target.default.svc.cluster.local"
+            exit 1
+          fi
+
+          echo "=== Kubernetes DNS Resolution PASSED ==="
+YAML
+
+  wait_for_pod_phase reaper-k8s-dns-check Succeeded 60 2 || {
+    log_error "Kubernetes DNS check pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-k8s-dns-check
+    return 1
+  }
+  local logs
+  logs=$(kubectl logs reaper-k8s-dns-check --all-containers=true 2>&1 || echo "(failed to retrieve logs)")
+  log_verbose "Kubernetes DNS check logs: $logs"
+  if [[ "$logs" != *"Kubernetes DNS Resolution PASSED"* ]]; then
+    log_error "Kubernetes DNS check did not produce expected output"
+    log_error "Actual pod logs:"
+    echo "$logs" | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    dump_pod_diagnostics reaper-k8s-dns-check
+    return 1
+  fi
+}
+
 test_echo_command() {
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -1321,6 +1404,7 @@ phase_integration_tests() {
   log_status "========================================"
 
   run_test test_dns_resolution   "DNS resolution check"          --hard-fail
+  run_test test_kubernetes_dns_resolution "Kubernetes DNS resolution (CoreDNS)" --hard-fail
   run_test test_echo_command     "Echo command execution"        --hard-fail
   run_test test_overlay_sharing  "Overlay filesystem sharing"    --hard-fail
   run_test test_host_protection  "Host filesystem protection"    --hard-fail
@@ -1347,7 +1431,7 @@ phase_integration_tests() {
   run_test test_rapid_create_delete "Rapid create/delete stress"     --hard-fail
 
   # Cleanup test pods (before defunct check so pods are terminated)
-  kubectl delete pod reaper-dns-check reaper-integration-test \
+  kubectl delete pod reaper-dns-check reaper-k8s-dns-check reaper-integration-test \
     reaper-overlay-writer reaper-overlay-reader reaper-uid-gid-test \
     reaper-privdrop-test reaper-configmap-vol reaper-secret-vol \
     reaper-emptydir-vol reaper-hostpath-vol reaper-exec-test \
@@ -1355,6 +1439,7 @@ phase_integration_tests() {
     reaper-stderr-test reaper-large-output reaper-cwd-test \
     reaper-ro-vol-test \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete service reaper-dns-target --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true
 

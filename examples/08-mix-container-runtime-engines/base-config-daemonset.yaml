@@ -60,9 +60,9 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              echo "Waiting for OpenLDAP service at 10.96.100.100:389..."
+              echo "Waiting for OpenLDAP service at openldap:389..."
               ATTEMPTS=0
-              until bash -c "echo > /dev/tcp/10.96.100.100/389" 2>/dev/null; do
+              until getent hosts openldap >/dev/null 2>&1 && bash -c "echo > /dev/tcp/openldap/389" 2>/dev/null; do
                 ATTEMPTS=$((ATTEMPTS + 1))
                 if [ $ATTEMPTS -ge 60 ]; then
                   echo "ERROR: Timed out after 300s waiting for OpenLDAP"
@@ -70,7 +70,7 @@ spec:
                 fi
                 sleep 5
               done
-              echo "OpenLDAP is reachable at 10.96.100.100:389"
+              echo "OpenLDAP is reachable at openldap:389"
 
       containers:
         - name: playbook-runner
