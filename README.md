@@ -300,26 +300,30 @@ cargo test
 
 ## Configuration
 
-### Overlay Filesystem
+Reaper reads configuration from `/etc/reaper/reaper.conf` on each node. The Ansible installer creates this file automatically. Environment variables of the same name override file values.
 
-All Reaper workloads share a single overlay filesystem:
-
-```bash
-# Custom overlay location (default: /run/reaper/overlay)
-export REAPER_OVERLAY_BASE=/custom/path
+```ini
+# /etc/reaper/reaper.conf
+REAPER_DNS_MODE=kubernetes
+REAPER_RUNTIME_LOG=/run/reaper/runtime.log
+REAPER_OVERLAY_BASE=/run/reaper/overlay
 ```
 
-The host root is the read-only lower layer; writes go to a shared upper layer. This means workloads can share files with each other while protecting the host from modifications.
+See [deploy/kubernetes/README.md](deploy/kubernetes/README.md#configuration) for the full list of settings.
+
+### Overlay Filesystem
+
+All Reaper workloads share a single overlay filesystem. The host root is the read-only lower layer; writes go to a shared upper layer. This means workloads can share files with each other while protecting the host from modifications.
 
 For details, see [docs/OVERLAY_DESIGN.md](docs/OVERLAY_DESIGN.md).
 
 ### Runtime Logging
 
-Enable runtime logging for debugging:
+Enable runtime logging for debugging (in `/etc/reaper/reaper.conf` or via env vars):
 
 ```bash
-export REAPER_SHIM_LOG=/var/log/reaper-shim.log
-export REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log
+REAPER_SHIM_LOG=/var/log/reaper-shim.log
+REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log
 ```
 
 ## Known Issues

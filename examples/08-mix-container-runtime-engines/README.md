@@ -12,7 +12,7 @@ This is the first example showing Reaper workloads consuming a service from a tr
 | Service consumption | Reaper workloads reach a ClusterIP service via kube-proxy iptables |
 | Host-level system changes | SSSD packages, config files, and daemon installed on each node via overlay |
 | Dependency ordering | Init containers poll for Ansible availability and LDAP connectivity |
-| Kubernetes DNS | Reaper pods resolve services via CoreDNS (REAPER_DNS_MODE=kubernetes) |
+| Kubernetes DNS | Reaper pods resolve services via CoreDNS (`REAPER_DNS_MODE=kubernetes` in `/etc/reaper/reaper.conf`) |
 
 ## Topology
 
