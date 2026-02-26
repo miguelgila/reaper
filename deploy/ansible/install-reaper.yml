@@ -144,31 +144,34 @@
         executable: /bin/bash
       when: reaper_configured.rc != 0
 
-    - name: Set Reaper runtime log environment for containerd
-      lineinfile:
-        path: /etc/default/containerd
-        line: "REAPER_RUNTIME_LOG=/run/reaper/runtime.log"
-        create: yes
+    - name: Create Reaper configuration directory
+      file:
+        path: /etc/reaper
+        state: directory
+        mode: '0755'
+
+    - name: Write Reaper configuration file
+      copy:
+        dest: /etc/reaper/reaper.conf
+        content: |
+          # Reaper runtime configuration
+          # Environment variables override values in this file.
+          # See: https://github.com/miguelgila/reaper
+
+          REAPER_DNS_MODE={{ reaper_dns_mode | default('kubernetes') }}
+          REAPER_RUNTIME_LOG=/run/reaper/runtime.log
         mode: '0644'
 
-    - name: Set Reaper DNS mode for containerd
-      lineinfile:
-        path: /etc/default/containerd
-        line: "REAPER_DNS_MODE={{ reaper_dns_mode | default('kubernetes') }}"
-        regexp: "^REAPER_DNS_MODE="
-        create: yes
-        mode: '0644'
+    - name: Remove legacy environment file drop-in (if present)
+      file:
+        path: /etc/systemd/system/containerd.service.d/reaper-env.conf
+        state: absent
+      register: legacy_dropin_removed
 
-    - name: Ensure containerd service picks up environment file
-      shell: |
-        mkdir -p /etc/systemd/system/containerd.service.d
-        cat > /etc/systemd/system/containerd.service.d/reaper-env.conf << 'EOF'
-        [Service]
-        EnvironmentFile=-/etc/default/containerd
-        EOF
-        systemctl daemon-reload
-      args:
-        executable: /bin/bash
+    - name: Reload systemd if legacy drop-in was removed
+      systemd:
+        daemon_reload: yes
+      when: legacy_dropin_removed.changed
 
     - name: Validate containerd configuration
       command: containerd config dump

@@ -321,7 +321,7 @@ echo "  base-config-playbook   (Ansible playbook for SSSD configuration)"
 
 echo ""
 echo "${B}DNS Mode:${R}"
-echo "  REAPER_DNS_MODE=kubernetes (Reaper pods resolve Kubernetes service names via CoreDNS)"
+echo "  REAPER_DNS_MODE=kubernetes (configured in /etc/reaper/reaper.conf on each node)"
 
 echo ""
 echo "${B}RuntimeClass:${R}"

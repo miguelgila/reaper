@@ -14,6 +14,9 @@ use std::sync::{Arc, Mutex};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+#[path = "../../config.rs"]
+mod config;
+
 #[cfg(target_os = "linux")]
 fn set_child_subreaper() {
     // Adopt orphaned grandchildren (monitoring daemons) so we can reap them.
@@ -1496,6 +1499,9 @@ fn version_string() -> String {
 
 #[tokio::main]
 async fn main() {
+    // Load config file before anything else (env vars override file values)
+    config::load_config();
+
     // Handle --version before containerd-shim takes over arg parsing
     if std::env::args().any(|a| a == "--version" || a == "-V") {
         println!("containerd-shim-reaper-v2 {}", version_string());

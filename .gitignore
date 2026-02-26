@@ -8,6 +8,7 @@ target-linux/
 .vscode/
 .ignored/
 .claude/
+.omc/
 cobertura.xml
 .ignore/
 

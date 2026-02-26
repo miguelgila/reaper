@@ -139,6 +139,37 @@ kubectl logs reaper-example
 
 Expected output: `Hello from Reaper runtime!`
 
+## Configuration
+
+Reaper reads configuration from `/etc/reaper/reaper.conf` on each node. The Ansible installer creates this file automatically. Environment variables of the same name override file values.
+
+```ini
+# /etc/reaper/reaper.conf — written by Ansible installer
+REAPER_DNS_MODE=kubernetes
+REAPER_RUNTIME_LOG=/run/reaper/runtime.log
+```
+
+Common settings:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REAPER_DNS_MODE` | `host` | DNS mode: `host` (node resolv.conf) or `kubernetes` (CoreDNS) |
+| `REAPER_RUNTIME_LOG` | (none) | Runtime log file path |
+| `REAPER_SHIM_LOG` | (none) | Shim log file path |
+| `REAPER_OVERLAY_BASE` | `/run/reaper/overlay` | Overlay filesystem base directory |
+| `REAPER_FILTER_ENABLED` | `true` | Enable sensitive host file filtering |
+
+For manual installations, create the file:
+
+```bash
+sudo mkdir -p /etc/reaper
+sudo tee /etc/reaper/reaper.conf << 'EOF'
+REAPER_DNS_MODE=kubernetes
+REAPER_RUNTIME_LOG=/run/reaper/runtime.log
+EOF
+sudo systemctl restart containerd
+```
+
 ## Integration Testing
 
 See [TESTING.md](../../docs/TESTING.md) for:

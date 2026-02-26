@@ -1340,6 +1340,52 @@ YAML
   log_verbose "Exec nonexistent binary handled correctly: exit code=$exec_rc"
 }
 
+test_config_file_on_node() {
+  # Verify /etc/reaper/reaper.conf exists on the Kind node and has expected content
+  local node_id
+  node_id=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
+  if [[ -z "$node_id" ]]; then
+    node_id=$(docker ps --filter "name=${CLUSTER_NAME}" --format '{{.ID}}' | head -1)
+  fi
+
+  if [[ -z "$node_id" ]]; then
+    log_error "Could not find cluster node container"
+    return 1
+  fi
+
+  # Check file exists
+  if ! docker exec "$node_id" test -f /etc/reaper/reaper.conf; then
+    log_error "/etc/reaper/reaper.conf does not exist on node"
+    return 1
+  fi
+  log_verbose "Config file exists on node"
+
+  # Check content has expected keys
+  local content
+  content=$(docker exec "$node_id" cat /etc/reaper/reaper.conf 2>&1)
+
+  if ! echo "$content" | grep -q "REAPER_DNS_MODE="; then
+    log_error "Config file missing REAPER_DNS_MODE. Content: $content"
+    return 1
+  fi
+  log_verbose "Config file contains REAPER_DNS_MODE"
+
+  if ! echo "$content" | grep -q "REAPER_RUNTIME_LOG="; then
+    log_error "Config file missing REAPER_RUNTIME_LOG. Content: $content"
+    return 1
+  fi
+  log_verbose "Config file contains REAPER_RUNTIME_LOG"
+
+  # Verify no legacy systemd drop-in exists
+  if docker exec "$node_id" test -f /etc/systemd/system/containerd.service.d/reaper-env.conf 2>/dev/null; then
+    log_error "Legacy reaper-env.conf drop-in still exists on node"
+    return 1
+  fi
+  log_verbose "No legacy systemd drop-in found (clean)"
+
+  log_verbose "Config file on node verified: /etc/reaper/reaper.conf"
+}
+
 test_readonly_volume_rejection() {
   # Ensure the secret exists
   kubectl create secret generic reaper-test-secret \
@@ -1428,6 +1474,7 @@ phase_integration_tests() {
   run_test test_command_not_found "Command not found (failed pod)" --hard-fail
   run_test test_exec_nonexistent_binary "Exec nonexistent binary"         --hard-fail
   run_test test_readonly_volume_rejection "Read-only volume write rejection" --hard-fail
+  run_test test_config_file_on_node "Config file on node (/etc/reaper/reaper.conf)" --hard-fail
   run_test test_rapid_create_delete "Rapid create/delete stress"     --hard-fail
 
   # Cleanup test pods (before defunct check so pods are terminated)
