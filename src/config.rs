@@ -55,9 +55,11 @@ pub fn load_config() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::io::Write;
 
     #[test]
+    #[serial]
     fn test_load_config_missing_file() {
         // Should not panic when file doesn't exist
         std::env::set_var("REAPER_CONFIG", "/nonexistent/path/reaper.conf");
@@ -66,6 +68,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_load_config_parses_values() {
         let dir = tempfile::tempdir().unwrap();
         let conf = dir.path().join("reaper.conf");
@@ -96,6 +99,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_env_var_takes_precedence() {
         let dir = tempfile::tempdir().unwrap();
         let conf = dir.path().join("reaper.conf");
@@ -117,6 +121,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_skips_malformed_lines() {
         let dir = tempfile::tempdir().unwrap();
         let conf = dir.path().join("reaper.conf");
