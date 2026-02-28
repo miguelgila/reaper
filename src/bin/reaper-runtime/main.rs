@@ -314,6 +314,7 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
 
     // Clone data needed for the forked child
     let container_id = id.to_string();
+    let container_namespace = state.namespace.clone();
     let cwd = proc.cwd.clone();
     let env_vars = proc.env.clone();
     #[cfg(target_os = "linux")]
@@ -433,7 +434,22 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                 if skip_overlay {
                     info!("do_start() - overlay disabled via REAPER_NO_OVERLAY");
                 } else {
-                    let overlay_config = overlay::read_config();
+                    let overlay_config = match overlay::read_config(container_namespace.as_deref())
+                    {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::error!(
+                                "do_start() - overlay config failed: {:#}, refusing to run",
+                                e
+                            );
+                            if let Ok(mut state) = load_state(&container_id) {
+                                state.status = "stopped".into();
+                                state.exit_code = Some(1);
+                                let _ = save_state(&state);
+                            }
+                            std::process::exit(1);
+                        }
+                    };
                     if let Err(e) = overlay::enter_overlay(&overlay_config) {
                         tracing::error!(
                             "do_start() - overlay setup failed: {:#}, refusing to run without isolation",
@@ -1301,6 +1317,10 @@ fn do_exec(container_id: &str, exec_id: &str) -> Result<()> {
 
     let exec_state = load_exec_state(container_id, exec_id)?;
 
+    // Load container state to get the namespace for overlay isolation
+    let container_state = load_state(container_id)?;
+    let container_namespace = container_state.namespace.clone();
+
     let args = exec_state.args.clone();
     if args.is_empty() {
         bail!("exec process args must not be empty");
@@ -1362,7 +1382,18 @@ fn do_exec(container_id: &str, exec_id: &str) -> Result<()> {
             // Join overlay namespace (Linux only) - same as do_start
             #[cfg(target_os = "linux")]
             {
-                let overlay_config = overlay::read_config();
+                let overlay_config = match overlay::read_config(container_namespace.as_deref()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!("do_exec() - overlay config failed: {:#}", e);
+                        if let Ok(mut state) = load_exec_state(&container_id, &exec_id) {
+                            state.status = "stopped".into();
+                            state.exit_code = Some(1);
+                            let _ = save_exec_state(&state);
+                        }
+                        std::process::exit(1);
+                    }
+                };
                 if let Err(e) = overlay::enter_overlay(&overlay_config) {
                     tracing::error!("do_exec() - overlay failed: {:#}", e);
                     if let Ok(mut state) = load_exec_state(&container_id, &exec_id) {
