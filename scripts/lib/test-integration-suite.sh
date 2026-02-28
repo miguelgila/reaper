@@ -231,6 +231,84 @@ YAML
   fi
 }
 
+test_namespace_overlay_isolation() {
+  # Create a second namespace for isolation testing
+  kubectl create namespace reaper-iso-test >> "$LOG_FILE" 2>&1 || true
+
+  # Writer pod in "default" namespace writes a marker file
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-ns-iso-writer
+  namespace: default
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: writer
+      image: busybox
+      command: ["/bin/sh", "-c", "echo ns-isolation-marker > /tmp/ns-iso-test.txt"]
+YAML
+
+  wait_for_pod_phase reaper-ns-iso-writer Succeeded 60 2 || {
+    log_error "Namespace isolation writer pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-ns-iso-writer
+    return 1
+  }
+
+  # Reader pod in "reaper-iso-test" namespace tries to read the marker.
+  # The command outputs file content OR the error, plus a status line.
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-ns-iso-reader
+  namespace: reaper-iso-test
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: reader
+      image: busybox
+      command: ["/bin/sh", "-c", "cat /tmp/ns-iso-test.txt 2>&1 || true"]
+YAML
+
+  # Poll the reader pod in reaper-iso-test namespace (wait_for_pod_phase doesn't support -n)
+  local elapsed=0 timeout=60 interval=2 phase
+  while [[ $elapsed -lt $timeout ]]; do
+    phase=$(kubectl get pod reaper-ns-iso-reader -n reaper-iso-test -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    log_verbose "Pod reaper-ns-iso-reader (reaper-iso-test) phase=$phase (${elapsed}s/${timeout}s)"
+    if [[ "$phase" == "Succeeded" || "$phase" == "Failed" ]]; then
+      break
+    fi
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+
+  if [[ "$phase" != "Succeeded" && "$phase" != "Failed" ]]; then
+    log_error "Namespace isolation reader pod did not complete (phase=$phase)"
+    return 1
+  fi
+
+  local reader_output
+  reader_output=$(kubectl logs reaper-ns-iso-reader -n reaper-iso-test --all-containers=true 2>&1 || echo "(failed to retrieve logs)")
+  log_verbose "Namespace isolation reader output: '$reader_output'"
+
+  # The reader must NOT see the marker file (different namespace = different overlay)
+  if [[ "$reader_output" == *"ns-isolation-marker"* ]]; then
+    log_error "Namespace isolation FAILED: pod in reaper-iso-test namespace could read file written by default namespace"
+    log_error "Actual pod logs: '$reader_output'"
+    return 1
+  fi
+
+  if [[ "$reader_output" == *"No such file"* ]]; then
+    log_verbose "Namespace isolation verified: overlays are isolated per K8s namespace"
+  else
+    log_verbose "Reader output (file not found expected): '$reader_output'"
+  fi
+}
+
 test_host_protection() {
   # The overlay writer from the previous test wrote /tmp/overlay-test.txt.
   # It must NOT appear on the host filesystem.
@@ -1453,6 +1531,7 @@ phase_integration_tests() {
   run_test test_kubernetes_dns_resolution "Kubernetes DNS resolution (CoreDNS)" --hard-fail
   run_test test_echo_command     "Echo command execution"        --hard-fail
   run_test test_overlay_sharing  "Overlay filesystem sharing"    --hard-fail
+  run_test test_namespace_overlay_isolation "Per-namespace overlay isolation" --hard-fail
   run_test test_host_protection  "Host filesystem protection"    --hard-fail
   run_test test_uid_gid_switching "UID/GID switching with securityContext" --hard-fail
   run_test test_privilege_drop   "Privilege drop to non-root user" --hard-fail
@@ -1479,13 +1558,16 @@ phase_integration_tests() {
 
   # Cleanup test pods (before defunct check so pods are terminated)
   kubectl delete pod reaper-dns-check reaper-k8s-dns-check reaper-integration-test \
-    reaper-overlay-writer reaper-overlay-reader reaper-uid-gid-test \
+    reaper-overlay-writer reaper-overlay-reader reaper-ns-iso-writer \
+    reaper-uid-gid-test \
     reaper-privdrop-test reaper-configmap-vol reaper-secret-vol \
     reaper-emptydir-vol reaper-hostpath-vol reaper-exec-test \
     reaper-exit-code-test reaper-cmd-not-found reaper-env-test \
     reaper-stderr-test reaper-large-output reaper-cwd-test \
     reaper-ro-vol-test \
     --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete pod reaper-ns-iso-reader -n reaper-iso-test --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete namespace reaper-iso-test --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete service reaper-dns-target --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true
