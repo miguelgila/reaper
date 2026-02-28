@@ -64,21 +64,35 @@ See [MEMORY.md](.claude/projects/-Users-miguelgi-Documents-CODE-Explorations-rea
 
 ### Overlay Filesystem
 
-All Reaper workloads share a single overlay namespace:
+By default, Reaper isolates overlays per Kubernetes namespace. Each K8s namespace
+gets its own overlay upper/work dirs, mount namespace, and lock file:
 
 ```
-Host Root (/) ─── read-only lower layer
-                      │
-              ┌───────┴────────┐
-              │   OverlayFS    │
-              │  merged view   │
-              └───────┬────────┘
-                      │
-    /run/reaper/overlay/upper ─── shared writable layer
+/run/reaper/
+  overlay/
+    default/upper/          # K8s "default" namespace
+    default/work/
+    kube-system/upper/      # K8s "kube-system" namespace
+    kube-system/work/
+  merged/
+    default/                # pivot_root target per namespace
+    kube-system/
+  ns/
+    default                 # persisted mount namespace bind-mount
+    kube-system
+  overlay-default.lock      # per-namespace flock
+  overlay-kube-system.lock
 ```
+
+The shim extracts `io.kubernetes.pod.namespace` from OCI annotations and
+passes `--namespace <ns>` to the runtime. The runtime stores it in state
+so `start` and `exec` join the correct namespace's overlay.
+
+Set `REAPER_OVERLAY_ISOLATION=node` to opt out and use the legacy flat layout
+where all workloads share a single overlay.
 
 - Reads fall through to host root
-- Writes go to shared upper layer
+- Writes go to namespace-scoped upper layer
 - Host filesystem never modified (mandatory isolation)
 - Uses `pivot_root` to preserve `/proc`, `/sys`, `/dev`
 - `/tmp` is NOT bind-mounted (protected by overlay)
@@ -87,7 +101,8 @@ Host Root (/) ─── read-only lower layer
 - Config file: `/etc/reaper/reaper.conf` (cross-distro, `KEY=VALUE` format)
 - Config load order: config file defaults → env vars override
 - `REAPER_CONFIG`: Override config file path (default: `/etc/reaper/reaper.conf`)
-- `REAPER_OVERLAY_BASE`: Default `/run/reaper/overlay`
+- `REAPER_OVERLAY_ISOLATION`: Isolation mode — `namespace` (default) isolates overlays per K8s namespace, `node` uses legacy shared overlay
+- `REAPER_OVERLAY_BASE`: Default `/run/reaper/overlay` (in node mode) or `/run/reaper/overlay/<ns>` (in namespace mode)
 - `REAPER_DNS_MODE`: DNS resolution mode — `host` (default) uses node's resolv.conf, `kubernetes`/`k8s` writes kubelet-prepared resolv.conf (pointing to CoreDNS) into the overlay
 - Overlay is mandatory on Linux (no fail-open)
 - Not available on macOS (code gated with `#[cfg(target_os = "linux")]`)

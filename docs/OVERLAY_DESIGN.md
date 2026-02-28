@@ -209,12 +209,58 @@ After `pivot_root` completes in the shared namespace:
 This makes sensitive files appear empty or missing to workloads, while the
 actual host files remain untouched.
 
+## Namespace Isolation
+
+By default (`REAPER_OVERLAY_ISOLATION=namespace`), each Kubernetes namespace
+gets its own isolated overlay. This means workloads in `production` cannot
+see writes from workloads in `dev`, matching Kubernetes' namespace-as-trust-boundary
+expectation.
+
+### How It Works
+
+1. The containerd shim reads `io.kubernetes.pod.namespace` from OCI annotations
+2. It passes `--namespace <ns>` to `reaper-runtime create`
+3. The runtime stores the namespace in `ContainerState` (state.json)
+4. On `start` and `exec`, the runtime reads the namespace from state and
+   computes per-namespace paths for overlay dirs, mount namespace, and lock
+
+### Per-Namespace Path Layout
+
+```
+/run/reaper/
+  overlay/
+    default/upper/          # K8s "default" namespace
+    default/work/
+    kube-system/upper/      # K8s "kube-system" namespace
+    kube-system/work/
+  merged/
+    default/                # pivot_root target per namespace
+    kube-system/
+  ns/
+    default                 # persisted mount namespace bind-mount
+    kube-system
+  overlay-default.lock      # per-namespace flock
+  overlay-kube-system.lock
+```
+
+### Legacy Node-Wide Mode
+
+Set `REAPER_OVERLAY_ISOLATION=node` to use the old flat layout where all
+workloads share a single overlay regardless of their K8s namespace. This
+is useful for cross-deployment file sharing or backward compatibility.
+
+### Upgrade Path
+
+Existing containers created before the upgrade have `namespace: None` in their
+state files. With the default namespace isolation mode, their `start` will fail.
+Drain nodes before upgrading to ensure no in-flight containers are affected.
+
 ## Limitations
 
 - `/run` is typically a small tmpfs; for write-heavy workloads, configure
   `REAPER_OVERLAY_BASE` to point to a larger filesystem
-- All workloads share the same overlay — no per-namespace isolation
-  (by design, for cross-deployment file sharing)
+- Within a single K8s namespace, workloads still share the same overlay
+  (no per-pod isolation)
 - Overlay does not protect against processes that directly modify kernel
   state via `/proc` or `/sys` writes
 - Sensitive file filtering does not support glob patterns (use explicit paths)
