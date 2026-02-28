@@ -320,6 +320,7 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
 
     // Clone data needed for the forked child
     let container_id = id.to_string();
+    #[cfg(target_os = "linux")]
     let container_namespace = state.namespace.clone();
     let cwd = proc.cwd.clone();
     let env_vars = proc.env.clone();
@@ -1324,8 +1325,8 @@ fn do_exec(container_id: &str, exec_id: &str) -> Result<()> {
     let exec_state = load_exec_state(container_id, exec_id)?;
 
     // Load container state to get the namespace for overlay isolation
-    let container_state = load_state(container_id)?;
-    let container_namespace = container_state.namespace.clone();
+    #[cfg(target_os = "linux")]
+    let container_namespace = load_state(container_id)?.namespace.clone();
 
     let args = exec_state.args.clone();
     if args.is_empty() {

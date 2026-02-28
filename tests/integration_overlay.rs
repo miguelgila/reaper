@@ -62,13 +62,14 @@ mod overlay_tests {
         let runtime = reaper_runtime_binary();
         let state_dir = tmp.path().join("state");
 
-        // Create
+        // Create — use node-wide isolation for backward-compat tests
         let output = Command::new(&runtime)
             .arg("create")
             .arg(container_id)
             .arg("--bundle")
             .arg(&bundle)
             .env("REAPER_RUNTIME_ROOT", &state_dir)
+            .env("REAPER_OVERLAY_ISOLATION", "node")
             .output()
             .unwrap();
         assert!(
@@ -84,6 +85,7 @@ mod overlay_tests {
             .arg("--bundle")
             .arg(&bundle)
             .env("REAPER_RUNTIME_ROOT", &state_dir)
+            .env("REAPER_OVERLAY_ISOLATION", "node")
             .output()
             .unwrap();
         assert!(
@@ -104,6 +106,7 @@ mod overlay_tests {
             .arg("delete")
             .arg(container_id)
             .env("REAPER_RUNTIME_ROOT", &state_dir)
+            .env("REAPER_OVERLAY_ISOLATION", "node")
             .output();
 
         state_data
