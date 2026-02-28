@@ -81,6 +81,9 @@ enum Commands {
         /// stderr FIFO path (from containerd)
         #[arg(long, value_name = "PATH")]
         stderr: Option<String>,
+        /// Kubernetes namespace for per-namespace overlay isolation
+        #[arg(long)]
+        namespace: Option<String>,
     },
     /// Start the container process
     Start {
@@ -240,21 +243,24 @@ fn do_create(
     stdin: Option<String>,
     stdout: Option<String>,
     stderr: Option<String>,
+    namespace: Option<String>,
 ) -> Result<()> {
     info!(
-        "do_create() called - id={}, bundle={}, terminal={}, stdin={:?}, stdout={:?}, stderr={:?}",
+        "do_create() called - id={}, bundle={}, terminal={}, stdin={:?}, stdout={:?}, stderr={:?}, namespace={:?}",
         id,
         bundle.display(),
         terminal,
         stdin,
         stdout,
-        stderr
+        stderr,
+        namespace
     );
     let mut state = ContainerState::new(id.to_string(), bundle.to_path_buf());
     state.terminal = terminal;
     state.stdin = stdin;
     state.stdout = stdout;
     state.stderr = stderr;
+    state.namespace = namespace;
     save_state(&state)?;
     info!("do_create() succeeded - state saved for container={}", id);
     println!("{}", serde_json::to_string_pretty(&state)?);
@@ -1501,7 +1507,8 @@ fn main() -> Result<()> {
             stdin,
             stdout,
             stderr,
-        } => do_create(id, bundle, terminal, stdin, stdout, stderr),
+            namespace,
+        } => do_create(id, bundle, terminal, stdin, stdout, stderr, namespace),
         Commands::Start { ref id } => do_start(id, bundle),
         Commands::State { ref id } => do_state(id),
         Commands::Kill { ref id, signal } => do_kill(id, signal),
@@ -1920,7 +1927,7 @@ mod tests {
     fn test_do_create_basic() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-create", bundle.path(), false, None, None, None).unwrap();
+            do_create("test-create", bundle.path(), false, None, None, None, None).unwrap();
 
             let state = load_state("test-create").unwrap();
             assert_eq!(state.id, "test-create");
@@ -1937,7 +1944,7 @@ mod tests {
     fn test_do_create_with_terminal() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-term", bundle.path(), true, None, None, None).unwrap();
+            do_create("test-term", bundle.path(), true, None, None, None, None).unwrap();
 
             let state = load_state("test-term").unwrap();
             assert!(state.terminal);
@@ -1956,6 +1963,7 @@ mod tests {
                 Some("/path/stdin".into()),
                 Some("/path/stdout".into()),
                 Some("/path/stderr".into()),
+                None,
             )
             .unwrap();
 
@@ -1973,7 +1981,7 @@ mod tests {
     fn test_do_state_existing_container() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-state", bundle.path(), false, None, None, None).unwrap();
+            do_create("test-state", bundle.path(), false, None, None, None, None).unwrap();
             // do_state prints JSON to stdout — just verify it doesn't error
             let result = do_state("test-state");
             assert!(result.is_ok());
@@ -1996,7 +2004,7 @@ mod tests {
     fn test_do_delete_existing() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-del", bundle.path(), false, None, None, None).unwrap();
+            do_create("test-del", bundle.path(), false, None, None, None, None).unwrap();
             let result = do_delete("test-del");
             assert!(result.is_ok());
             // Verify state is gone
@@ -2032,7 +2040,7 @@ mod tests {
     fn test_do_kill_default_signal() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-kill", bundle.path(), false, None, None, None).unwrap();
+            do_create("test-kill", bundle.path(), false, None, None, None, None).unwrap();
             // Spawn a real short-lived child so we have a valid PID
             let child = std::process::Command::new("sleep")
                 .arg("60")
@@ -2057,7 +2065,7 @@ mod tests {
     fn test_do_kill_esrch_already_exited() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-esrch", bundle.path(), false, None, None, None).unwrap();
+            do_create("test-esrch", bundle.path(), false, None, None, None, None).unwrap();
 
             // Spawn a child and wait for it to exit, then try to kill its (now-dead) PID
             let child = std::process::Command::new("true").spawn().unwrap();
@@ -2078,7 +2086,7 @@ mod tests {
     fn test_do_kill_invalid_signal() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-badsig", bundle.path(), false, None, None, None).unwrap();
+            do_create("test-badsig", bundle.path(), false, None, None, None, None).unwrap();
             save_pid("test-badsig", std::process::id() as i32).unwrap();
 
             // Signal 999 is invalid
