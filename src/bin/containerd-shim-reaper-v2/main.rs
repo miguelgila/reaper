@@ -323,7 +323,8 @@ fn is_sandbox_container(bundle: &str) -> bool {
 
 /// Extract the Kubernetes namespace from OCI config.json annotations.
 ///
-/// Containerd writes `io.kubernetes.pod.namespace` into the OCI spec annotations.
+/// Containerd CRI writes `io.kubernetes.cri.sandbox-namespace` into OCI spec annotations.
+/// Falls back to `io.kubernetes.pod.namespace` for compatibility.
 /// Returns None if the annotation is missing or the config cannot be read.
 fn extract_k8s_namespace(bundle: &str) -> Option<String> {
     let config_path = Path::new(bundle).join("config.json");
@@ -337,9 +338,11 @@ fn extract_k8s_namespace(bundle: &str) -> Option<String> {
     }
 
     let config: OciConfig = serde_json::from_str(&config_data).ok()?;
-    config
-        .annotations
-        .and_then(|a| a.get("io.kubernetes.pod.namespace").cloned())
+    config.annotations.and_then(|a| {
+        a.get("io.kubernetes.cri.sandbox-namespace")
+            .or_else(|| a.get("io.kubernetes.pod.namespace"))
+            .cloned()
+    })
 }
 
 /// Build the file path for an exec state file.
@@ -1982,7 +1985,7 @@ mod tests {
         let config = serde_json::json!({
             "process": { "args": ["/bin/sh"] },
             "annotations": {
-                "io.kubernetes.pod.namespace": "production"
+                "io.kubernetes.cri.sandbox-namespace": "production"
             }
         });
         std::fs::write(
@@ -1993,6 +1996,25 @@ mod tests {
 
         let ns = extract_k8s_namespace(bundle.path().to_str().unwrap());
         assert_eq!(ns, Some("production".to_string()));
+    }
+
+    #[test]
+    fn test_extract_k8s_namespace_fallback_pod_annotation() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": { "args": ["/bin/sh"] },
+            "annotations": {
+                "io.kubernetes.pod.namespace": "staging"
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let ns = extract_k8s_namespace(bundle.path().to_str().unwrap());
+        assert_eq!(ns, Some("staging".to_string()));
     }
 
     #[test]
