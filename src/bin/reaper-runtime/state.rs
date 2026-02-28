@@ -30,6 +30,10 @@ pub struct ContainerState {
     pub stdout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
+    /// Kubernetes namespace for per-namespace overlay isolation.
+    /// None for legacy containers or when isolation mode is "node".
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub namespace: Option<String>,
 }
 
 impl ContainerState {
@@ -44,6 +48,7 @@ impl ContainerState {
             stdin: None,
             stdout: None,
             stderr: None,
+            namespace: None,
         }
     }
 }
@@ -236,6 +241,7 @@ mod tests {
                 stdin: None,
                 stdout: None,
                 stderr: None,
+                namespace: None,
             };
 
             // Save state
@@ -298,6 +304,40 @@ mod tests {
         assert_eq!(state.bundle, PathBuf::from("/my/bundle"));
         assert_eq!(state.status, "created");
         assert_eq!(state.pid, None);
+        assert_eq!(state.namespace, None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_namespace_field_round_trip() {
+        with_test_root(|_| {
+            let mut state = ContainerState::new("ns-test".to_string(), PathBuf::from("/bundle"));
+            state.namespace = Some("my-namespace".to_string());
+            save_state(&state).expect("Failed to save state");
+
+            let loaded = load_state("ns-test").expect("Failed to load state");
+            assert_eq!(loaded.namespace, Some("my-namespace".to_string()));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_namespace_field_backward_compat() {
+        with_test_root(|_| {
+            // Simulate a legacy state file without the namespace field
+            let dir = container_dir("legacy-container");
+            fs::create_dir_all(&dir).unwrap();
+            let json = r#"{
+                "id": "legacy-container",
+                "bundle": "/bundle",
+                "status": "running",
+                "pid": 1234
+            }"#;
+            fs::write(state_path("legacy-container"), json).unwrap();
+
+            let loaded = load_state("legacy-container").expect("Failed to load legacy state");
+            assert_eq!(loaded.namespace, None);
+        });
     }
 
     #[test]
