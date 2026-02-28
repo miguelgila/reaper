@@ -71,6 +71,7 @@ fn validate_namespace_for_path(ns: &str) -> Result<()> {
 }
 
 /// Overlay configuration, read from environment variables.
+#[derive(Debug)]
 pub struct OverlayConfig {
     /// Base directory for overlay upper/work dirs (default: /run/reaper/overlay)
     pub base_dir: PathBuf,
