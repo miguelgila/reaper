@@ -321,6 +321,27 @@ fn is_sandbox_container(bundle: &str) -> bool {
     false
 }
 
+/// Extract the Kubernetes namespace from OCI config.json annotations.
+///
+/// Containerd writes `io.kubernetes.pod.namespace` into the OCI spec annotations.
+/// Returns None if the annotation is missing or the config cannot be read.
+fn extract_k8s_namespace(bundle: &str) -> Option<String> {
+    let config_path = Path::new(bundle).join("config.json");
+    let config_data = std::fs::read_to_string(&config_path).ok()?;
+
+    // Reuse a minimal struct — we only need annotations
+    #[derive(serde::Deserialize)]
+    struct OciConfig {
+        #[serde(default)]
+        annotations: Option<std::collections::HashMap<String, String>>,
+    }
+
+    let config: OciConfig = serde_json::from_str(&config_data).ok()?;
+    config
+        .annotations
+        .and_then(|a| a.get("io.kubernetes.pod.namespace").cloned())
+}
+
 /// Build the file path for an exec state file.
 fn build_exec_state_path(container_id: &str, exec_id: &str) -> String {
     format!(
@@ -467,6 +488,12 @@ impl Task for ReaperTask {
 
         // Call reaper-runtime create <container-id> --bundle <bundle-path>
         // with optional I/O paths for Kubernetes logging
+        // Extract K8s namespace from OCI annotations for per-namespace overlay isolation
+        let k8s_namespace = extract_k8s_namespace(&req.bundle);
+        if let Some(ref ns) = k8s_namespace {
+            info!("create() - extracted K8s namespace: {}", ns);
+        }
+
         let runtime_path = self.runtime_path.clone();
         let container_id = req.id.clone();
         let bundle_path = req.bundle.clone();
@@ -481,6 +508,11 @@ impl Task for ReaperTask {
                 .arg(&container_id)
                 .arg("--bundle")
                 .arg(&bundle_path);
+
+            // Pass K8s namespace for per-namespace overlay isolation
+            if let Some(ref ns) = k8s_namespace {
+                cmd.arg("--namespace").arg(ns);
+            }
 
             // Pass terminal flag if containerd requests a PTY (kubectl run -it)
             if terminal {
@@ -1940,5 +1972,69 @@ mod tests {
             check_version_compatibility("/usr/bin/false", "0.1.0 (abc1234 2026-02-18)");
         assert!(!compatible, "failing binary should be incompatible");
         assert_eq!(version, "unknown (--version failed)");
+    }
+
+    // --- extract_k8s_namespace tests ---
+
+    #[test]
+    fn test_extract_k8s_namespace_present() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": { "args": ["/bin/sh"] },
+            "annotations": {
+                "io.kubernetes.pod.namespace": "production"
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let ns = extract_k8s_namespace(bundle.path().to_str().unwrap());
+        assert_eq!(ns, Some("production".to_string()));
+    }
+
+    #[test]
+    fn test_extract_k8s_namespace_missing_annotation() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": { "args": ["/bin/sh"] },
+            "annotations": {
+                "io.kubernetes.cri.container-type": "container"
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let ns = extract_k8s_namespace(bundle.path().to_str().unwrap());
+        assert_eq!(ns, None);
+    }
+
+    #[test]
+    fn test_extract_k8s_namespace_no_annotations() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": { "args": ["/bin/sh"] }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let ns = extract_k8s_namespace(bundle.path().to_str().unwrap());
+        assert_eq!(ns, None);
+    }
+
+    #[test]
+    fn test_extract_k8s_namespace_no_config() {
+        let bundle = TempDir::new().unwrap();
+        // No config.json written
+        let ns = extract_k8s_namespace(bundle.path().to_str().unwrap());
+        assert_eq!(ns, None);
     }
 }
