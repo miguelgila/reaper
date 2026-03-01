@@ -88,6 +88,8 @@ phase_readiness() {
   kubectl delete pod reaper-example reaper-integration-test reaper-dns-check \
     reaper-overlay-writer reaper-overlay-reader reaper-exec-test \
     reaper-ovname-writer reaper-ovname-reader reaper-ovname-same \
+    reaper-dns-annot-default reaper-dns-annot-host \
+    reaper-annot-combined reaper-annot-invalid reaper-annot-unknown \
     reaper-uid-gid-test reaper-privdrop-test \
     reaper-configmap-vol reaper-secret-vol reaper-emptydir-vol reaper-hostpath-vol \
     reaper-exit-code-test reaper-cmd-not-found reaper-env-test \

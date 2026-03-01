@@ -1675,6 +1675,316 @@ YAML
   log_verbose "Read-only volume write rejection verified"
 }
 
+test_dns_mode_annotation_override() {
+  # The node-level config sets REAPER_DNS_MODE=kubernetes (Ansible default).
+  # A pod with reaper.runtime/dns-mode: host should override this and use the
+  # host node's /etc/resolv.conf instead of the kubelet-prepared one.
+  #
+  # IMPORTANT: Each pod uses a unique overlay-name to get a fresh overlay namespace.
+  # Without this, pods in the same K8s namespace share an overlay, and DNS changes
+  # from earlier pods (kubernetes mode writing CoreDNS resolv.conf) would persist.
+
+  # Baseline pod: uses node default (kubernetes) in a fresh overlay group.
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-dns-annot-default
+  annotations:
+    reaper.runtime/overlay-name: "dns-test-k8s"
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: busybox
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "=== Default DNS mode (kubernetes) ==="
+          cat /etc/resolv.conf
+          if grep -q 'nameserver 10\.' /etc/resolv.conf; then
+            echo "DNS_MODE_RESULT=kubernetes"
+          else
+            echo "DNS_MODE_RESULT=host"
+          fi
+YAML
+
+  # Override pod: dns-mode=host in a separate fresh overlay group.
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-dns-annot-host
+  annotations:
+    reaper.runtime/dns-mode: "host"
+    reaper.runtime/overlay-name: "dns-test-host"
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: busybox
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "=== Host DNS mode (annotation override) ==="
+          cat /etc/resolv.conf
+          if grep -q 'nameserver 10\.' /etc/resolv.conf; then
+            echo "DNS_MODE_RESULT=kubernetes"
+          else
+            echo "DNS_MODE_RESULT=host"
+          fi
+YAML
+
+  # Wait for both pods
+  wait_for_pod_phase reaper-dns-annot-default Succeeded 60 2 || {
+    log_error "DNS annotation default pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-dns-annot-default
+    return 1
+  }
+  wait_for_pod_phase reaper-dns-annot-host Succeeded 60 2 || {
+    log_error "DNS annotation host-override pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-dns-annot-host
+    return 1
+  }
+
+  # Validate baseline pod uses kubernetes DNS (CoreDNS)
+  local default_logs
+  default_logs=$(kubectl logs reaper-dns-annot-default 2>&1 || echo "(failed)")
+  log_verbose "DNS annotation default logs: $default_logs"
+
+  if [[ "$default_logs" != *"DNS_MODE_RESULT=kubernetes"* ]]; then
+    log_error "Baseline pod (no annotation) did not get kubernetes DNS as expected"
+    log_error "Actual logs:"
+    echo "$default_logs" | while IFS= read -r line; do log_error "  $line"; done
+    dump_pod_diagnostics reaper-dns-annot-default
+    return 1
+  fi
+
+  # Validate annotated pod uses host DNS (NOT CoreDNS)
+  local host_logs
+  host_logs=$(kubectl logs reaper-dns-annot-host 2>&1 || echo "(failed)")
+  log_verbose "DNS annotation host-override logs: $host_logs"
+
+  if [[ "$host_logs" != *"DNS_MODE_RESULT=host"* ]]; then
+    log_error "Pod with dns-mode=host annotation did not get host DNS"
+    log_error "Actual logs:"
+    echo "$host_logs" | while IFS= read -r line; do log_error "  $line"; done
+    dump_pod_diagnostics reaper-dns-annot-host
+    # Runtime log diagnostics
+    log_error "=== Runtime log (annotation/dns lines) ==="
+    docker exec "${CLUSTER_NAME}-control-plane" sh -c \
+      'grep -E "annotation|dns.mode|dns_mode" /run/reaper/runtime.log 2>/dev/null | tail -20 || echo "(none)"' \
+      2>&1 | while IFS= read -r line; do log_error "  $line"; done
+    return 1
+  fi
+
+  log_verbose "DNS mode annotation override verified: host annotation produces host resolv.conf"
+}
+
+test_combined_annotations() {
+  # A pod with BOTH reaper.runtime/dns-mode and reaper.runtime/overlay-name.
+  # Verifies that multiple annotations work together on the same pod.
+
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-annot-combined
+  annotations:
+    reaper.runtime/dns-mode: "host"
+    reaper.runtime/overlay-name: "combo-group"
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: busybox
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "=== Combined annotation check ==="
+          # Check DNS mode: should be host (not kubernetes)
+          if grep -q 'nameserver 10\.' /etc/resolv.conf; then
+            echo "DNS_MODE=kubernetes"
+          else
+            echo "DNS_MODE=host"
+          fi
+          # Write a marker file to verify overlay-name group
+          echo "combined-marker" > /tmp/combined-annot-test.txt
+          cat /tmp/combined-annot-test.txt
+          echo "=== Combined PASSED ==="
+YAML
+
+  wait_for_pod_phase reaper-annot-combined Succeeded 60 2 || {
+    log_error "Combined annotation pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-annot-combined
+    return 1
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-annot-combined 2>&1 || echo "(failed)")
+  log_verbose "Combined annotation logs: $logs"
+
+  # Verify dns-mode=host was applied
+  if [[ "$logs" != *"DNS_MODE=host"* ]]; then
+    log_error "Combined annotation pod: dns-mode=host was not applied"
+    log_error "Actual logs:"
+    echo "$logs" | while IFS= read -r line; do log_error "  $line"; done
+    dump_pod_diagnostics reaper-annot-combined
+    return 1
+  fi
+
+  # Verify pod succeeded (overlay-name was accepted and overlay worked)
+  if [[ "$logs" != *"Combined PASSED"* ]]; then
+    log_error "Combined annotation pod did not produce expected output"
+    log_error "Actual logs:"
+    echo "$logs" | while IFS= read -r line; do log_error "  $line"; done
+    dump_pod_diagnostics reaper-annot-combined
+    return 1
+  fi
+
+  # Verify the overlay-name group was created on the node
+  local ns_files
+  ns_files=$(docker exec "${CLUSTER_NAME}-control-plane" ls /run/reaper/ns/ 2>/dev/null || echo "")
+  log_verbose "Namespace files on node: $ns_files"
+  if [[ "$ns_files" != *"default--combo-group"* ]]; then
+    log_error "Expected namespace file 'default--combo-group' for overlay-name, got: $ns_files"
+    return 1
+  fi
+
+  log_verbose "Combined annotations verified: dns-mode=host + overlay-name=combo-group both applied"
+}
+
+test_invalid_annotation_graceful_fallback() {
+  # A pod with an invalid dns-mode value should still start successfully.
+  # Invalid annotation values are logged and ignored; node defaults apply.
+
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-annot-invalid
+  annotations:
+    reaper.runtime/dns-mode: "bogus-invalid-value"
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: busybox
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "=== Invalid annotation fallback ==="
+          cat /etc/resolv.conf
+          # Node default is kubernetes, so we should still get CoreDNS
+          if grep -q 'nameserver 10\.' /etc/resolv.conf; then
+            echo "DNS_FALLBACK=kubernetes"
+          else
+            echo "DNS_FALLBACK=host"
+          fi
+          echo "=== Fallback PASSED ==="
+YAML
+
+  wait_for_pod_phase reaper-annot-invalid Succeeded 60 2 || {
+    log_error "Invalid annotation pod did not reach Succeeded phase (pod should still start)"
+    dump_pod_diagnostics reaper-annot-invalid
+    return 1
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-annot-invalid 2>&1 || echo "(failed)")
+  log_verbose "Invalid annotation fallback logs: $logs"
+
+  # Pod must succeed — invalid annotations should not crash it
+  if [[ "$logs" != *"Fallback PASSED"* ]]; then
+    log_error "Invalid annotation pod did not produce expected output"
+    log_error "Actual logs:"
+    echo "$logs" | while IFS= read -r line; do log_error "  $line"; done
+    dump_pod_diagnostics reaper-annot-invalid
+    return 1
+  fi
+
+  # Should fall back to node default (kubernetes)
+  if [[ "$logs" != *"DNS_FALLBACK=kubernetes"* ]]; then
+    log_error "Invalid dns-mode annotation did not fall back to node default (kubernetes)"
+    log_error "Actual logs:"
+    echo "$logs" | while IFS= read -r line; do log_error "  $line"; done
+    return 1
+  fi
+
+  log_verbose "Invalid annotation graceful fallback verified: pod started with node defaults"
+}
+
+test_unknown_annotations_ignored() {
+  # A pod with unknown reaper.runtime/* annotation keys should start fine.
+  # Unknown keys are silently ignored per the security model.
+
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-annot-unknown
+  annotations:
+    reaper.runtime/nonexistent-key: "whatever"
+    reaper.runtime/overlay-base: "/evil/path"
+    reaper.runtime/dns-mode: "kubernetes"
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: busybox
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "=== Unknown annotation check ==="
+          # The known dns-mode=kubernetes should still work
+          if grep -q 'nameserver 10\.' /etc/resolv.conf; then
+            echo "DNS_OK=yes"
+          else
+            echo "DNS_OK=no"
+          fi
+          echo "=== Unknown Annotations PASSED ==="
+YAML
+
+  wait_for_pod_phase reaper-annot-unknown Succeeded 60 2 || {
+    log_error "Unknown annotations pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-annot-unknown
+    return 1
+  }
+
+  local logs
+  logs=$(kubectl logs reaper-annot-unknown 2>&1 || echo "(failed)")
+  log_verbose "Unknown annotations logs: $logs"
+
+  if [[ "$logs" != *"Unknown Annotations PASSED"* ]]; then
+    log_error "Unknown annotations pod did not produce expected output"
+    log_error "Actual logs:"
+    echo "$logs" | while IFS= read -r line; do log_error "  $line"; done
+    dump_pod_diagnostics reaper-annot-unknown
+    return 1
+  fi
+
+  # Verify known annotation (dns-mode=kubernetes) was still applied correctly
+  if [[ "$logs" != *"DNS_OK=yes"* ]]; then
+    log_error "Known annotation (dns-mode) was not applied alongside unknown annotations"
+    log_error "Actual logs:"
+    echo "$logs" | while IFS= read -r line; do log_error "  $line"; done
+    return 1
+  fi
+
+  log_verbose "Unknown annotations silently ignored, known annotations applied correctly"
+}
+
 # ---------------------------------------------------------------------------
 # Phase 4: Integration test orchestrator
 # ---------------------------------------------------------------------------
@@ -1689,6 +1999,10 @@ phase_integration_tests() {
   run_test test_overlay_sharing  "Overlay filesystem sharing"    --hard-fail
   run_test test_namespace_overlay_isolation "Per-namespace overlay isolation" --hard-fail
   run_test test_overlay_name_isolation "Named overlay group isolation (overlay-name)" --hard-fail
+  run_test test_dns_mode_annotation_override "DNS mode annotation override (host vs kubernetes)" --hard-fail
+  run_test test_combined_annotations "Combined annotations (dns-mode + overlay-name)" --hard-fail
+  run_test test_invalid_annotation_graceful_fallback "Invalid annotation graceful fallback" --hard-fail
+  run_test test_unknown_annotations_ignored "Unknown annotation keys silently ignored" --hard-fail
   run_test test_host_protection  "Host filesystem protection"    --hard-fail
   run_test test_uid_gid_switching "UID/GID switching with securityContext" --hard-fail
   run_test test_privilege_drop   "Privilege drop to non-root user" --hard-fail
@@ -1717,6 +2031,8 @@ phase_integration_tests() {
   kubectl delete pod reaper-dns-check reaper-k8s-dns-check reaper-integration-test \
     reaper-overlay-writer reaper-overlay-reader reaper-ns-iso-writer \
     reaper-ovname-writer reaper-ovname-reader reaper-ovname-same \
+    reaper-dns-annot-default reaper-dns-annot-host \
+    reaper-annot-combined reaper-annot-invalid reaper-annot-unknown \
     reaper-uid-gid-test \
     reaper-privdrop-test reaper-configmap-vol reaper-secret-vol \
     reaper-emptydir-vol reaper-hostpath-vol reaper-exec-test \
