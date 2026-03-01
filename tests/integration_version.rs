@@ -143,6 +143,7 @@ fn test_shim_detects_fake_runtime_mismatch() {
         let mut f = std::fs::File::create(&fake_runtime).unwrap();
         writeln!(f, "#!/bin/sh").unwrap();
         writeln!(f, r#"echo "reaper-runtime 99.0.0 (deadbeef 2099-12-31)""#).unwrap();
+        f.sync_all().unwrap();
     }
 
     #[cfg(unix)]
@@ -150,6 +151,9 @@ fn test_shim_detects_fake_runtime_mismatch() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&fake_runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+
+    // Brief yield to avoid ETXTBSY on Linux (kernel may still hold the file)
+    std::thread::yield_now();
 
     // Invoke the shim with REAPER_RUNTIME_PATH pointing at the fake runtime.
     // The shim's --version flag exits before new() is called, so we use a
