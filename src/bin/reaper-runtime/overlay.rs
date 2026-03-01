@@ -124,7 +124,26 @@ pub struct DnsConfig {
 /// Read DNS configuration from environment variables.
 ///
 /// - `REAPER_DNS_MODE`: "host" (default), "kubernetes", or "k8s"
+#[allow(dead_code)]
 pub fn read_dns_config() -> DnsConfig {
+    read_dns_config_with_override(None)
+}
+
+/// Read DNS configuration with an optional per-pod annotation override.
+///
+/// If `annotation_override` is `Some`, it takes precedence over env var / config file.
+/// Valid override values: "host", "kubernetes", "k8s".
+pub fn read_dns_config_with_override(annotation_override: Option<&str>) -> DnsConfig {
+    // Annotation override takes highest precedence
+    if let Some(override_val) = annotation_override {
+        let mode = match override_val.to_ascii_lowercase().as_str() {
+            "kubernetes" | "k8s" => DnsMode::Kubernetes,
+            _ => DnsMode::Host,
+        };
+        return DnsConfig { mode };
+    }
+
+    // Fall back to env var / config file
     let mode = std::env::var("REAPER_DNS_MODE")
         .map(|v| match v.to_ascii_lowercase().as_str() {
             "kubernetes" | "k8s" => DnsMode::Kubernetes,

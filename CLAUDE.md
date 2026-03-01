@@ -104,8 +104,51 @@ where all workloads share a single overlay.
 - `REAPER_OVERLAY_ISOLATION`: Isolation mode — `namespace` (default) isolates overlays per K8s namespace, `node` uses legacy shared overlay
 - `REAPER_OVERLAY_BASE`: Default `/run/reaper/overlay` (in node mode) or `/run/reaper/overlay/<ns>` (in namespace mode)
 - `REAPER_DNS_MODE`: DNS resolution mode — `host` (default) uses node's resolv.conf, `kubernetes`/`k8s` writes kubelet-prepared resolv.conf (pointing to CoreDNS) into the overlay
+- `REAPER_ANNOTATIONS_ENABLED`: Master switch for pod annotation overrides (default: `true`). Set to `false` to disable all annotation processing.
 - Overlay is mandatory on Linux (no fail-open)
 - Not available on macOS (code gated with `#[cfg(target_os = "linux")]`)
+
+### Pod Annotations
+
+Users can influence Reaper behavior per-pod via Kubernetes annotations with the `reaper.runtime/` prefix. Annotations are extracted from OCI `config.json` by the shim and passed to the runtime via `--annotation key=value` CLI args.
+
+**Supported annotations:**
+
+| Annotation | Maps To | Valid Values | Default |
+|---|---|---|---|
+| `reaper.runtime/dns-mode` | `REAPER_DNS_MODE` | `host`, `kubernetes`, `k8s` | `host` |
+
+**Example pod spec:**
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    reaper.runtime/dns-mode: "kubernetes"
+spec:
+  runtimeClassName: reaper
+  containers:
+    - name: my-app
+      image: my-app:latest
+```
+
+**Security model:**
+- Only annotations in the user-overridable allowlist are honored (currently: `dns-mode`)
+- Admin-only parameters (overlay paths, filter settings, runtime paths) can NEVER be overridden via annotations
+- Admin can disable all annotations: `REAPER_ANNOTATIONS_ENABLED=false`
+- Unknown annotation keys are silently ignored; invalid values are logged and ignored
+
+**Data flow:**
+1. User sets `reaper.runtime/*` annotations in pod spec
+2. Containerd writes annotations to OCI `config.json`
+3. Shim extracts `reaper.runtime/*` annotations, passes `--annotation key=value` to runtime
+4. Runtime stores annotations in `ContainerState` (state.json)
+5. On `start`, runtime applies allowed annotation overrides (e.g., DNS mode)
+
+**Key files:**
+- [src/annotations.rs](src/annotations.rs) — Shared annotation parsing, validation, allowlist
+- Shim: `extract_reaper_annotations_from_bundle()` in main.rs
+- Runtime: `do_create()` stores annotations, `do_start()` applies overrides
 
 ### Volume Mounts
 
@@ -129,6 +172,7 @@ Kubernetes volumes (ConfigMap, Secret, hostPath, emptyDir, etc.) are supported v
 reaper/
 ├── src/
 │   ├── config.rs                    # Shared config file loader (/etc/reaper/reaper.conf)
+│   ├── annotations.rs               # Shared pod annotation parsing and validation
 │   └── bin/
 │       ├── containerd-shim-reaper-v2/
 │       │   └── main.rs              # Shim implementation (ttrpc server, Task trait)
@@ -140,6 +184,7 @@ reaper/
 │   ├── integration_basic_binary.rs
 │   ├── integration_io.rs        # FIFO stdout/stderr
 │   ├── integration_exec.rs      # Exec support
+│   ├── integration_annotations.rs # Pod annotation overrides
 │   ├── integration_overlay.rs   # Overlay filesystem
 │   ├── integration_shim.rs      # Shim protocol
 │   └── integration_user_management.rs
@@ -280,6 +325,7 @@ cargo clippy --target x86_64-unknown-linux-gnu --all-targets
 - State persistence and lifecycle management
 - Kubernetes integration via RuntimeClass
 - End-to-end validation with Kind cluster
+- Per-pod annotation-based configuration (DNS mode override via `reaper.runtime/dns-mode`)
 
 ### 🔄 Known Limitations
 - Multi-container pods not fully tested

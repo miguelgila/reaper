@@ -158,6 +158,9 @@ Common settings:
 | `REAPER_SHIM_LOG` | (none) | Shim log file path |
 | `REAPER_OVERLAY_BASE` | `/run/reaper/overlay` | Overlay filesystem base directory |
 | `REAPER_FILTER_ENABLED` | `true` | Enable sensitive host file filtering |
+| `REAPER_ANNOTATIONS_ENABLED` | `true` | Enable per-pod annotation overrides (set `false` to ignore all annotations) |
+
+**Per-pod annotation overrides:** Users can set `reaper.runtime/dns-mode` on individual pods to override the node-level `REAPER_DNS_MODE`. See the main [README.md](../../README.md#pod-annotations) for details and examples. Administrators can disable this with `REAPER_ANNOTATIONS_ENABLED=false`.
 
 For manual installations, create the file:
 
