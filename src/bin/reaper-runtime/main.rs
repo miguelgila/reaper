@@ -434,11 +434,11 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
             // REAPER_NO_OVERLAY=1 disables overlay for unit tests that lack CAP_SYS_ADMIN.
             #[cfg(target_os = "linux")]
             {
-                #[cfg(test)]
+                #[cfg(debug_assertions)]
                 let skip_overlay = std::env::var("REAPER_NO_OVERLAY")
                     .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                     .unwrap_or(false);
-                #[cfg(not(test))]
+                #[cfg(not(debug_assertions))]
                 let skip_overlay = false;
 
                 if skip_overlay {
