@@ -434,9 +434,12 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
             // REAPER_NO_OVERLAY=1 disables overlay for unit tests that lack CAP_SYS_ADMIN.
             #[cfg(target_os = "linux")]
             {
+                #[cfg(debug_assertions)]
                 let skip_overlay = std::env::var("REAPER_NO_OVERLAY")
                     .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                     .unwrap_or(false);
+                #[cfg(not(debug_assertions))]
+                let skip_overlay = false;
 
                 if skip_overlay {
                     info!("do_start() - overlay disabled via REAPER_NO_OVERLAY");
@@ -582,10 +585,9 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
 
                         // Apply user/group configuration if present
                         if let Some(ref user) = user_cfg_for_exec {
-                            // Set supplementary groups first (must be done while privileged)
-                            if !user.additional_gids.is_empty() {
-                                safe_setgroups(&user.additional_gids)?;
-                            }
+                            // Always clear/set supplementary groups (must be done while privileged).
+                            // When empty, this clears inherited root supplementary groups.
+                            safe_setgroups(&user.additional_gids)?;
 
                             // Set GID before UID (privilege dropping order matters)
                             if nix::libc::setgid(user.gid) != 0 {
@@ -968,6 +970,9 @@ fn do_kill(id: &str, signal: Option<i32>) -> Result<()> {
     let signal = signal.unwrap_or(15); // Default to SIGTERM
     info!("do_kill() called - id={}, signal={}", id, signal);
     let pid = load_pid(id)?;
+    if pid <= 1 {
+        bail!("refusing to send signal to PID {} (must be > 1)", pid);
+    }
     info!(
         "do_kill() - sending signal {} to process group (pgid={})",
         signal, pid

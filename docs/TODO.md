@@ -14,7 +14,7 @@ List of tasks to do, not ordered in any specific way.
 - [x] Add examples that use jobs, deployments and daemonsets
 - [x] Add complex example (idea openldap server + sssd + something that uses users)
 - [x] Add quick-start guide with a playground kind cluster for doing fast testing
-- [ ] Evaluate if it would make sense to isolate overlays by namespace
+- [x] Evaluate if it would make sense to isolate overlays by namespace
 - [x] Manage DNS settings, currently relying on host DNS instead of k8s DNS settings.
 - [ ] Add certain configuration parameters as annotations, so users can influence how Reaper works (DNS, overlay name and mount point, etc.). But ensuring adminsistrator parameters cannot be overriden.
 - [ ] Introduce more complex examples, answer this question: can we have a sssd containerd pod expose its socks file so a sample reaper pod can utilize it?

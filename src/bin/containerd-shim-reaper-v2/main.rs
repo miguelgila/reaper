@@ -345,14 +345,32 @@ fn extract_k8s_namespace(bundle: &str) -> Option<String> {
     })
 }
 
+/// Validate that an ID is safe for use in filesystem paths.
+/// Rejects empty strings, path traversal (`..`), and characters outside `[a-zA-Z0-9._-]`.
+fn validate_id(id: &str) -> Result<(), Error> {
+    if id.is_empty()
+        || id.len() > 256
+        || id == "."
+        || id == ".."
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
+        return Err(Error::InvalidArgument(format!("invalid ID: {:?}", id)));
+    }
+    Ok(())
+}
+
 /// Build the file path for an exec state file.
-fn build_exec_state_path(container_id: &str, exec_id: &str) -> String {
-    format!(
+fn build_exec_state_path(container_id: &str, exec_id: &str) -> Result<String, Error> {
+    validate_id(container_id)?;
+    validate_id(exec_id)?;
+    Ok(format!(
         "{}/{}/exec-{}.json",
         runtime_state_dir(),
         container_id,
         exec_id
-    )
+    ))
 }
 
 /// Map a status string from runtime state JSON to the protobuf Status enum.
@@ -633,7 +651,7 @@ impl Task for ReaperTask {
             }
 
             // Poll exec state file for PID
-            let exec_path = build_exec_state_path(&req.id, &req.exec_id);
+            let exec_path = build_exec_state_path(&req.id, &req.exec_id)?;
             let exec_path_clone = exec_path.clone();
 
             let pid = tokio::task::spawn_blocking(move || {
@@ -769,7 +787,7 @@ impl Task for ReaperTask {
         if !req.exec_id.is_empty() {
             info!("delete() - EXEC process, exec_id={}", req.exec_id);
 
-            let exec_path = build_exec_state_path(&req.id, &req.exec_id);
+            let exec_path = build_exec_state_path(&req.id, &req.exec_id)?;
             let _ = std::fs::remove_file(&exec_path);
 
             return Ok(api::DeleteResponse {
@@ -871,12 +889,12 @@ impl Task for ReaperTask {
         if !req.exec_id.is_empty() {
             info!("kill() - EXEC process, exec_id={}", req.exec_id);
 
-            let exec_path = build_exec_state_path(&req.id, &req.exec_id);
+            let exec_path = build_exec_state_path(&req.id, &req.exec_id)?;
 
             if let Ok(data) = std::fs::read_to_string(&exec_path) {
                 if let Ok(state) = serde_json::from_str::<serde_json::Value>(&data) {
                     if let Some(pid) = state["pid"].as_i64() {
-                        if pid > 0 {
+                        if pid > 1 {
                             let sig = nix::sys::signal::Signal::try_from(req.signal as i32)
                                 .unwrap_or(nix::sys::signal::Signal::SIGTERM);
                             // Kill the entire process group so children are also signalled.
@@ -1002,7 +1020,7 @@ impl Task for ReaperTask {
         if !req.exec_id.is_empty() {
             info!("wait() - EXEC process, exec_id={}", req.exec_id);
 
-            let exec_path = build_exec_state_path(&req.id, &req.exec_id);
+            let exec_path = build_exec_state_path(&req.id, &req.exec_id)?;
             let container_id = req.id.clone();
             let exec_id_clone = req.exec_id.clone();
 
@@ -1136,7 +1154,7 @@ impl Task for ReaperTask {
         if !req.exec_id.is_empty() {
             info!("state() - EXEC process, exec_id={}", req.exec_id);
 
-            let exec_path = build_exec_state_path(&req.id, &req.exec_id);
+            let exec_path = build_exec_state_path(&req.id, &req.exec_id)?;
 
             if let Ok(data) = std::fs::read_to_string(&exec_path) {
                 if let Ok(state) = serde_json::from_str::<serde_json::Value>(&data) {
@@ -1367,7 +1385,7 @@ impl Task for ReaperTask {
             "stderr": if req.stderr.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(req.stderr.clone()) },
         });
 
-        let exec_path = build_exec_state_path(&req.id, &req.exec_id);
+        let exec_path = build_exec_state_path(&req.id, &req.exec_id)?;
 
         std::fs::write(&exec_path, serde_json::to_vec_pretty(&exec_state).unwrap()).map_err(
             |e| {
@@ -1814,7 +1832,7 @@ mod tests {
     #[serial]
     fn test_build_exec_state_path_format() {
         std::env::set_var("REAPER_RUNTIME_ROOT", "/run/reaper");
-        let path = build_exec_state_path("my-container", "exec-123");
+        let path = build_exec_state_path("my-container", "exec-123").unwrap();
         assert_eq!(path, "/run/reaper/my-container/exec-exec-123.json");
         std::env::remove_var("REAPER_RUNTIME_ROOT");
     }
@@ -1823,7 +1841,7 @@ mod tests {
     #[serial]
     fn test_build_exec_state_path_custom_root() {
         std::env::set_var("REAPER_RUNTIME_ROOT", "/custom/path");
-        let path = build_exec_state_path("ctr-1", "e1");
+        let path = build_exec_state_path("ctr-1", "e1").unwrap();
         assert_eq!(path, "/custom/path/ctr-1/exec-e1.json");
         std::env::remove_var("REAPER_RUNTIME_ROOT");
     }
