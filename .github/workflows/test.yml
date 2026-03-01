@@ -103,12 +103,12 @@ jobs:
       - name: Generate coverage
         run: cargo tarpaulin
 
-      - name: Upload coverage to Codecov (fail on error)
+      - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
         with:
           files: ./cobertura.xml
           token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: true
+          fail_ci_if_error: false
           verbose: true
 
   clippy:

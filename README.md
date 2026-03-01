@@ -243,6 +243,7 @@ For architecture details, see [docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md) and
 - ✅ **Interactive sessions** (PTY support for `kubectl run -it` and `kubectl exec -it`)
 - ✅ **UID/GID switching** (privilege dropping with `securityContext`)
 - ✅ **Sensitive file filtering** (hides SSH keys, passwords, SSL keys in overlay)
+- ✅ **Pod annotations** (per-pod configuration overrides via Kubernetes annotations)
 - ✅ **Process monitoring** (fork-based with real exit code capture)
 - ✅ **Zombie process reaping** (proper process cleanup)
 - ✅ **End-to-end testing** (validated with kind cluster integration tests)
@@ -251,12 +252,16 @@ For architecture details, see [docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md) and
 
 The [examples/](examples/) directory contains runnable demos, each with a `setup.sh` that creates a Kind cluster with Reaper pre-installed:
 
-| Example                                                         | Description                                                                   |
-| --------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| **[01-scheduling/](examples/01-scheduling/)**                   | DaemonSets on all nodes vs. a labeled subset                                  |
-| **[02-client-server/](examples/02-client-server/)**             | TCP server + clients communicating across nodes via host networking           |
-| **[03-client-server-runas/](examples/03-client-server-runas/)** | Same as above, but running as a shared non-root user (LDAP-style UID/GID)     |
-| **[04-volumes/](examples/04-volumes/)**                         | Kubernetes volume mounts (ConfigMap, Secret, hostPath, emptyDir) with overlay |
+| Example                                                                                | Description                                                                       |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| **[01-scheduling/](examples/01-scheduling/)**                                          | DaemonSets on all nodes vs. a labeled subset                                      |
+| **[02-client-server/](examples/02-client-server/)**                                    | TCP server + clients communicating across nodes via host networking                |
+| **[03-client-server-runas/](examples/03-client-server-runas/)**                        | Same as above, but running as a shared non-root user (LDAP-style UID/GID)         |
+| **[04-volumes/](examples/04-volumes/)**                                                | Kubernetes volume mounts (ConfigMap, Secret, hostPath, emptyDir) with overlay      |
+| **[05-kubemix/](examples/05-kubemix/)**                                                | Jobs, DaemonSets, and Deployments on a 10-node cluster                            |
+| **[06-ansible-jobs/](examples/06-ansible-jobs/)**                                      | Sequential Jobs: install Ansible, then run a playbook                             |
+| **[07-ansible-complex/](examples/07-ansible-complex/)**                                | DaemonSet bootstrap + role-based Ansible playbooks                                |
+| **[08-mix-container-runtime-engines/](examples/08-mix-container-runtime-engines/)**     | Mixed runtimes: OpenLDAP (default containerd) + SSSD (Reaper)                     |
 
 ## Documentation
 
@@ -316,6 +321,47 @@ See [deploy/kubernetes/README.md](deploy/kubernetes/README.md#configuration) for
 All Reaper workloads share a single overlay filesystem. The host root is the read-only lower layer; writes go to a shared upper layer. This means workloads can share files with each other while protecting the host from modifications.
 
 For details, see [docs/OVERLAY_DESIGN.md](docs/OVERLAY_DESIGN.md).
+
+### Pod Annotations
+
+Users can override certain Reaper configuration parameters per-pod using Kubernetes annotations. This allows fine-grained control without changing the node-level configuration.
+
+**Supported annotations:**
+
+| Annotation | Values | Default | Description |
+|------------|--------|---------|-------------|
+| `reaper.runtime/dns-mode` | `host`, `kubernetes`, `k8s` | Node config (`REAPER_DNS_MODE`) | DNS resolution mode for this pod |
+| `reaper.runtime/overlay-name` | DNS label (e.g., `pippo`) | *(none — uses namespace overlay)* | Named overlay group within the namespace |
+
+**Example:**
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-task
+  annotations:
+    reaper.runtime/dns-mode: "kubernetes"    # Use CoreDNS for this pod
+    reaper.runtime/overlay-name: "my-group"  # Isolate overlay from other pods in this namespace
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: task
+      image: busybox
+      command: ["/bin/sh", "-c", "nslookup kubernetes.default"]
+```
+
+**Security model:**
+- Only annotations in the allowlist above are honored. Unknown annotation keys are silently ignored.
+- Administrator-controlled parameters (overlay paths, filter settings, isolation mode) **cannot** be overridden via annotations.
+- Administrators can disable all annotation processing by setting `REAPER_ANNOTATIONS_ENABLED=false` in the node config.
+
+**How it works:**
+1. The shim extracts `reaper.runtime/*` annotations from the OCI config (populated by kubelet from pod metadata).
+2. Annotations are stored in the container state during `create`.
+3. During `start`, annotations are validated against the allowlist and applied. Invalid values are logged and ignored.
+4. If no annotation is set, the node-level configuration (from `/etc/reaper/reaper.conf` or environment variables) is used as the default.
 
 ### Runtime Logging
 

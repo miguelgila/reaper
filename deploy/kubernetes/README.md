@@ -110,7 +110,10 @@ Or configure manually by adding this to `/etc/containerd/config.toml`:
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
   runtime_type = "io.containerd.reaper.v2"
   sandbox_mode = "podsandbox"
+  pod_annotations = ["reaper.runtime/*"]
 ```
+
+> **Important:** The `pod_annotations` line is required for per-pod annotation overrides (e.g., `reaper.runtime/dns-mode`, `reaper.runtime/overlay-name`). Without it, containerd will not propagate pod annotations to the OCI config and annotations will be silently ignored.
 
 Then restart containerd:
 
@@ -158,6 +161,9 @@ Common settings:
 | `REAPER_SHIM_LOG` | (none) | Shim log file path |
 | `REAPER_OVERLAY_BASE` | `/run/reaper/overlay` | Overlay filesystem base directory |
 | `REAPER_FILTER_ENABLED` | `true` | Enable sensitive host file filtering |
+| `REAPER_ANNOTATIONS_ENABLED` | `true` | Enable per-pod annotation overrides (set `false` to ignore all annotations) |
+
+**Per-pod annotation overrides:** Users can set `reaper.runtime/dns-mode` and `reaper.runtime/overlay-name` on individual pods to override node-level settings. `overlay-name` creates isolated overlay groups within a namespace. See the main [README.md](../../README.md#pod-annotations) for details and examples. Administrators can disable all annotations with `REAPER_ANNOTATIONS_ENABLED=false`.
 
 For manual installations, create the file:
 

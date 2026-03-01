@@ -20,6 +20,10 @@ mod overlay;
 #[path = "../../config.rs"]
 mod config;
 
+#[path = "../../annotations.rs"]
+#[allow(dead_code)]
+mod annotations;
+
 fn version_string() -> &'static str {
     const VERSION: &str = concat!(
         env!("CARGO_PKG_VERSION"),
@@ -84,6 +88,9 @@ enum Commands {
         /// Kubernetes namespace for per-namespace overlay isolation
         #[arg(long)]
         namespace: Option<String>,
+        /// Reaper annotation overrides (key=value, repeatable)
+        #[arg(long = "annotation", value_name = "KEY=VALUE")]
+        annotations: Vec<String>,
     },
     /// Start the container process
     Start {
@@ -236,6 +243,7 @@ fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn do_create(
     id: &str,
     bundle: &Path,
@@ -244,16 +252,19 @@ fn do_create(
     stdout: Option<String>,
     stderr: Option<String>,
     namespace: Option<String>,
+    cli_annotations: &[String],
 ) -> Result<()> {
+    let parsed_annotations = annotations::parse_cli_annotations(cli_annotations);
     info!(
-        "do_create() called - id={}, bundle={}, terminal={}, stdin={:?}, stdout={:?}, stderr={:?}, namespace={:?}",
+        "do_create() called - id={}, bundle={}, terminal={}, stdin={:?}, stdout={:?}, stderr={:?}, namespace={:?}, annotations={:?}",
         id,
         bundle.display(),
         terminal,
         stdin,
         stdout,
         stderr,
-        namespace
+        namespace,
+        parsed_annotations
     );
     let mut state = ContainerState::new(id.to_string(), bundle.to_path_buf());
     state.terminal = terminal;
@@ -261,6 +272,9 @@ fn do_create(
     state.stdout = stdout;
     state.stderr = stderr;
     state.namespace = namespace;
+    if !parsed_annotations.is_empty() {
+        state.annotations = Some(parsed_annotations);
+    }
     save_state(&state)?;
     info!("do_create() succeeded - state saved for container={}", id);
     println!("{}", serde_json::to_string_pretty(&state)?);
@@ -318,6 +332,17 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
         info!("do_start() - no user config, will run as current user");
     }
 
+    // Parse Reaper annotations from state for per-pod config overrides.
+    // Annotations are stored with the prefix already stripped, so use
+    // parse_stripped_annotations() to avoid a wasteful re-prefix round-trip.
+    let parsed_annotations = state
+        .annotations
+        .as_ref()
+        .and_then(annotations::parse_stripped_annotations);
+    if let Some(ref annots) = parsed_annotations {
+        info!("do_start() - parsed annotations: {:?}", annots);
+    }
+
     // Clone data needed for the forked child
     let container_id = id.to_string();
     #[cfg(target_os = "linux")]
@@ -326,6 +351,12 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
     let env_vars = proc.env.clone();
     #[cfg(target_os = "linux")]
     let oci_mounts = cfg.mounts.clone();
+    #[cfg(target_os = "linux")]
+    let dns_mode_override = parsed_annotations.as_ref().and_then(|a| a.dns_mode.clone());
+    #[cfg(target_os = "linux")]
+    let overlay_name_override = parsed_annotations
+        .as_ref()
+        .and_then(|a| a.overlay_name.clone());
 
     use nix::unistd::{fork, ForkResult};
 
@@ -444,8 +475,10 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                 if skip_overlay {
                     info!("do_start() - overlay disabled via REAPER_NO_OVERLAY");
                 } else {
-                    let overlay_config = match overlay::read_config(container_namespace.as_deref())
-                    {
+                    let overlay_config = match overlay::read_config(
+                        container_namespace.as_deref(),
+                        overlay_name_override.as_deref(),
+                    ) {
                         Ok(c) => c,
                         Err(e) => {
                             tracing::error!(
@@ -492,7 +525,9 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                     }
 
                     // Apply Kubernetes DNS if configured (FATAL on failure)
-                    let dns_config = overlay::read_dns_config();
+                    // Per-pod annotation override takes precedence over node-level config
+                    let dns_config =
+                        overlay::read_dns_config_with_override(dns_mode_override.as_deref());
                     if dns_config.mode == overlay::DnsMode::Kubernetes {
                         if let Err(e) = overlay::apply_kubernetes_dns(&oci_mounts) {
                             tracing::error!(
@@ -1329,9 +1364,21 @@ fn do_exec(container_id: &str, exec_id: &str) -> Result<()> {
 
     let exec_state = load_exec_state(container_id, exec_id)?;
 
-    // Load container state to get the namespace for overlay isolation
+    // Load container state to get namespace and annotations for overlay isolation.
+    // We need annotations here to extract overlay-name, which determines which
+    // overlay namespace to join. Other annotation-driven overrides (like dns-mode)
+    // modify the overlay filesystem during do_start(), and exec'd processes inherit
+    // those changes automatically by joining the same overlay namespace.
     #[cfg(target_os = "linux")]
-    let container_namespace = load_state(container_id)?.namespace.clone();
+    let container_state = load_state(container_id)?;
+    #[cfg(target_os = "linux")]
+    let container_namespace = container_state.namespace.clone();
+    #[cfg(target_os = "linux")]
+    let overlay_name_override = container_state
+        .annotations
+        .as_ref()
+        .and_then(annotations::parse_stripped_annotations)
+        .and_then(|a| a.overlay_name);
 
     let args = exec_state.args.clone();
     if args.is_empty() {
@@ -1394,7 +1441,10 @@ fn do_exec(container_id: &str, exec_id: &str) -> Result<()> {
             // Join overlay namespace (Linux only) - same as do_start
             #[cfg(target_os = "linux")]
             {
-                let overlay_config = match overlay::read_config(container_namespace.as_deref()) {
+                let overlay_config = match overlay::read_config(
+                    container_namespace.as_deref(),
+                    overlay_name_override.as_deref(),
+                ) {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::error!("do_exec() - overlay config failed: {:#}", e);
@@ -1514,7 +1564,17 @@ fn main() -> Result<()> {
             stdout,
             stderr,
             namespace,
-        } => do_create(id, bundle, terminal, stdin, stdout, stderr, namespace),
+            ref annotations,
+        } => do_create(
+            id,
+            bundle,
+            terminal,
+            stdin,
+            stdout,
+            stderr,
+            namespace,
+            annotations,
+        ),
         Commands::Start { ref id } => do_start(id, bundle),
         Commands::State { ref id } => do_state(id),
         Commands::Kill { ref id, signal } => do_kill(id, signal),
@@ -1933,7 +1993,17 @@ mod tests {
     fn test_do_create_basic() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-create", bundle.path(), false, None, None, None, None).unwrap();
+            do_create(
+                "test-create",
+                bundle.path(),
+                false,
+                None,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .unwrap();
 
             let state = load_state("test-create").unwrap();
             assert_eq!(state.id, "test-create");
@@ -1950,7 +2020,17 @@ mod tests {
     fn test_do_create_with_terminal() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-term", bundle.path(), true, None, None, None, None).unwrap();
+            do_create(
+                "test-term",
+                bundle.path(),
+                true,
+                None,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .unwrap();
 
             let state = load_state("test-term").unwrap();
             assert!(state.terminal);
@@ -1970,6 +2050,7 @@ mod tests {
                 Some("/path/stdout".into()),
                 Some("/path/stderr".into()),
                 None,
+                &[],
             )
             .unwrap();
 
@@ -1987,7 +2068,17 @@ mod tests {
     fn test_do_state_existing_container() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-state", bundle.path(), false, None, None, None, None).unwrap();
+            do_create(
+                "test-state",
+                bundle.path(),
+                false,
+                None,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .unwrap();
             // do_state prints JSON to stdout — just verify it doesn't error
             let result = do_state("test-state");
             assert!(result.is_ok());
@@ -2010,7 +2101,17 @@ mod tests {
     fn test_do_delete_existing() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-del", bundle.path(), false, None, None, None, None).unwrap();
+            do_create(
+                "test-del",
+                bundle.path(),
+                false,
+                None,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .unwrap();
             let result = do_delete("test-del");
             assert!(result.is_ok());
             // Verify state is gone
@@ -2046,7 +2147,17 @@ mod tests {
     fn test_do_kill_default_signal() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-kill", bundle.path(), false, None, None, None, None).unwrap();
+            do_create(
+                "test-kill",
+                bundle.path(),
+                false,
+                None,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .unwrap();
             // Spawn a real short-lived child so we have a valid PID
             let child = std::process::Command::new("sleep")
                 .arg("60")
@@ -2071,7 +2182,17 @@ mod tests {
     fn test_do_kill_esrch_already_exited() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-esrch", bundle.path(), false, None, None, None, None).unwrap();
+            do_create(
+                "test-esrch",
+                bundle.path(),
+                false,
+                None,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .unwrap();
 
             // Spawn a child and wait for it to exit, then try to kill its (now-dead) PID
             let child = std::process::Command::new("true").spawn().unwrap();
@@ -2092,7 +2213,17 @@ mod tests {
     fn test_do_kill_invalid_signal() {
         with_test_root(|_| {
             let bundle = TempDir::new().unwrap();
-            do_create("test-badsig", bundle.path(), false, None, None, None, None).unwrap();
+            do_create(
+                "test-badsig",
+                bundle.path(),
+                false,
+                None,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .unwrap();
             save_pid("test-badsig", std::process::id() as i32).unwrap();
 
             // Signal 999 is invalid

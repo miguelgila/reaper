@@ -181,6 +181,7 @@ containerdConfigPatches:
     [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
       runtime_type = "io.containerd.reaper.v2"
       sandbox_mode = "podsandbox"
+      pod_annotations = ["reaper.runtime/*"]
 EOF
   KIND_CONFIG="$GENERATED_CONFIG"
   info "Using default 3-node Kind config" | if_log

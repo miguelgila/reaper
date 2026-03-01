@@ -11,11 +11,15 @@ use std::collections::HashMap;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[path = "../../config.rs"]
 mod config;
+
+#[path = "../../annotations.rs"]
+#[allow(dead_code)]
+mod annotations;
 
 #[cfg(target_os = "linux")]
 fn set_child_subreaper() {
@@ -345,6 +349,45 @@ fn extract_k8s_namespace(bundle: &str) -> Option<String> {
     })
 }
 
+/// Extract Reaper-specific annotations (`reaper.runtime/*`) from OCI config.json.
+///
+/// Returns a map of stripped annotation keys to values, e.g.
+/// `{"dns-mode": "kubernetes"}` from `{"reaper.runtime/dns-mode": "kubernetes"}`.
+/// Returns an empty map if annotations cannot be read.
+fn extract_reaper_annotations_from_bundle(bundle: &str) -> HashMap<String, String> {
+    let config_path = Path::new(bundle).join("config.json");
+    let config_data = match std::fs::read_to_string(&config_path) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(
+                "Failed to read OCI config for annotations: {}: {}",
+                config_path.display(),
+                e
+            );
+            return HashMap::new();
+        }
+    };
+
+    #[derive(serde::Deserialize)]
+    struct OciConfig {
+        #[serde(default)]
+        annotations: Option<std::collections::HashMap<String, String>>,
+    }
+
+    let config: OciConfig = match serde_json::from_str(&config_data) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to parse OCI config for annotations: {}", e);
+            return HashMap::new();
+        }
+    };
+
+    match config.annotations {
+        Some(a) => annotations::extract_reaper_annotations(&a),
+        None => HashMap::new(),
+    }
+}
+
 /// Validate that an ID is safe for use in filesystem paths.
 /// Rejects empty strings, path traversal (`..`), and characters outside `[a-zA-Z0-9._-]`.
 fn validate_id(id: &str) -> Result<(), Error> {
@@ -515,6 +558,19 @@ impl Task for ReaperTask {
             info!("create() - extracted K8s namespace: {}", ns);
         }
 
+        // Extract Reaper-specific annotations (reaper.runtime/*) for per-pod config.
+        // Only extract if annotations are enabled (admin master switch).
+        let reaper_annotations = if annotations::annotations_enabled() {
+            let annots = extract_reaper_annotations_from_bundle(&req.bundle);
+            if !annots.is_empty() {
+                info!("create() - extracted Reaper annotations: {:?}", annots);
+            }
+            annots
+        } else {
+            info!("create() - annotations disabled via REAPER_ANNOTATIONS_ENABLED");
+            HashMap::new()
+        };
+
         let runtime_path = self.runtime_path.clone();
         let container_id = req.id.clone();
         let bundle_path = req.bundle.clone();
@@ -522,6 +578,7 @@ impl Task for ReaperTask {
         let stdin_path = req.stdin.clone();
         let stdout_path = req.stdout.clone();
         let stderr_path = req.stderr.clone();
+        let annotation_args = annotations::annotations_to_cli_args(&reaper_annotations);
 
         let output = tokio::task::spawn_blocking(move || {
             let mut cmd = std::process::Command::new(&runtime_path);
@@ -533,6 +590,11 @@ impl Task for ReaperTask {
             // Pass K8s namespace for per-namespace overlay isolation
             if let Some(ref ns) = k8s_namespace {
                 cmd.arg("--namespace").arg(ns);
+            }
+
+            // Pass Reaper annotations for per-pod configuration
+            for ann in &annotation_args {
+                cmd.arg("--annotation").arg(ann);
             }
 
             // Pass terminal flag if containerd requests a PTY (kubectl run -it)
@@ -2076,5 +2138,94 @@ mod tests {
         // No config.json written
         let ns = extract_k8s_namespace(bundle.path().to_str().unwrap());
         assert_eq!(ns, None);
+    }
+
+    // --- extract_reaper_annotations_from_bundle tests ---
+
+    #[test]
+    fn test_extract_reaper_annotations_with_dns_mode() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": { "args": ["/bin/sh"] },
+            "annotations": {
+                "reaper.runtime/dns-mode": "kubernetes",
+                "io.kubernetes.pod.namespace": "default"
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let annots = extract_reaper_annotations_from_bundle(bundle.path().to_str().unwrap());
+        assert_eq!(annots.len(), 1);
+        assert_eq!(annots.get("dns-mode"), Some(&"kubernetes".to_string()));
+    }
+
+    #[test]
+    fn test_extract_reaper_annotations_filters_non_allowlisted() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": { "args": ["/bin/sh"] },
+            "annotations": {
+                "reaper.runtime/dns-mode": "host",
+                "reaper.runtime/unknown-key": "some-value",
+                "io.kubernetes.cri.container-type": "container"
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let annots = extract_reaper_annotations_from_bundle(bundle.path().to_str().unwrap());
+        // Only allowlisted keys are extracted; unknown-key is filtered out
+        assert_eq!(annots.len(), 1);
+        assert_eq!(annots.get("dns-mode"), Some(&"host".to_string()));
+        assert!(!annots.contains_key("unknown-key"));
+    }
+
+    #[test]
+    fn test_extract_reaper_annotations_none() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": { "args": ["/bin/sh"] },
+            "annotations": {
+                "io.kubernetes.pod.namespace": "default"
+            }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let annots = extract_reaper_annotations_from_bundle(bundle.path().to_str().unwrap());
+        assert!(annots.is_empty());
+    }
+
+    #[test]
+    fn test_extract_reaper_annotations_no_annotations_field() {
+        let bundle = TempDir::new().unwrap();
+        let config = serde_json::json!({
+            "process": { "args": ["/bin/sh"] }
+        });
+        std::fs::write(
+            bundle.path().join("config.json"),
+            serde_json::to_string(&config).unwrap(),
+        )
+        .unwrap();
+
+        let annots = extract_reaper_annotations_from_bundle(bundle.path().to_str().unwrap());
+        assert!(annots.is_empty());
+    }
+
+    #[test]
+    fn test_extract_reaper_annotations_no_config() {
+        let bundle = TempDir::new().unwrap();
+        let annots = extract_reaper_annotations_from_bundle(bundle.path().to_str().unwrap());
+        assert!(annots.is_empty());
     }
 }
