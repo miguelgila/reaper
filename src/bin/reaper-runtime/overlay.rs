@@ -223,6 +223,12 @@ pub fn apply_kubernetes_dns(oci_mounts: &[super::OciMount]) -> Result<()> {
 ///   - lock_path: `/run/reaper/overlay-<ns>.lock`
 ///   - merged_dir: `/run/reaper/merged/<ns>`
 ///
+/// When `overlay_name` is set (e.g., "pippo"), paths include it as a sub-group:
+///   - base_dir: `/run/reaper/overlay/<ns>/<name>/`
+///   - ns_path:  `/run/reaper/ns/<ns>--<name>`
+///   - lock_path: `/run/reaper/overlay-<ns>--<name>.lock`
+///   - merged_dir: `/run/reaper/merged/<ns>/<name>`
+///
 /// In `Node` isolation mode (legacy), paths use the old flat layout:
 ///   - base_dir: `/run/reaper/overlay`
 ///   - ns_path:  `/run/reaper/shared-mnt-ns`
@@ -231,7 +237,10 @@ pub fn apply_kubernetes_dns(oci_mounts: &[super::OciMount]) -> Result<()> {
 ///
 /// Environment overrides (`REAPER_OVERLAY_BASE`, `REAPER_OVERLAY_NS`,
 /// `REAPER_OVERLAY_LOCK`) are respected in both modes as explicit overrides.
-pub fn read_config(k8s_namespace: Option<&str>) -> Result<OverlayConfig> {
+pub fn read_config(
+    k8s_namespace: Option<&str>,
+    overlay_name: Option<&str>,
+) -> Result<OverlayConfig> {
     let isolation = read_isolation_mode();
 
     match isolation {
@@ -244,21 +253,37 @@ pub fn read_config(k8s_namespace: Option<&str>) -> Result<OverlayConfig> {
             })?;
             validate_namespace_for_path(ns)?;
 
+            // Validate overlay_name if provided (same DNS label rules as namespace).
+            if let Some(name) = overlay_name {
+                validate_namespace_for_path(name).context("invalid overlay-name annotation")?;
+            }
+
+            // Compute path keys. When overlay_name is set:
+            //   overlay_key = "<ns>/<name>" (for base_dir and merged_dir subdirs)
+            //   flat_key    = "<ns>--<name>" (for ns_path and lock_path filenames)
+            // Double-dash separator is safe: both ns and name are DNS labels (single hyphens only).
+            let (overlay_key, flat_key) = match overlay_name {
+                Some(name) => (format!("{}/{}", ns, name), format!("{}--{}", ns, name)),
+                None => (ns.to_string(), ns.to_string()),
+            };
+
             // Per-namespace paths under the standard /run/reaper/ tree.
             // Explicit env overrides take precedence.
             let base_dir = std::env::var("REAPER_OVERLAY_BASE")
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(format!("/run/reaper/overlay/{}", ns)));
+                .unwrap_or_else(|_| PathBuf::from(format!("/run/reaper/overlay/{}", overlay_key)));
 
             let ns_path = std::env::var("REAPER_OVERLAY_NS")
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(format!("/run/reaper/ns/{}", ns)));
+                .unwrap_or_else(|_| PathBuf::from(format!("/run/reaper/ns/{}", flat_key)));
 
             let lock_path = std::env::var("REAPER_OVERLAY_LOCK")
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(format!("/run/reaper/overlay-{}.lock", ns)));
+                .unwrap_or_else(|_| {
+                    PathBuf::from(format!("/run/reaper/overlay-{}.lock", flat_key))
+                });
 
-            let merged_dir = PathBuf::from(format!("/run/reaper/merged/{}", ns));
+            let merged_dir = PathBuf::from(format!("/run/reaper/merged/{}", overlay_key));
 
             Ok(OverlayConfig {
                 base_dir,
@@ -268,7 +293,14 @@ pub fn read_config(k8s_namespace: Option<&str>) -> Result<OverlayConfig> {
             })
         }
         OverlayIsolation::Node => {
-            // Legacy flat layout — ignores namespace argument.
+            // Legacy flat layout — ignores namespace and overlay-name arguments.
+            if overlay_name.is_some() {
+                eprintln!(
+                    "reaper: overlay-name annotation ignored in node isolation mode \
+                     (all workloads share a single overlay)"
+                );
+            }
+
             let base_dir = std::env::var("REAPER_OVERLAY_BASE")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("/run/reaper/overlay"));
@@ -1085,7 +1117,7 @@ mod tests {
         std::env::remove_var("REAPER_OVERLAY_NS");
         std::env::remove_var("REAPER_OVERLAY_LOCK");
 
-        let config = read_config(None).unwrap();
+        let config = read_config(None, None).unwrap();
         assert_eq!(config.base_dir, PathBuf::from("/run/reaper/overlay"));
         assert_eq!(config.ns_path, PathBuf::from("/run/reaper/shared-mnt-ns"));
         assert_eq!(config.lock_path, PathBuf::from("/run/reaper/overlay.lock"));
@@ -1100,7 +1132,7 @@ mod tests {
 
         std::env::set_var("REAPER_OVERLAY_ISOLATION", "node");
         std::env::set_var("REAPER_OVERLAY_BASE", "/custom/overlay");
-        let config = read_config(None).unwrap();
+        let config = read_config(None, None).unwrap();
         assert_eq!(config.base_dir, PathBuf::from("/custom/overlay"));
         std::env::remove_var("REAPER_OVERLAY_BASE");
         std::env::remove_var("REAPER_OVERLAY_NS");
@@ -1131,7 +1163,7 @@ mod tests {
         std::env::remove_var("REAPER_OVERLAY_NS");
         std::env::remove_var("REAPER_OVERLAY_LOCK");
 
-        let config = read_config(Some("default")).unwrap();
+        let config = read_config(Some("default"), None).unwrap();
         assert_eq!(
             config.base_dir,
             PathBuf::from("/run/reaper/overlay/default")
@@ -1155,7 +1187,7 @@ mod tests {
         std::env::remove_var("REAPER_OVERLAY_NS");
         std::env::remove_var("REAPER_OVERLAY_LOCK");
 
-        let result = read_config(None);
+        let result = read_config(None, None);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("namespace"));
@@ -1170,11 +1202,103 @@ mod tests {
         std::env::remove_var("REAPER_OVERLAY_LOCK");
 
         // Node mode returns flat paths regardless of namespace arg
-        let config = read_config(Some("production")).unwrap();
+        let config = read_config(Some("production"), None).unwrap();
         assert_eq!(config.base_dir, PathBuf::from("/run/reaper/overlay"));
         assert_eq!(config.ns_path, PathBuf::from("/run/reaper/shared-mnt-ns"));
 
         std::env::remove_var("REAPER_OVERLAY_ISOLATION");
+    }
+
+    #[test]
+    fn test_read_config_namespace_mode_with_overlay_name() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("REAPER_OVERLAY_ISOLATION");
+        std::env::remove_var("REAPER_OVERLAY_BASE");
+        std::env::remove_var("REAPER_OVERLAY_NS");
+        std::env::remove_var("REAPER_OVERLAY_LOCK");
+
+        let config = read_config(Some("production"), Some("pippo")).unwrap();
+        assert_eq!(
+            config.base_dir,
+            PathBuf::from("/run/reaper/overlay/production/pippo")
+        );
+        assert_eq!(
+            config.ns_path,
+            PathBuf::from("/run/reaper/ns/production--pippo")
+        );
+        assert_eq!(
+            config.lock_path,
+            PathBuf::from("/run/reaper/overlay-production--pippo.lock")
+        );
+        assert_eq!(
+            config.merged_dir,
+            PathBuf::from("/run/reaper/merged/production/pippo")
+        );
+    }
+
+    #[test]
+    fn test_read_config_namespace_mode_without_overlay_name_unchanged() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("REAPER_OVERLAY_ISOLATION");
+        std::env::remove_var("REAPER_OVERLAY_BASE");
+        std::env::remove_var("REAPER_OVERLAY_NS");
+        std::env::remove_var("REAPER_OVERLAY_LOCK");
+
+        // Without overlay-name, paths should be same as before (backward compatible)
+        let config = read_config(Some("production"), None).unwrap();
+        assert_eq!(
+            config.base_dir,
+            PathBuf::from("/run/reaper/overlay/production")
+        );
+        assert_eq!(config.ns_path, PathBuf::from("/run/reaper/ns/production"));
+        assert_eq!(
+            config.lock_path,
+            PathBuf::from("/run/reaper/overlay-production.lock")
+        );
+        assert_eq!(
+            config.merged_dir,
+            PathBuf::from("/run/reaper/merged/production")
+        );
+    }
+
+    #[test]
+    fn test_read_config_node_mode_ignores_overlay_name() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("REAPER_OVERLAY_ISOLATION", "node");
+        std::env::remove_var("REAPER_OVERLAY_BASE");
+        std::env::remove_var("REAPER_OVERLAY_NS");
+        std::env::remove_var("REAPER_OVERLAY_LOCK");
+
+        // Node mode returns flat paths regardless of overlay-name
+        let config = read_config(None, Some("pippo")).unwrap();
+        assert_eq!(config.base_dir, PathBuf::from("/run/reaper/overlay"));
+        assert_eq!(config.ns_path, PathBuf::from("/run/reaper/shared-mnt-ns"));
+        assert_eq!(config.lock_path, PathBuf::from("/run/reaper/overlay.lock"));
+        assert_eq!(config.merged_dir, PathBuf::from("/run/reaper/merged"));
+
+        std::env::remove_var("REAPER_OVERLAY_ISOLATION");
+    }
+
+    #[test]
+    fn test_read_config_invalid_overlay_name_rejected() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("REAPER_OVERLAY_ISOLATION");
+        std::env::remove_var("REAPER_OVERLAY_BASE");
+        std::env::remove_var("REAPER_OVERLAY_NS");
+        std::env::remove_var("REAPER_OVERLAY_LOCK");
+
+        // Uppercase
+        let result = read_config(Some("default"), Some("Bad-Name"));
+        assert!(result.is_err());
+
+        // Path traversal
+        let result = read_config(Some("default"), Some("../evil"));
+        assert!(result.is_err());
+
+        // Too long
+        let long = "a".repeat(64);
+        let result = read_config(Some("default"), Some(&long));
+        assert!(result.is_err());
     }
 
     #[test]

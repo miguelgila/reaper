@@ -88,8 +88,23 @@ The shim extracts `io.kubernetes.pod.namespace` from OCI annotations and
 passes `--namespace <ns>` to the runtime. The runtime stores it in state
 so `start` and `exec` join the correct namespace's overlay.
 
+When `reaper.runtime/overlay-name` is set (e.g., `pippo`), an additional
+sub-group level is added within the namespace:
+
+```
+/run/reaper/
+  overlay/
+    production/pippo/upper/   # Named overlay group "pippo" in "production"
+    production/pippo/work/
+  merged/
+    production/pippo/
+  ns/
+    production--pippo         # double-dash separator (DNS labels use single hyphens)
+  overlay-production--pippo.lock
+```
+
 Set `REAPER_OVERLAY_ISOLATION=node` to opt out and use the legacy flat layout
-where all workloads share a single overlay.
+where all workloads share a single overlay. `overlay-name` is ignored in node mode.
 
 - Reads fall through to host root
 - Writes go to namespace-scoped upper layer
@@ -117,6 +132,7 @@ Users can influence Reaper behavior per-pod via Kubernetes annotations with the 
 | Annotation | Maps To | Valid Values | Default |
 |---|---|---|---|
 | `reaper.runtime/dns-mode` | `REAPER_DNS_MODE` | `host`, `kubernetes`, `k8s` | `host` |
+| `reaper.runtime/overlay-name` | Named overlay group | DNS label (`[a-z0-9-]`, max 63) | *(none — uses namespace overlay)* |
 
 **Example pod spec:**
 ```yaml
@@ -125,6 +141,7 @@ kind: Pod
 metadata:
   annotations:
     reaper.runtime/dns-mode: "kubernetes"
+    reaper.runtime/overlay-name: "my-group"
 spec:
   runtimeClassName: reaper
   containers:
@@ -133,7 +150,7 @@ spec:
 ```
 
 **Security model:**
-- Only annotations in the user-overridable allowlist are honored (currently: `dns-mode`)
+- Only annotations in the user-overridable allowlist are honored (currently: `dns-mode`, `overlay-name`)
 - Admin-only parameters (overlay paths, filter settings, runtime paths) can NEVER be overridden via annotations
 - Admin can disable all annotations: `REAPER_ANNOTATIONS_ENABLED=false`
 - Unknown annotation keys are silently ignored; invalid values are logged and ignored
@@ -143,7 +160,7 @@ spec:
 2. Containerd writes annotations to OCI `config.json`
 3. Shim extracts `reaper.runtime/*` annotations, passes `--annotation key=value` to runtime
 4. Runtime stores annotations in `ContainerState` (state.json)
-5. On `start`, runtime applies allowed annotation overrides (e.g., DNS mode)
+5. On `start`, runtime applies allowed annotation overrides (e.g., DNS mode, overlay name)
 
 **Key files:**
 - [src/annotations.rs](src/annotations.rs) — Shared annotation parsing, validation, allowlist

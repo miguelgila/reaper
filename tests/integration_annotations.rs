@@ -217,6 +217,102 @@ fn test_create_with_annotations_and_namespace() {
         .output();
 }
 
+/// Test that overlay-name annotation is stored in state.
+#[test]
+fn test_create_with_overlay_name_stores_in_state() {
+    let bundle = create_bundle_with_annotations(None);
+    let state_dir = TempDir::new().expect("Failed to create state dir");
+    let state_root = state_dir.path().to_string_lossy().to_string();
+    let reaper_bin = env!("CARGO_BIN_EXE_reaper-runtime");
+
+    let output = Command::new(reaper_bin)
+        .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
+        .arg("create")
+        .arg("test-ann-overlay")
+        .arg("--bundle")
+        .arg(bundle.path())
+        .arg("--annotation")
+        .arg("overlay-name=pippo")
+        .output()
+        .expect("Failed to run create");
+
+    assert!(
+        output.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let state = read_state_json(&state_root, "test-ann-overlay");
+    let annotations = state.get("annotations").expect("annotations field missing");
+    assert_eq!(
+        annotations.get("overlay-name"),
+        Some(&serde_json::json!("pippo"))
+    );
+
+    // Cleanup
+    let _ = Command::new(reaper_bin)
+        .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
+        .arg("delete")
+        .arg("test-ann-overlay")
+        .output();
+}
+
+/// Test that overlay-name and namespace work together.
+#[test]
+fn test_create_with_overlay_name_and_namespace() {
+    let bundle = create_bundle_with_annotations(None);
+    let state_dir = TempDir::new().expect("Failed to create state dir");
+    let state_root = state_dir.path().to_string_lossy().to_string();
+    let reaper_bin = env!("CARGO_BIN_EXE_reaper-runtime");
+
+    let output = Command::new(reaper_bin)
+        .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
+        .arg("create")
+        .arg("test-ann-overlay-ns")
+        .arg("--bundle")
+        .arg(bundle.path())
+        .arg("--namespace")
+        .arg("production")
+        .arg("--annotation")
+        .arg("overlay-name=pippo")
+        .arg("--annotation")
+        .arg("dns-mode=kubernetes")
+        .output()
+        .expect("Failed to run create");
+
+    assert!(
+        output.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let state = read_state_json(&state_root, "test-ann-overlay-ns");
+    assert_eq!(
+        state.get("namespace"),
+        Some(&serde_json::json!("production"))
+    );
+    let annotations = state.get("annotations").expect("annotations field missing");
+    assert_eq!(
+        annotations.get("overlay-name"),
+        Some(&serde_json::json!("pippo"))
+    );
+    assert_eq!(
+        annotations.get("dns-mode"),
+        Some(&serde_json::json!("kubernetes"))
+    );
+
+    // Cleanup
+    let _ = Command::new(reaper_bin)
+        .env("REAPER_RUNTIME_ROOT", &state_root)
+        .env("REAPER_NO_OVERLAY", "1")
+        .arg("delete")
+        .arg("test-ann-overlay-ns")
+        .output();
+}
+
 /// Test that REAPER_ANNOTATIONS_ENABLED=false causes annotations to be ignored
 /// during do_start() (annotations are still stored in state, but not applied).
 /// This test verifies the create path stores annotations regardless of the enabled flag,

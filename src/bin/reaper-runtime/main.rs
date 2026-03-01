@@ -352,6 +352,10 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
     let oci_mounts = cfg.mounts.clone();
     #[cfg(target_os = "linux")]
     let dns_mode_override = parsed_annotations.as_ref().and_then(|a| a.dns_mode.clone());
+    #[cfg(target_os = "linux")]
+    let overlay_name_override = parsed_annotations
+        .as_ref()
+        .and_then(|a| a.overlay_name.clone());
 
     use nix::unistd::{fork, ForkResult};
 
@@ -470,8 +474,10 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                 if skip_overlay {
                     info!("do_start() - overlay disabled via REAPER_NO_OVERLAY");
                 } else {
-                    let overlay_config = match overlay::read_config(container_namespace.as_deref())
-                    {
+                    let overlay_config = match overlay::read_config(
+                        container_namespace.as_deref(),
+                        overlay_name_override.as_deref(),
+                    ) {
                         Ok(c) => c,
                         Err(e) => {
                             tracing::error!(
@@ -1357,14 +1363,21 @@ fn do_exec(container_id: &str, exec_id: &str) -> Result<()> {
 
     let exec_state = load_exec_state(container_id, exec_id)?;
 
-    // Load container state to get the namespace for overlay isolation.
-    // NOTE: We do NOT load or apply annotations here. Annotation-driven overrides
-    // (like dns-mode) modify the overlay filesystem during do_start(), and since
-    // do_exec() joins the same overlay namespace, exec'd processes inherit those
-    // changes automatically. If a future annotation affects exec behavior beyond
-    // filesystem state, annotations should be loaded here as well.
+    // Load container state to get namespace and annotations for overlay isolation.
+    // We need annotations here to extract overlay-name, which determines which
+    // overlay namespace to join. Other annotation-driven overrides (like dns-mode)
+    // modify the overlay filesystem during do_start(), and exec'd processes inherit
+    // those changes automatically by joining the same overlay namespace.
     #[cfg(target_os = "linux")]
-    let container_namespace = load_state(container_id)?.namespace.clone();
+    let container_state = load_state(container_id)?;
+    #[cfg(target_os = "linux")]
+    let container_namespace = container_state.namespace.clone();
+    #[cfg(target_os = "linux")]
+    let overlay_name_override = container_state
+        .annotations
+        .as_ref()
+        .and_then(annotations::parse_stripped_annotations)
+        .and_then(|a| a.overlay_name);
 
     let args = exec_state.args.clone();
     if args.is_empty() {
@@ -1427,7 +1440,10 @@ fn do_exec(container_id: &str, exec_id: &str) -> Result<()> {
             // Join overlay namespace (Linux only) - same as do_start
             #[cfg(target_os = "linux")]
             {
-                let overlay_config = match overlay::read_config(container_namespace.as_deref()) {
+                let overlay_config = match overlay::read_config(
+                    container_namespace.as_deref(),
+                    overlay_name_override.as_deref(),
+                ) {
                     Ok(c) => c,
                     Err(e) => {
                         tracing::error!("do_exec() - overlay config failed: {:#}", e);

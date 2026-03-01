@@ -331,6 +331,7 @@ Users can override certain Reaper configuration parameters per-pod using Kuberne
 | Annotation | Values | Default | Description |
 |------------|--------|---------|-------------|
 | `reaper.runtime/dns-mode` | `host`, `kubernetes`, `k8s` | Node config (`REAPER_DNS_MODE`) | DNS resolution mode for this pod |
+| `reaper.runtime/overlay-name` | DNS label (e.g., `pippo`) | *(none — uses namespace overlay)* | Named overlay group within the namespace |
 
 **Example:**
 
@@ -340,7 +341,8 @@ kind: Pod
 metadata:
   name: my-task
   annotations:
-    reaper.runtime/dns-mode: "kubernetes"  # Use CoreDNS for this pod
+    reaper.runtime/dns-mode: "kubernetes"    # Use CoreDNS for this pod
+    reaper.runtime/overlay-name: "my-group"  # Isolate overlay from other pods in this namespace
 spec:
   runtimeClassName: reaper-v2
   restartPolicy: Never

@@ -27,13 +27,16 @@ pub const ANNOTATION_PREFIX: &str = "reaper.runtime/";
 
 /// Known annotation keys that users may override (stripped of prefix).
 /// These map to specific Reaper configuration parameters.
-const USER_OVERRIDABLE_KEYS: &[&str] = &["dns-mode"];
+const USER_OVERRIDABLE_KEYS: &[&str] = &["dns-mode", "overlay-name"];
 
 /// Parsed Reaper annotations from a pod spec.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ReaperAnnotations {
     /// DNS resolution mode override: "host", "kubernetes", or "k8s".
     pub dns_mode: Option<String>,
+    /// Named overlay group override. DNS label format: [a-z0-9][a-z0-9-]*, max 63 chars.
+    /// Pods with the same overlay-name (within the same namespace) share an overlay.
+    pub overlay_name: Option<String>,
 }
 
 /// Check whether annotation-based configuration is enabled.
@@ -51,6 +54,15 @@ pub fn annotations_enabled() -> bool {
 
 /// Valid values for the `dns-mode` annotation.
 const VALID_DNS_MODES: &[&str] = &["host", "kubernetes", "k8s"];
+
+/// Validate an overlay name: DNS label format ([a-z0-9][a-z0-9-]*, max 63 chars).
+fn is_valid_overlay_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 63 {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
 
 /// Parse Reaper annotations from an OCI config.json annotations map.
 ///
@@ -124,6 +136,21 @@ fn validate_and_apply_annotation(
             eprintln!(
                 "reaper: annotation: ignoring invalid value {:?} for {:?} (valid: {:?})",
                 value, display_key, VALID_DNS_MODES
+            );
+        }
+    } else if stripped_key == "overlay-name" {
+        if value.is_empty() {
+            // Empty string treated as "not set" (backward compatible)
+            return;
+        }
+        let normalized = value.to_ascii_lowercase();
+        if is_valid_overlay_name(&normalized) {
+            result.overlay_name = Some(normalized);
+        } else {
+            eprintln!(
+                "reaper: annotation: ignoring invalid overlay-name {:?} for {:?} \
+                 (must be DNS label: [a-z0-9-], max 63 chars)",
+                value, display_key
             );
         }
     }
@@ -404,6 +431,98 @@ mod tests {
         let annots = make_annotations(&[("dns-mode", "invalid")]);
         let result = parse_stripped_annotations(&annots).unwrap();
         assert_eq!(result.dns_mode, None);
+    }
+
+    // --- overlay-name annotation tests ---
+
+    #[test]
+    #[serial]
+    fn test_parse_overlay_name_valid() {
+        std::env::remove_var("REAPER_ANNOTATIONS_ENABLED");
+        let annots = make_annotations(&[("reaper.runtime/overlay-name", "pippo")]);
+        let result = parse_annotations(&annots).unwrap();
+        assert_eq!(result.overlay_name, Some("pippo".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn test_parse_overlay_name_with_hyphens_and_digits() {
+        std::env::remove_var("REAPER_ANNOTATIONS_ENABLED");
+        let annots = make_annotations(&[("reaper.runtime/overlay-name", "my-group-42")]);
+        let result = parse_annotations(&annots).unwrap();
+        assert_eq!(result.overlay_name, Some("my-group-42".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn test_parse_overlay_name_case_normalized() {
+        std::env::remove_var("REAPER_ANNOTATIONS_ENABLED");
+        let annots = make_annotations(&[("reaper.runtime/overlay-name", "MyGroup")]);
+        let result = parse_annotations(&annots).unwrap();
+        // Uppercase is normalized to lowercase (same as dns-mode)
+        assert_eq!(result.overlay_name, Some("mygroup".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn test_parse_overlay_name_empty_treated_as_unset() {
+        std::env::remove_var("REAPER_ANNOTATIONS_ENABLED");
+        let annots = make_annotations(&[("reaper.runtime/overlay-name", "")]);
+        let result = parse_annotations(&annots).unwrap();
+        assert_eq!(result.overlay_name, None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_parse_overlay_name_invalid_chars() {
+        std::env::remove_var("REAPER_ANNOTATIONS_ENABLED");
+        let annots = make_annotations(&[("reaper.runtime/overlay-name", "bad/name")]);
+        let result = parse_annotations(&annots).unwrap();
+        assert_eq!(result.overlay_name, None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_parse_overlay_name_too_long() {
+        std::env::remove_var("REAPER_ANNOTATIONS_ENABLED");
+        let long = "a".repeat(64);
+        let annots = make_annotations(&[("reaper.runtime/overlay-name", &long)]);
+        let result = parse_annotations(&annots).unwrap();
+        assert_eq!(result.overlay_name, None);
+    }
+
+    #[test]
+    #[serial]
+    fn test_parse_overlay_name_with_dns_mode() {
+        std::env::remove_var("REAPER_ANNOTATIONS_ENABLED");
+        let annots = make_annotations(&[
+            ("reaper.runtime/overlay-name", "pippo"),
+            ("reaper.runtime/dns-mode", "kubernetes"),
+        ]);
+        let result = parse_annotations(&annots).unwrap();
+        assert_eq!(result.overlay_name, Some("pippo".to_string()));
+        assert_eq!(result.dns_mode, Some("kubernetes".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn test_parse_stripped_overlay_name() {
+        std::env::remove_var("REAPER_ANNOTATIONS_ENABLED");
+        let annots = make_annotations(&[("overlay-name", "pippo")]);
+        let result = parse_stripped_annotations(&annots).unwrap();
+        assert_eq!(result.overlay_name, Some("pippo".to_string()));
+    }
+
+    #[test]
+    fn test_extract_reaper_annotations_includes_overlay_name() {
+        let annots = make_annotations(&[
+            ("reaper.runtime/overlay-name", "pippo"),
+            ("reaper.runtime/dns-mode", "kubernetes"),
+        ]);
+        let extracted = extract_reaper_annotations(&annots);
+        assert_eq!(extracted.len(), 2);
+        assert_eq!(extracted.get("overlay-name"), Some(&"pippo".to_string()));
+        assert_eq!(extracted.get("dns-mode"), Some(&"kubernetes".to_string()));
     }
 
     // --- CLI serialization round-trip tests ---

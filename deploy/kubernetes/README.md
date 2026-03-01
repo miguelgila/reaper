@@ -160,7 +160,7 @@ Common settings:
 | `REAPER_FILTER_ENABLED` | `true` | Enable sensitive host file filtering |
 | `REAPER_ANNOTATIONS_ENABLED` | `true` | Enable per-pod annotation overrides (set `false` to ignore all annotations) |
 
-**Per-pod annotation overrides:** Users can set `reaper.runtime/dns-mode` on individual pods to override the node-level `REAPER_DNS_MODE`. See the main [README.md](../../README.md#pod-annotations) for details and examples. Administrators can disable this with `REAPER_ANNOTATIONS_ENABLED=false`.
+**Per-pod annotation overrides:** Users can set `reaper.runtime/dns-mode` and `reaper.runtime/overlay-name` on individual pods to override node-level settings. `overlay-name` creates isolated overlay groups within a namespace. See the main [README.md](../../README.md#pod-annotations) for details and examples. Administrators can disable all annotations with `REAPER_ANNOTATIONS_ENABLED=false`.
 
 For manual installations, create the file:
 
