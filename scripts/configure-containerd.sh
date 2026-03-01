@@ -35,10 +35,10 @@ configure_containerd() {
             # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
             if grep -q \"plugins.\\047io.containerd.cri.v1.runtime\\047.containerd.runtimes.runc\" /tmp/containerd-config-new.toml; then
                 # New path (containerd 2.x)
-                sed -i \"/\\[plugins.\\047io.containerd.cri.v1.runtime\\047.containerd.runtimes.runc\\]/i\\        [plugins.\\047io.containerd.cri.v1.runtime\\047.containerd.runtimes.reaper-v2]\\n          runtime_type = \\047io.containerd.reaper.v2\\047\\n          sandbox_mode = \\047podsandbox\\047\\n\" /tmp/containerd-config-new.toml
+                sed -i \"/\\[plugins.\\047io.containerd.cri.v1.runtime\\047.containerd.runtimes.runc\\]/i\\        [plugins.\\047io.containerd.cri.v1.runtime\\047.containerd.runtimes.reaper-v2]\\n          runtime_type = \\047io.containerd.reaper.v2\\047\\n          sandbox_mode = \\047podsandbox\\047\\n          pod_annotations = [\\047reaper.runtime/*\\047]\\n\" /tmp/containerd-config-new.toml
             else
                 # Old path (containerd 1.x)
-                sed -i \"/\\[plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.runc\\]/i\\      [plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.reaper-v2]\\n        runtime_type = \\\"io.containerd.reaper.v2\\\"\\n        sandbox_mode = \\\"podsandbox\\\"\\n\" /tmp/containerd-config-new.toml
+                sed -i \"/\\[plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.runc\\]/i\\      [plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.reaper-v2]\\n        runtime_type = \\\"io.containerd.reaper.v2\\\"\\n        sandbox_mode = \\\"podsandbox\\\"\\n        pod_annotations = [\\\"reaper.runtime/*\\\"]\\n\" /tmp/containerd-config-new.toml
             fi
 
             # Replace config
@@ -61,21 +61,22 @@ configure_containerd() {
             cp /etc/containerd/config.toml /tmp/containerd-config-new.toml
 
             # Remove any existing reaper-v2 sections to avoid TOML duplicate table errors
-            # Use a more precise pattern: delete reaper-v2 line and next 2 lines (runtime_type and sandbox_mode)
+            # Use a more precise pattern: delete reaper-v2 line and next 3 lines (runtime_type, sandbox_mode, pod_annotations)
             # This is safer than range deletions which can remove too much
             if grep -q '\[.*reaper-v2\]' /tmp/containerd-config-new.toml; then
-                sed -i '/\[.*reaper-v2\]/,+2d' /tmp/containerd-config-new.toml
+                sed -i '/\[.*reaper-v2\]/,+3d' /tmp/containerd-config-new.toml
             fi
 
             # Add reaper-v2 runtime before runc section
             # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
+            # pod_annotations enables containerd to propagate reaper.runtime/* pod annotations to OCI config
             # Try modern plugin path first (v2 config format), fall back to v1 if needed
             if grep -q 'runtimes.runc\]' /tmp/containerd-config-new.toml; then
                 # v2 format with io.containerd.grpc.v1.cri path
-                sed -i \"/\\[plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.runc\\]/i\\[plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.reaper-v2]\\n  runtime_type = \\\"io.containerd.reaper.v2\\\"\\n  sandbox_mode = \\\"podsandbox\\\"\\n\" /tmp/containerd-config-new.toml
+                sed -i \"/\\[plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.runc\\]/i\\[plugins.\\\"io.containerd.grpc.v1.cri\\\".containerd.runtimes.reaper-v2]\\n  runtime_type = \\\"io.containerd.reaper.v2\\\"\\n  sandbox_mode = \\\"podsandbox\\\"\\n  pod_annotations = [\\\"reaper.runtime/*\\\"]\\n\" /tmp/containerd-config-new.toml
             elif grep -q \"plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc\" /tmp/containerd-config-new.toml; then
                 # v3 format with io.containerd.cri.v1.runtime path
-                sed -i \"/\\[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc\\]/i\\[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.reaper-v2]\\nruntime_type = 'io.containerd.reaper.v2'\\nsandbox_mode = 'podsandbox'\\n\" /tmp/containerd-config-new.toml
+                sed -i \"/\\[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc\\]/i\\[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.reaper-v2]\\nruntime_type = 'io.containerd.reaper.v2'\\nsandbox_mode = 'podsandbox'\\npod_annotations = ['reaper.runtime/*']\\n\" /tmp/containerd-config-new.toml
             else
                 echo \"Error: Could not find runc runtime section in config\" >&2
                 echo \"Config contents:\" >&2
@@ -97,7 +98,7 @@ configure_containerd() {
         sudo bash -c "
             containerd config default > /tmp/containerd-config-new.toml
             # NOTE: NO options section - it triggers a cgroup path bug in containerd-shim
-            sed -i '/\\[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runc\\]/i\\      [plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.reaper-v2]\\n        runtime_type = \"io.containerd.reaper.v2\"\\n        sandbox_mode = \"podsandbox\"\\n' /tmp/containerd-config-new.toml
+            sed -i '/\\[plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.runc\\]/i\\      [plugins.\"io.containerd.grpc.v1.cri\".containerd.runtimes.reaper-v2]\\n        runtime_type = \"io.containerd.reaper.v2\"\\n        sandbox_mode = \"podsandbox\"\\n        pod_annotations = [\"reaper.runtime/*\"]\\n' /tmp/containerd-config-new.toml
             mv /tmp/containerd-config-new.toml /etc/containerd/config.toml
             systemctl restart containerd
         "

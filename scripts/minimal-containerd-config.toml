@@ -38,6 +38,7 @@ default_runtime_name = 'runc'
 [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.reaper-v2]
 runtime_type = 'io.containerd.reaper.v2'
 sandbox_mode = 'podsandbox'
+pod_annotations = ['reaper.runtime/*']
 
 # Runc runtime (default for non-reaper containers)
 [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]

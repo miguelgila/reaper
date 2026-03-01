@@ -110,7 +110,10 @@ Or configure manually by adding this to `/etc/containerd/config.toml`:
 [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.reaper-v2]
   runtime_type = "io.containerd.reaper.v2"
   sandbox_mode = "podsandbox"
+  pod_annotations = ["reaper.runtime/*"]
 ```
+
+> **Important:** The `pod_annotations` line is required for per-pod annotation overrides (e.g., `reaper.runtime/dns-mode`, `reaper.runtime/overlay-name`). Without it, containerd will not propagate pod annotations to the OCI config and annotations will be silently ignored.
 
 Then restart containerd:
 

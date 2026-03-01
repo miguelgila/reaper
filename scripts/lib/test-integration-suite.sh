@@ -337,6 +337,26 @@ YAML
     return 1
   }
 
+  # Diagnostic: inspect overlay state on the Kind node
+  log_verbose "=== Overlay-name diagnostic: namespace dirs ==="
+  docker exec "${CLUSTER_NAME}-control-plane" ls -la /run/reaper/ns/ 2>&1 | while IFS= read -r line; do
+    log_verbose "  ns/ $line"
+  done
+  log_verbose "=== Overlay-name diagnostic: overlay dirs ==="
+  docker exec "${CLUSTER_NAME}-control-plane" ls -la /run/reaper/overlay/default/ 2>&1 | while IFS= read -r line; do
+    log_verbose "  overlay/default/ $line"
+  done
+  # Check state files for annotation content
+  log_verbose "=== Overlay-name diagnostic: state files with annotations ==="
+  docker exec "${CLUSTER_NAME}-control-plane" sh -c 'grep -rl "overlay-name" /run/reaper/*/state.json 2>/dev/null || echo "(no state files with overlay-name found)"' 2>&1 | while IFS= read -r line; do
+    log_verbose "  state: $line"
+  done
+  # Check runtime log for annotation parsing
+  log_verbose "=== Overlay-name diagnostic: runtime log (last 30 annotation/overlay lines) ==="
+  docker exec "${CLUSTER_NAME}-control-plane" sh -c 'grep -E "annotation|overlay_name|overlay-name" /run/reaper/runtime.log 2>/dev/null | tail -30 || echo "(no matching log lines)"' 2>&1 | while IFS= read -r line; do
+    log_verbose "  log: $line"
+  done
+
   # Reader pod with overlay-name=group-beta (different group, same namespace)
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -373,6 +393,33 @@ YAML
   if [[ "$reader_output" == *"overlay-name-marker"* ]]; then
     log_error "Overlay-name isolation FAILED: pod with overlay-name=group-beta could read file written by overlay-name=group-alpha"
     log_error "Actual pod logs: '$reader_output'"
+    # Extra diagnostics: check OCI config.json for reaper annotations
+    log_error "=== Diagnostic: OCI config.json reaper annotations ==="
+    docker exec "${CLUSTER_NAME}-control-plane" sh -c '
+      for cfg in /run/containerd/io.containerd.runtime.v2.task/k8s.io/*/config.json; do
+        [ -f "$cfg" ] || continue
+        id=$(basename "$(dirname "$cfg")")
+        short_id="${id:0:12}"
+        reaper_annots=$(grep -o "reaper\.runtime[^\"]*\"[^\"]*" "$cfg" 2>/dev/null || echo "(none)")
+        sandbox_name=$(grep -o "io\.kubernetes\.cri\.sandbox-name\":\"[^\"]*" "$cfg" 2>/dev/null | head -1 | cut -d\" -f3 || echo "?")
+        echo "  id=$short_id sandbox=$sandbox_name reaper=$reaper_annots"
+      done
+    ' 2>&1 | while IFS= read -r line; do
+      log_error "  $line"
+    done
+    # Check reaper state files for stored annotations
+    log_error "=== Diagnostic: reaper state files ==="
+    docker exec "${CLUSTER_NAME}-control-plane" sh -c '
+      for sf in /run/reaper/*/state.json; do
+        [ -f "$sf" ] || continue
+        id=$(basename "$(dirname "$sf")")
+        short_id="${id:0:12}"
+        annots=$(grep -o "\"annotations\":{[^}]*}" "$sf" 2>/dev/null || echo "(no annotations)")
+        echo "  id=$short_id $annots"
+      done
+    ' 2>&1 | while IFS= read -r line; do
+      log_error "  $line"
+    done
     return 1
   fi
 
