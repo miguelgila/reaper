@@ -1,7 +1,32 @@
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+
+/// Validate that an ID is safe for use in filesystem paths.
+/// Rejects empty strings, path traversal (`..`), and characters outside `[a-zA-Z0-9._-]`.
+/// IDs longer than 256 characters are also rejected.
+pub fn validate_id(id: &str) -> anyhow::Result<()> {
+    if id.is_empty() {
+        bail!("ID must not be empty");
+    }
+    if id.len() > 256 {
+        bail!("ID must not exceed 256 characters");
+    }
+    if id == "." || id == ".." {
+        bail!("ID must not be '.' or '..'");
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
+        bail!("ID contains invalid characters (allowed: a-zA-Z0-9._-)");
+    }
+    Ok(())
+}
 
 /// OCI User specification for UID/GID switching
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -72,34 +97,49 @@ pub fn pid_path(id: &str) -> PathBuf {
 }
 
 pub fn save_state(state: &ContainerState) -> anyhow::Result<()> {
+    validate_id(&state.id)?;
     let dir = container_dir(&state.id);
     fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let path = state_path(&state.id);
     let json = serde_json::to_vec_pretty(&state)?;
-    fs::write(state_path(&state.id), json)?;
+    fs::write(&path, json)?;
+    #[cfg(unix)]
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
 pub fn load_state(id: &str) -> anyhow::Result<ContainerState> {
+    validate_id(id)?;
     let data = fs::read(state_path(id))?;
     let state: ContainerState = serde_json::from_slice(&data)?;
     Ok(state)
 }
 
 pub fn save_pid(id: &str, pid: i32) -> anyhow::Result<()> {
+    validate_id(id)?;
     let dir = container_dir(id);
     fs::create_dir_all(&dir)?;
-    let mut f = fs::File::create(pid_path(id))?;
+    #[cfg(unix)]
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let path = pid_path(id);
+    let mut f = fs::File::create(&path)?;
     writeln!(f, "{}", pid)?;
+    #[cfg(unix)]
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
 pub fn load_pid(id: &str) -> anyhow::Result<i32> {
+    validate_id(id)?;
     let s = fs::read_to_string(pid_path(id))?;
     let pid: i32 = s.trim().parse()?;
     Ok(pid)
 }
 
 pub fn delete(id: &str) -> anyhow::Result<()> {
+    validate_id(id)?;
     let dir = container_dir(id);
     if dir.exists() {
         fs::remove_dir_all(dir)?;
@@ -138,14 +178,23 @@ pub fn exec_state_path(container_id: &str, exec_id: &str) -> PathBuf {
 }
 
 pub fn save_exec_state(state: &ExecState) -> anyhow::Result<()> {
+    validate_id(&state.container_id)?;
+    validate_id(&state.exec_id)?;
     let dir = container_dir(&state.container_id);
     fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let path = exec_state_path(&state.container_id, &state.exec_id);
     let json = serde_json::to_vec_pretty(&state)?;
-    fs::write(exec_state_path(&state.container_id, &state.exec_id), json)?;
+    fs::write(&path, json)?;
+    #[cfg(unix)]
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
 pub fn load_exec_state(container_id: &str, exec_id: &str) -> anyhow::Result<ExecState> {
+    validate_id(container_id)?;
+    validate_id(exec_id)?;
     let path = exec_state_path(container_id, exec_id);
     let data = fs::read(&path)?;
     let state: ExecState = serde_json::from_slice(&data)?;
@@ -425,4 +474,52 @@ mod tests {
     //             .expect("Delete should not fail on nonexistent exec");
     //     });
     // }
+
+    // --- validate_id tests ---
+
+    #[test]
+    fn test_validate_id_valid() {
+        assert!(validate_id("my-container").is_ok());
+        assert!(validate_id("abc123").is_ok());
+        assert!(validate_id("a.b_c-d").is_ok());
+        assert!(validate_id("A").is_ok());
+    }
+
+    #[test]
+    fn test_validate_id_rejects_empty() {
+        assert!(validate_id("").is_err());
+    }
+
+    #[test]
+    fn test_validate_id_rejects_path_traversal() {
+        assert!(validate_id("..").is_err());
+        assert!(validate_id("../etc/passwd").is_err());
+        assert!(validate_id("foo/../bar").is_err());
+    }
+
+    #[test]
+    fn test_validate_id_rejects_dot() {
+        assert!(validate_id(".").is_err());
+    }
+
+    #[test]
+    fn test_validate_id_rejects_slashes() {
+        assert!(validate_id("foo/bar").is_err());
+        assert!(validate_id("/absolute").is_err());
+    }
+
+    #[test]
+    fn test_validate_id_rejects_long() {
+        let long_id = "a".repeat(257);
+        assert!(validate_id(&long_id).is_err());
+        let ok_id = "a".repeat(256);
+        assert!(validate_id(&ok_id).is_ok());
+    }
+
+    #[test]
+    fn test_validate_id_rejects_special_chars() {
+        assert!(validate_id("foo bar").is_err());
+        assert!(validate_id("foo\nbar").is_err());
+        assert!(validate_id("foo\0bar").is_err());
+    }
 }

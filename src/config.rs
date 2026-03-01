@@ -44,6 +44,16 @@ pub fn load_config() {
                 continue;
             }
 
+            // Only allow REAPER_ prefixed keys to prevent injection of
+            // dangerous env vars like LD_PRELOAD, PATH, etc.
+            if !key.starts_with("REAPER_") {
+                eprintln!(
+                    "reaper: config: ignoring non-REAPER_ key {:?} in {}",
+                    key, path
+                );
+                continue;
+            }
+
             // Only set if not already present in environment (env wins)
             if std::env::var(key).is_err() {
                 std::env::set_var(key, value);
@@ -118,6 +128,34 @@ mod tests {
         // Cleanup
         std::env::remove_var("REAPER_CONFIG");
         std::env::remove_var("REAPER_TEST_PRECEDENCE");
+    }
+
+    #[test]
+    #[serial]
+    fn test_rejects_non_reaper_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let conf = dir.path().join("reaper.conf");
+        let mut f = std::fs::File::create(&conf).unwrap();
+        writeln!(f, "LD_PRELOAD=/tmp/evil.so").unwrap();
+        writeln!(f, "PATH=/tmp/evil").unwrap();
+        writeln!(f, "REAPER_TEST_ALLOWED=yes").unwrap();
+
+        std::env::remove_var("LD_PRELOAD");
+        std::env::remove_var("REAPER_TEST_ALLOWED");
+        std::env::set_var("REAPER_CONFIG", conf.to_str().unwrap());
+
+        load_config();
+
+        // Non-REAPER_ keys must NOT be set
+        assert!(
+            std::env::var("LD_PRELOAD").is_err(),
+            "LD_PRELOAD should not be set from config"
+        );
+        // REAPER_ keys should be set
+        assert_eq!(std::env::var("REAPER_TEST_ALLOWED").unwrap(), "yes");
+
+        std::env::remove_var("REAPER_CONFIG");
+        std::env::remove_var("REAPER_TEST_ALLOWED");
     }
 
     #[test]
