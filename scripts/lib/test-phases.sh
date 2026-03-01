@@ -87,6 +87,7 @@ phase_readiness() {
   log_verbose "Cleaning stale pods from previous runs..."
   kubectl delete pod reaper-example reaper-integration-test reaper-dns-check \
     reaper-overlay-writer reaper-overlay-reader reaper-exec-test \
+    reaper-ovname-writer reaper-ovname-reader reaper-ovname-same \
     reaper-uid-gid-test reaper-privdrop-test \
     reaper-configmap-vol reaper-secret-vol reaper-emptydir-vol reaper-hostpath-vol \
     reaper-exit-code-test reaper-cmd-not-found reaper-env-test \

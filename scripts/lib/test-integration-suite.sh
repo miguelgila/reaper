@@ -309,6 +309,115 @@ YAML
   fi
 }
 
+test_overlay_name_isolation() {
+  # Two pods in the SAME namespace but with DIFFERENT overlay-name annotations.
+  # Pod A writes a marker file; Pod B (different overlay-name) must NOT see it.
+  # This verifies that overlay-name creates truly isolated overlay groups.
+
+  # Writer pod with overlay-name=group-alpha
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-ovname-writer
+  annotations:
+    reaper.runtime/overlay-name: "group-alpha"
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: writer
+      image: busybox
+      command: ["/bin/sh", "-c", "echo overlay-name-marker > /tmp/ovname-test.txt"]
+YAML
+
+  wait_for_pod_phase reaper-ovname-writer Succeeded 60 2 || {
+    log_error "Overlay-name writer pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-ovname-writer
+    return 1
+  }
+
+  # Reader pod with overlay-name=group-beta (different group, same namespace)
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-ovname-reader
+  annotations:
+    reaper.runtime/overlay-name: "group-beta"
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: reader
+      image: busybox
+      command: ["/bin/sh", "-c", "cat /tmp/ovname-test.txt 2>&1 || true"]
+YAML
+
+  wait_for_pod_phase reaper-ovname-reader Succeeded 60 2 || {
+    # Reader may Succeed or Fail (cat fails if file missing, but we use || true)
+    local phase
+    phase=$(kubectl get pod reaper-ovname-reader -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    if [[ "$phase" != "Failed" ]]; then
+      log_error "Overlay-name reader pod did not complete (phase=$phase)"
+      dump_pod_diagnostics reaper-ovname-reader
+      return 1
+    fi
+  }
+
+  local reader_output
+  reader_output=$(kubectl logs reaper-ovname-reader --all-containers=true 2>&1 || echo "(failed to retrieve logs)")
+  log_verbose "Overlay-name reader output: '$reader_output'"
+
+  # The reader must NOT see the marker file (different overlay-name = different overlay)
+  if [[ "$reader_output" == *"overlay-name-marker"* ]]; then
+    log_error "Overlay-name isolation FAILED: pod with overlay-name=group-beta could read file written by overlay-name=group-alpha"
+    log_error "Actual pod logs: '$reader_output'"
+    return 1
+  fi
+
+  if [[ "$reader_output" == *"No such file"* ]]; then
+    log_verbose "Overlay-name isolation verified: different overlay-name groups are isolated"
+  else
+    log_verbose "Reader output (file not found expected): '$reader_output'"
+  fi
+
+  # Bonus: verify a pod with the SAME overlay-name CAN see the file
+  cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reaper-ovname-same
+  annotations:
+    reaper.runtime/overlay-name: "group-alpha"
+spec:
+  runtimeClassName: reaper-v2
+  restartPolicy: Never
+  containers:
+    - name: reader
+      image: busybox
+      command: ["/bin/sh", "-c", "cat /tmp/ovname-test.txt"]
+YAML
+
+  wait_for_pod_phase reaper-ovname-same Succeeded 60 2 || {
+    log_error "Overlay-name same-group reader pod did not reach Succeeded phase"
+    dump_pod_diagnostics reaper-ovname-same
+    return 1
+  }
+
+  local same_output
+  same_output=$(kubectl logs reaper-ovname-same --all-containers=true 2>&1 || echo "(failed to retrieve logs)")
+  log_verbose "Overlay-name same-group reader output: '$same_output'"
+
+  if [[ "$same_output" != "overlay-name-marker" ]]; then
+    log_error "Overlay-name sharing FAILED: pod with same overlay-name=group-alpha could NOT read file"
+    log_error "Actual pod logs: '$same_output'"
+    return 1
+  fi
+
+  log_verbose "Overlay-name sharing verified: same overlay-name group shares overlay"
+}
+
 test_host_protection() {
   # The overlay writer from the previous test wrote /tmp/overlay-test.txt.
   # It must NOT appear on the host filesystem.
@@ -1532,6 +1641,7 @@ phase_integration_tests() {
   run_test test_echo_command     "Echo command execution"        --hard-fail
   run_test test_overlay_sharing  "Overlay filesystem sharing"    --hard-fail
   run_test test_namespace_overlay_isolation "Per-namespace overlay isolation" --hard-fail
+  run_test test_overlay_name_isolation "Named overlay group isolation (overlay-name)" --hard-fail
   run_test test_host_protection  "Host filesystem protection"    --hard-fail
   run_test test_uid_gid_switching "UID/GID switching with securityContext" --hard-fail
   run_test test_privilege_drop   "Privilege drop to non-root user" --hard-fail
@@ -1559,6 +1669,7 @@ phase_integration_tests() {
   # Cleanup test pods (before defunct check so pods are terminated)
   kubectl delete pod reaper-dns-check reaper-k8s-dns-check reaper-integration-test \
     reaper-overlay-writer reaper-overlay-reader reaper-ns-iso-writer \
+    reaper-ovname-writer reaper-ovname-reader reaper-ovname-same \
     reaper-uid-gid-test \
     reaper-privdrop-test reaper-configmap-vol reaper-secret-vol \
     reaper-emptydir-vol reaper-hostpath-vol reaper-exec-test \
