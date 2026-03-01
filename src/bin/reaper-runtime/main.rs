@@ -21,6 +21,7 @@ mod overlay;
 mod config;
 
 #[path = "../../annotations.rs"]
+#[allow(dead_code)]
 mod annotations;
 
 fn version_string() -> &'static str {

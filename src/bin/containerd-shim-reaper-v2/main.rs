@@ -18,6 +18,7 @@ use tracing_subscriber::EnvFilter;
 mod config;
 
 #[path = "../../annotations.rs"]
+#[allow(dead_code)]
 mod annotations;
 
 #[cfg(target_os = "linux")]
