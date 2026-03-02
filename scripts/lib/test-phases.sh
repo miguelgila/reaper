@@ -52,15 +52,16 @@ phase_setup() {
   # Capture NODE_ID for diagnostics (used by cleanup trap and test functions)
   NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
 
-  # Build and load reaper-agent image for Phase 4a tests
+  # Build and load reaper-agent image (required for Phase 4a tests)
   log_status "Building reaper-agent image for Kind..."
-  if "$SCRIPT_DIR/build-agent-image.sh" \
-       --cluster-name "$CLUSTER_NAME" \
-       --quiet 2>&1 | tee -a "$LOG_FILE"; then
-    log_status "reaper-agent image loaded into Kind."
-  else
-    log_status "${CLR_WARN}reaper-agent image build failed (Phase 4a tests will be skipped)${CLR_RESET}"
-  fi
+  "$SCRIPT_DIR/build-agent-image.sh" \
+    --cluster-name "$CLUSTER_NAME" \
+    --quiet 2>&1 | tee -a "$LOG_FILE" || {
+    log_error "reaper-agent image build failed"
+    tail -50 "$LOG_FILE" >&2
+    exit 1
+  }
+  log_status "reaper-agent image loaded into Kind."
 
   log_status "Infrastructure setup complete."
   ci_group_end

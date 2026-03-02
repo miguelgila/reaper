@@ -2160,17 +2160,16 @@ phase_agent_tests() {
   log_status "${CLR_PHASE}Phase 4a: reaper-agent tests${CLR_RESET}"
   log_status "========================================"
 
-  # Check if the agent image is available in the cluster
-  # (must be pre-loaded with: kind load docker-image ghcr.io/miguelgila/reaper-agent:latest)
+  # Verify agent image is available in the cluster (loaded during Phase 2 setup)
   local image_loaded
   image_loaded=$(docker exec "$NODE_ID" crictl images 2>/dev/null \
     | grep -c "reaper-agent" || true)
 
   if [[ "$image_loaded" -lt 1 ]]; then
-    log_status "${CLR_WARN}Skipping agent tests: reaper-agent image not loaded in Kind cluster${CLR_RESET}"
-    log_status "  To enable: docker build -f Dockerfile.agent -t ghcr.io/miguelgila/reaper-agent:latest ."
-    log_status "             kind load docker-image ghcr.io/miguelgila/reaper-agent:latest --name $CLUSTER_NAME"
-    return 0
+    log_error "reaper-agent image not found in Kind cluster"
+    log_error "This should have been built and loaded during Phase 2 setup."
+    log_error "Check build-agent-image.sh output in the log file."
+    return 1
   fi
 
   run_test test_agent_deployment   "Agent DaemonSet deployment"        --hard-fail
