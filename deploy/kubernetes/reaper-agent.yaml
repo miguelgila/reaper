@@ -1,0 +1,149 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: reaper-system
+  labels:
+    app.kubernetes.io/part-of: reaper
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reaper-config
+  namespace: reaper-system
+  labels:
+    app.kubernetes.io/part-of: reaper
+    app.kubernetes.io/component: config
+data:
+  reaper.conf: |
+    # Reaper runtime configuration
+    # Managed by reaper-agent ConfigMap sync.
+    # Edit this ConfigMap to change Reaper settings on all nodes.
+    REAPER_DNS_MODE=host
+    REAPER_OVERLAY_ISOLATION=namespace
+    REAPER_ANNOTATIONS_ENABLED=true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reaper-agent
+  namespace: reaper-system
+  labels:
+    app.kubernetes.io/part-of: reaper
+    app.kubernetes.io/component: agent
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: reaper-agent
+  labels:
+    app.kubernetes.io/part-of: reaper
+    app.kubernetes.io/component: agent
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: reaper-agent
+  labels:
+    app.kubernetes.io/part-of: reaper
+    app.kubernetes.io/component: agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: reaper-agent
+subjects:
+  - kind: ServiceAccount
+    name: reaper-agent
+    namespace: reaper-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: reaper-agent
+  namespace: reaper-system
+  labels:
+    app.kubernetes.io/name: reaper-agent
+    app.kubernetes.io/part-of: reaper
+    app.kubernetes.io/component: agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reaper-agent
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: reaper-agent
+        app.kubernetes.io/part-of: reaper
+        app.kubernetes.io/component: agent
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: reaper-agent
+      hostPID: true
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: agent
+          image: ghcr.io/miguelgila/reaper-agent:latest
+          args:
+            - --config-namespace=reaper-system
+            - --config-name=reaper-config
+            - --config-path=/host/etc/reaper/reaper.conf
+            - --state-dir=/host/run/reaper
+            - --shim-path=/host/usr/local/bin/containerd-shim-reaper-v2
+            - --runtime-path=/host/usr/local/bin/reaper-runtime
+          ports:
+            - containerPort: 9100
+              name: metrics
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: etc-reaper
+              mountPath: /host/etc/reaper
+            - name: run-reaper
+              mountPath: /host/run/reaper
+            - name: usr-local-bin
+              mountPath: /host/usr/local/bin
+              readOnly: true
+      volumes:
+        - name: etc-reaper
+          hostPath:
+            path: /etc/reaper
+            type: DirectoryOrCreate
+        - name: run-reaper
+          hostPath:
+            path: /run/reaper
+            type: DirectoryOrCreate
+        - name: usr-local-bin
+          hostPath:
+            path: /usr/local/bin
+            type: Directory
