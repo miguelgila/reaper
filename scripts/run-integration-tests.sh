@@ -112,6 +112,7 @@ main() {
   phase_setup
   phase_readiness
   phase_integration_tests
+  phase_agent_tests
   phase_summary
 }
 

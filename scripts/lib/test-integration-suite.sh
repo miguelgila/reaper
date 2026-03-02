@@ -1986,6 +1986,204 @@ YAML
 }
 
 # ---------------------------------------------------------------------------
+# reaper-agent integration tests
+# These require the reaper-agent image to be loaded into the Kind cluster.
+# Skipped if image is not available.
+# ---------------------------------------------------------------------------
+
+test_agent_deployment() {
+  # Deploy agent manifests
+  kubectl apply -f deploy/kubernetes/reaper-agent.yaml >> "$LOG_FILE" 2>&1
+
+  # Wait for agent DaemonSet rollout
+  if ! kubectl rollout status daemonset/reaper-agent -n reaper-system --timeout=120s >> "$LOG_FILE" 2>&1; then
+    log_error "reaper-agent DaemonSet rollout failed"
+    kubectl describe daemonset reaper-agent -n reaper-system >> "$LOG_FILE" 2>&1 || true
+    kubectl get pods -n reaper-system >> "$LOG_FILE" 2>&1 || true
+    return 1
+  fi
+
+  # Verify at least one agent pod is running
+  local running_pods
+  running_pods=$(kubectl get pods -n reaper-system -l app.kubernetes.io/name=reaper-agent \
+    --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$running_pods" -lt 1 ]]; then
+    log_error "Expected at least 1 running reaper-agent pod, got $running_pods"
+    return 1
+  fi
+
+  log_verbose "reaper-agent DaemonSet deployed: $running_pods pod(s) running"
+}
+
+test_agent_config_sync() {
+  # Update the ConfigMap with a test value
+  kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: reaper-config
+  namespace: reaper-system
+data:
+  reaper.conf: |
+    # Integration test config
+    REAPER_DNS_MODE=kubernetes
+    REAPER_OVERLAY_ISOLATION=namespace
+    REAPER_TEST_MARKER=agent-sync-test
+YAML
+
+  # Give the agent time to detect and sync the change
+  sleep 10
+
+  # Verify the config file was written to the node
+  local config_content
+  config_content=$(docker exec "$NODE_ID" cat /etc/reaper/reaper.conf 2>/dev/null || echo "")
+
+  if [[ -z "$config_content" ]]; then
+    log_error "Config file /etc/reaper/reaper.conf not found on node"
+    return 1
+  fi
+
+  if ! echo "$config_content" | grep -q "REAPER_TEST_MARKER=agent-sync-test"; then
+    log_error "Config file does not contain expected test marker"
+    log_error "Actual content: $config_content"
+    return 1
+  fi
+
+  log_verbose "Config sync verified: test marker found in /etc/reaper/reaper.conf"
+}
+
+test_agent_healthz() {
+  # Get the agent pod name
+  local agent_pod
+  agent_pod=$(kubectl get pods -n reaper-system -l app.kubernetes.io/name=reaper-agent \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+  if [[ -z "$agent_pod" ]]; then
+    log_error "No reaper-agent pod found"
+    return 1
+  fi
+
+  # Curl the healthz endpoint from within the cluster
+  local health_response
+  health_response=$(kubectl exec -n reaper-system "$agent_pod" -- \
+    wget -q -O - http://localhost:9100/healthz 2>/dev/null || echo "FAILED")
+
+  if [[ "$health_response" != "ok" ]]; then
+    log_error "healthz endpoint returned unexpected response: $health_response"
+    return 1
+  fi
+
+  log_verbose "healthz endpoint returned 'ok'"
+}
+
+test_agent_metrics() {
+  local agent_pod
+  agent_pod=$(kubectl get pods -n reaper-system -l app.kubernetes.io/name=reaper-agent \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+  if [[ -z "$agent_pod" ]]; then
+    log_error "No reaper-agent pod found"
+    return 1
+  fi
+
+  # Curl the metrics endpoint
+  local metrics_response
+  metrics_response=$(kubectl exec -n reaper-system "$agent_pod" -- \
+    wget -q -O - http://localhost:9100/metrics 2>/dev/null || echo "FAILED")
+
+  if [[ "$metrics_response" == "FAILED" ]]; then
+    log_error "metrics endpoint not reachable"
+    return 1
+  fi
+
+  # Verify key metrics are present
+  local missing=()
+  for metric in reaper_containers_running reaper_agent_gc_runs_total reaper_agent_healthy reaper_agent_config_syncs_total; do
+    if ! echo "$metrics_response" | grep -q "$metric"; then
+      missing+=("$metric")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log_error "Missing expected metrics: ${missing[*]}"
+    log_error "Metrics output: $metrics_response"
+    return 1
+  fi
+
+  log_verbose "metrics endpoint verified: all expected metrics present"
+}
+
+test_agent_stale_gc() {
+  # Create a fake stale state directory on the node
+  docker exec "$NODE_ID" mkdir -p /run/reaper/stale-gc-test >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" bash -c 'cat > /run/reaper/stale-gc-test/state.json << EOF
+{
+  "id": "stale-gc-test",
+  "bundle": "/tmp/fake",
+  "status": "running",
+  "pid": 999999
+}
+EOF' >> "$LOG_FILE" 2>&1
+
+  # Wait for the next GC cycle (default 60s, but initial GC runs on startup too)
+  # The agent should detect pid 999999 as dead and mark it stopped
+  log_verbose "Waiting for GC cycle to detect stale PID..."
+  local max_wait=90
+  local elapsed=0
+  while [[ $elapsed -lt $max_wait ]]; do
+    local state_status
+    state_status=$(docker exec "$NODE_ID" cat /run/reaper/stale-gc-test/state.json 2>/dev/null \
+      | grep -o '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 || echo "")
+    if echo "$state_status" | grep -q '"stopped"'; then
+      log_verbose "GC correctly marked stale container as stopped"
+      return 0
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+
+  log_error "GC did not mark stale container as stopped within ${max_wait}s"
+  docker exec "$NODE_ID" cat /run/reaper/stale-gc-test/state.json >> "$LOG_FILE" 2>&1 || true
+  return 1
+}
+
+cleanup_agent() {
+  kubectl delete -f deploy/kubernetes/reaper-agent.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -rf /run/reaper/stale-gc-test >> "$LOG_FILE" 2>&1 || true
+}
+
+# ---------------------------------------------------------------------------
+# Phase 4a: reaper-agent tests (optional, requires agent image in cluster)
+# ---------------------------------------------------------------------------
+phase_agent_tests() {
+  log_status ""
+  log_status "${CLR_PHASE}Phase 4a: reaper-agent tests${CLR_RESET}"
+  log_status "========================================"
+
+  # Check if the agent image is available in the cluster
+  # (must be pre-loaded with: kind load docker-image ghcr.io/miguelgila/reaper-agent:latest)
+  local image_loaded
+  image_loaded=$(docker exec "$NODE_ID" crictl images 2>/dev/null \
+    | grep -c "reaper-agent" || true)
+
+  if [[ "$image_loaded" -lt 1 ]]; then
+    log_status "${CLR_WARN}Skipping agent tests: reaper-agent image not loaded in Kind cluster${CLR_RESET}"
+    log_status "  To enable: docker build -f Dockerfile.agent -t ghcr.io/miguelgila/reaper-agent:latest ."
+    log_status "             kind load docker-image ghcr.io/miguelgila/reaper-agent:latest --name $CLUSTER_NAME"
+    return 0
+  fi
+
+  run_test test_agent_deployment   "Agent DaemonSet deployment"        --hard-fail
+  run_test test_agent_config_sync  "Agent ConfigMap sync to host"      --hard-fail
+  run_test test_agent_healthz      "Agent /healthz endpoint"           --hard-fail
+  run_test test_agent_metrics      "Agent /metrics endpoint"           --hard-fail
+  run_test test_agent_stale_gc     "Agent stale state GC"             --hard-fail
+
+  # Cleanup agent resources
+  cleanup_agent
+}
+
+# ---------------------------------------------------------------------------
 # Phase 4: Integration test orchestrator
 # ---------------------------------------------------------------------------
 phase_integration_tests() {
