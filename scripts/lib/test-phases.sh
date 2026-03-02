@@ -49,6 +49,13 @@ phase_setup() {
     exit 1
   }
 
+  # Set dedicated KUBECONFIG so all kubectl commands target the right cluster,
+  # even when the user has other Kind clusters or contexts active.
+  KUBECONFIG_FILE="/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
+  kind get kubeconfig --name "$CLUSTER_NAME" > "$KUBECONFIG_FILE"
+  export KUBECONFIG="$KUBECONFIG_FILE"
+  log_status "Using KUBECONFIG=$KUBECONFIG_FILE"
+
   # Capture NODE_ID for diagnostics (used by cleanup trap and test functions)
   NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
 

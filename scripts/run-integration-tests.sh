@@ -89,6 +89,8 @@ cleanup() {
     log_status "Deleting kind cluster $CLUSTER_NAME..."
     kind delete cluster --name "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1 || true
   fi
+  # Clean up dedicated kubeconfig
+  rm -f "/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
   exit "$exit_code"
 }
 trap cleanup EXIT
