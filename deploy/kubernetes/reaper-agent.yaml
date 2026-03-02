@@ -96,6 +96,7 @@ spec:
       containers:
         - name: agent
           image: ghcr.io/miguelgila/reaper-agent:latest
+          imagePullPolicy: IfNotPresent
           args:
             - --config-namespace=reaper-system
             - --config-name=reaper-config
