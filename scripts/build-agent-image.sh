@@ -154,8 +154,9 @@ TEMP_DOCKERFILE=$(mktemp /tmp/Dockerfile.agent-XXXXXX)
 trap "rm -f '$TEMP_DOCKERFILE'" EXIT
 
 cat > "$TEMP_DOCKERFILE" <<'DOCKERFILE'
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12
 COPY reaper-agent /reaper-agent
+USER 0
 ENTRYPOINT ["/reaper-agent"]
 DOCKERFILE
 

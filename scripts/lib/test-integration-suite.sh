@@ -2063,10 +2063,17 @@ test_agent_healthz() {
     return 1
   fi
 
-  # Curl the healthz endpoint from within the cluster
+  # Use port-forward to reach the endpoint (distroless container has no shell/wget)
+  local local_port=19100
+  kubectl port-forward -n reaper-system "$agent_pod" ${local_port}:9100 >> "$LOG_FILE" 2>&1 &
+  local pf_pid=$!
+  sleep 2
+
   local health_response
-  health_response=$(kubectl exec -n reaper-system "$agent_pod" -- \
-    wget -q -O - http://localhost:9100/healthz 2>/dev/null || echo "FAILED")
+  health_response=$(curl -sf http://localhost:${local_port}/healthz 2>/dev/null || echo "FAILED")
+
+  kill "$pf_pid" 2>/dev/null || true
+  wait "$pf_pid" 2>/dev/null || true
 
   if [[ "$health_response" != "ok" ]]; then
     log_error "healthz endpoint returned unexpected response: $health_response"
@@ -2086,10 +2093,17 @@ test_agent_metrics() {
     return 1
   fi
 
-  # Curl the metrics endpoint
+  # Use port-forward to reach the endpoint (distroless container has no shell/wget)
+  local local_port=19101
+  kubectl port-forward -n reaper-system "$agent_pod" ${local_port}:9100 >> "$LOG_FILE" 2>&1 &
+  local pf_pid=$!
+  sleep 2
+
   local metrics_response
-  metrics_response=$(kubectl exec -n reaper-system "$agent_pod" -- \
-    wget -q -O - http://localhost:9100/metrics 2>/dev/null || echo "FAILED")
+  metrics_response=$(curl -sf http://localhost:${local_port}/metrics 2>/dev/null || echo "FAILED")
+
+  kill "$pf_pid" 2>/dev/null || true
+  wait "$pf_pid" 2>/dev/null || true
 
   if [[ "$metrics_response" == "FAILED" ]]; then
     log_error "metrics endpoint not reachable"

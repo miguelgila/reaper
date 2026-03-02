@@ -14,7 +14,7 @@ RUN cargo build --release --features agent --bin reaper-agent --target aarch64-u
 
 # --- Runtime stage ---
 # Use distroless for a minimal image with ca-certificates (needed for K8s API TLS)
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12
 
 ARG TARGETARCH
 COPY --from=builder-amd64 /work/target/x86_64-unknown-linux-musl/release/reaper-agent /reaper-agent-amd64

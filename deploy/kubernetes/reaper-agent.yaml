@@ -97,6 +97,8 @@ spec:
         - name: agent
           image: ghcr.io/miguelgila/reaper-agent:latest
           imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
           args:
             - --config-namespace=reaper-system
             - --config-name=reaper-config
