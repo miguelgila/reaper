@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-03-03
+
+### Features
+
+- Add reaper-agent per-node DaemonSet  (9fc4cc7)
+- Pod annotation-based configuration overrides  (78dae3a)
+- Per-namespace overlay isolation  (389a642)
+- Cross-OS config file and docs cleanup  (e7c40c9)
+- Add Kubernetes DNS support and unify example setup scripts  (3b4b5ff)
+
+### Bug Fixes
+
+- **security**: Harden runtime against critical/high vulnerabilities  (4da65e7)
+- Serialize config unit tests to prevent env var race in CI  (c7ef98f)
 ## [0.2.6] - 2026-02-20
 
 ### Features
