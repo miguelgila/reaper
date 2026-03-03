@@ -237,5 +237,6 @@
           - "1. Create RuntimeClass: kubectl apply -f deploy/kubernetes/runtimeclass.yaml"
           - "2. Deploy test pod: kubectl apply -f deploy/kubernetes/runtimeclass.yaml"
           - "3. Verify: kubectl logs reaper-example"
+          - "4. Optional: kubectl apply -f deploy/kubernetes/reaper-agent.yaml (config sync, GC, metrics)"
           - ""
           - "To rollback: ansible-playbook -i inventory.ini deploy/ansible/rollback-reaper.yml"

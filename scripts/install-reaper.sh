@@ -41,6 +41,7 @@ RELEASE_VERSION=""
 VERBOSE=false
 DRY_RUN=false
 SKIP_RUNTIMECLASS=false
+WITH_AGENT=false
 
 # ---------------------------------------------------------------------------
 # Color setup
@@ -81,6 +82,7 @@ Modes:
 
 Options:
   --release <version>    Download pre-built binaries from GitHub Releases (e.g., v0.2.0)
+  --with-agent           Deploy reaper-agent DaemonSet (config sync, GC, metrics)
   --verbose              Enable verbose Ansible output (-vv)
   --dry-run              Ansible check mode (no changes)
   --skip-runtimeclass    Skip RuntimeClass creation
@@ -148,6 +150,10 @@ parse_args() {
         ;;
       --skip-runtimeclass)
         SKIP_RUNTIMECLASS=true
+        shift
+        ;;
+      --with-agent)
+        WITH_AGENT=true
         shift
         ;;
       -h|--help)
@@ -412,6 +418,11 @@ run_ansible_playbook() {
   if ! $SKIP_RUNTIMECLASS && ! $DRY_RUN; then
     create_runtimeclass
   fi
+
+  # Deploy reaper-agent DaemonSet
+  if $WITH_AGENT && ! $DRY_RUN; then
+    deploy_agent
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -428,6 +439,31 @@ create_runtimeclass() {
     log_success "RuntimeClass created"
   else
     log_warn "RuntimeClass creation failed (may already exist)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Deploy reaper-agent DaemonSet
+# ---------------------------------------------------------------------------
+deploy_agent() {
+  if ! command -v kubectl &>/dev/null; then
+    log_warn "kubectl not found, skipping reaper-agent deployment"
+    return 0
+  fi
+
+  log_info "Deploying reaper-agent DaemonSet..."
+  if kubectl apply -f "$PROJECT_ROOT/deploy/kubernetes/reaper-agent.yaml"; then
+    log_success "reaper-agent DaemonSet deployed"
+
+    # Wait for agent pods to be ready
+    log_info "Waiting for reaper-agent pods to be ready..."
+    if kubectl rollout status daemonset/reaper-agent -n reaper-system --timeout=120s; then
+      log_success "reaper-agent pods ready"
+    else
+      log_warn "reaper-agent rollout timed out (pods may still be starting)"
+    fi
+  else
+    log_warn "reaper-agent deployment failed"
   fi
 }
 
@@ -465,6 +501,9 @@ main() {
   log_info "  1. Verify: kubectl get runtimeclass reaper-v2"
   log_info "  2. Test: kubectl apply -f deploy/kubernetes/runtimeclass.yaml"
   log_info "  3. Check logs: kubectl logs reaper-example"
+  if ! $WITH_AGENT; then
+    log_info "  4. Optional: re-run with --with-agent to deploy reaper-agent DaemonSet"
+  fi
 }
 
 main "$@"

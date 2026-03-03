@@ -49,8 +49,26 @@ phase_setup() {
     exit 1
   }
 
+  # Set dedicated KUBECONFIG so all kubectl commands target the right cluster,
+  # even when the user has other Kind clusters or contexts active.
+  KUBECONFIG_FILE="/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
+  kind get kubeconfig --name "$CLUSTER_NAME" > "$KUBECONFIG_FILE"
+  export KUBECONFIG="$KUBECONFIG_FILE"
+  log_status "Using KUBECONFIG=$KUBECONFIG_FILE"
+
   # Capture NODE_ID for diagnostics (used by cleanup trap and test functions)
   NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
+
+  # Build and load reaper-agent image (required for Phase 4a tests)
+  log_status "Building reaper-agent image for Kind..."
+  "$SCRIPT_DIR/build-agent-image.sh" \
+    --cluster-name "$CLUSTER_NAME" \
+    --quiet 2>&1 | tee -a "$LOG_FILE" || {
+    log_error "reaper-agent image build failed"
+    tail -50 "$LOG_FILE" >&2
+    exit 1
+  }
+  log_status "reaper-agent image loaded into Kind."
 
   log_status "Infrastructure setup complete."
   ci_group_end

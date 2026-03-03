@@ -213,6 +213,14 @@ else
   ok "Cluster created." | if_log
 fi
 
+# Export a dedicated KUBECONFIG so all kubectl commands in this session
+# (and child processes) target the right cluster, even if the user has
+# other Kind clusters or contexts active.
+KUBECONFIG_FILE="/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
+kind get kubeconfig --name "$CLUSTER_NAME" > "$KUBECONFIG_FILE"
+export KUBECONFIG="$KUBECONFIG_FILE"
+info "Using KUBECONFIG=$KUBECONFIG_FILE" | if_log
+
 # ---------------------------------------------------------------------------
 # Resolve "latest" release version
 # ---------------------------------------------------------------------------

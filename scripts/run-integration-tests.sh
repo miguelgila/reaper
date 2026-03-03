@@ -7,6 +7,7 @@
 #   ./scripts/run-integration-tests.sh --skip-cargo       # Skip Rust cargo tests
 #   ./scripts/run-integration-tests.sh --no-cleanup       # Keep kind cluster after run
 #   ./scripts/run-integration-tests.sh --verbose          # Print verbose output to stdout too
+#   ./scripts/run-integration-tests.sh --agent-only       # Only run agent tests (fast iteration)
 
 set -euo pipefail
 
@@ -32,6 +33,7 @@ TESTS_WARNED=0
 SKIP_CARGO=false
 NO_CLEANUP=false
 VERBOSE=false
+AGENT_ONLY=false
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -41,16 +43,18 @@ while [[ $# -gt 0 ]]; do
     --skip-cargo)  SKIP_CARGO=true; shift ;;
     --no-cleanup)  NO_CLEANUP=true; shift ;;
     --verbose)     VERBOSE=true; shift ;;
+    --agent-only)  AGENT_ONLY=true; SKIP_CARGO=true; shift ;;
     -h|--help)
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose]"
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--agent-only]"
       echo "  --skip-cargo  Skip Rust cargo tests (for quick K8s-only reruns)"
       echo "  --no-cleanup  Keep kind cluster after run"
       echo "  --verbose     Also print verbose output to stdout"
+      echo "  --agent-only  Only run agent tests (skip cargo + integration tests)"
       exit 0
       ;;
     *)
       echo "Unknown option: $1" >&2
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose]" >&2
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--agent-only]" >&2
       exit 1
       ;;
   esac
@@ -89,6 +93,8 @@ cleanup() {
     log_status "Deleting kind cluster $CLUSTER_NAME..."
     kind delete cluster --name "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1 || true
   fi
+  # Clean up dedicated kubeconfig
+  rm -f "/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
   exit "$exit_code"
 }
 trap cleanup EXIT
@@ -111,7 +117,14 @@ main() {
 
   phase_setup
   phase_readiness
-  phase_integration_tests
+
+  if ! $AGENT_ONLY; then
+    phase_integration_tests
+  else
+    log_status "Skipping integration tests (--agent-only)."
+  fi
+
+  phase_agent_tests
   phase_summary
 }
 
