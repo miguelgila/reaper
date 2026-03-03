@@ -306,6 +306,16 @@ elif ! $SKIP_BUILD; then
   INSTALL_RELEASE_ARGS=""
 else
   info "Skipping build (--skip-build)" | if_log
+  if [[ -n "${CI:-}" ]]; then
+    # CI: binaries were downloaded as artifacts to the musl target dir
+    for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+      if [[ -f "target/$triple/release/containerd-shim-reaper-v2" ]]; then
+        export REAPER_BINARY_DIR="$(pwd)/target/$triple/release"
+        info "Using pre-built binaries from $REAPER_BINARY_DIR" | if_log
+        break
+      fi
+    done
+  fi
   INSTALL_RELEASE_ARGS=""
 fi
 
