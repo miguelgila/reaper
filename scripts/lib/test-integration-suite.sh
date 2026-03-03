@@ -1995,6 +1995,10 @@ test_agent_deployment() {
   # Deploy agent manifests
   kubectl apply -f deploy/kubernetes/reaper-agent.yaml >> "$LOG_FILE" 2>&1
 
+  # Patch DaemonSet to use faster overlay GC interval for testing (30s instead of 300s)
+  kubectl patch daemonset reaper-agent -n reaper-system --type=json \
+    -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--overlay-gc-interval=30"}]' >> "$LOG_FILE" 2>&1
+
   # Wait for agent DaemonSet rollout
   if ! kubectl rollout status daemonset/reaper-agent -n reaper-system --timeout=120s >> "$LOG_FILE" 2>&1; then
     log_error "reaper-agent DaemonSet rollout failed"
@@ -2161,9 +2165,244 @@ EOF' >> "$LOG_FILE" 2>&1
   return 1
 }
 
+test_agent_overlay_gc_basic() {
+  # Create a K8s namespace, then fake overlay artifacts on the node
+  kubectl create namespace reaper-gc-test >> "$LOG_FILE" 2>&1
+
+  docker exec "$NODE_ID" mkdir -p /run/reaper/overlay/reaper-gc-test/upper /run/reaper/overlay/reaper-gc-test/work >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" mkdir -p /run/reaper/merged/reaper-gc-test >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" mkdir -p /run/reaper/ns >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" touch /run/reaper/ns/reaper-gc-test >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" touch /run/reaper/overlay-reaper-gc-test.lock >> "$LOG_FILE" 2>&1
+
+  # Delete the namespace so overlay becomes orphaned
+  kubectl delete namespace reaper-gc-test --wait=true >> "$LOG_FILE" 2>&1
+
+  # Poll until all artifacts are gone (overlay GC interval is 30s in test)
+  local max_wait=180
+  local elapsed=0
+  while [[ $elapsed -lt $max_wait ]]; do
+    local remaining=0
+    docker exec "$NODE_ID" test -d /run/reaper/overlay/reaper-gc-test 2>/dev/null && remaining=$((remaining + 1))
+    docker exec "$NODE_ID" test -d /run/reaper/merged/reaper-gc-test 2>/dev/null && remaining=$((remaining + 1))
+    docker exec "$NODE_ID" test -f /run/reaper/ns/reaper-gc-test 2>/dev/null && remaining=$((remaining + 1))
+    docker exec "$NODE_ID" test -f /run/reaper/overlay-reaper-gc-test.lock 2>/dev/null && remaining=$((remaining + 1))
+
+    if [[ $remaining -eq 0 ]]; then
+      log_verbose "overlay GC cleaned all artifacts for deleted namespace"
+      return 0
+    fi
+
+    log_verbose "Waiting for overlay GC ($remaining artifacts remaining, ${elapsed}s/${max_wait}s)..."
+    sleep 10
+    elapsed=$((elapsed + 10))
+  done
+
+  log_error "overlay GC did not clean artifacts within ${max_wait}s"
+  docker exec "$NODE_ID" ls -la /run/reaper/overlay/ /run/reaper/merged/ /run/reaper/ns/ >> "$LOG_FILE" 2>&1 || true
+  return 1
+}
+
+test_agent_overlay_gc_preserves_active() {
+  # Create fake overlay artifacts for the 'default' namespace (which always exists)
+  docker exec "$NODE_ID" mkdir -p /run/reaper/overlay/default/upper /run/reaper/overlay/default/work >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" mkdir -p /run/reaper/merged/default >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" mkdir -p /run/reaper/ns >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" touch /run/reaper/ns/default >> "$LOG_FILE" 2>&1
+
+  # Wait 2 overlay GC cycles (interval=30s in test, so 90s buffer)
+  log_verbose "Waiting 90s (2+ overlay GC cycles) to verify artifacts are preserved..."
+  sleep 90
+
+  # Assert artifacts still exist
+  local ok=true
+  docker exec "$NODE_ID" test -d /run/reaper/overlay/default 2>/dev/null || { log_error "overlay/default was removed"; ok=false; }
+  docker exec "$NODE_ID" test -d /run/reaper/merged/default 2>/dev/null || { log_error "merged/default was removed"; ok=false; }
+  docker exec "$NODE_ID" test -f /run/reaper/ns/default 2>/dev/null || { log_error "ns/default was removed"; ok=false; }
+
+  # Cleanup
+  docker exec "$NODE_ID" rm -rf /run/reaper/overlay/default /run/reaper/merged/default >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -f /run/reaper/ns/default >> "$LOG_FILE" 2>&1 || true
+
+  if [[ "$ok" == "true" ]]; then
+    log_verbose "overlay GC correctly preserved artifacts for active namespace"
+    return 0
+  fi
+  return 1
+}
+
+test_agent_overlay_gc_named_groups() {
+  # Create namespace + named group overlay artifacts
+  kubectl create namespace reaper-gc-named >> "$LOG_FILE" 2>&1
+
+  # Namespace-level artifacts
+  docker exec "$NODE_ID" mkdir -p /run/reaper/overlay/reaper-gc-named/upper /run/reaper/overlay/reaper-gc-named/work >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" mkdir -p /run/reaper/merged/reaper-gc-named >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" mkdir -p /run/reaper/ns >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" touch /run/reaper/ns/reaper-gc-named >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" touch /run/reaper/overlay-reaper-gc-named.lock >> "$LOG_FILE" 2>&1
+
+  # Named group artifacts (my-group)
+  docker exec "$NODE_ID" mkdir -p /run/reaper/overlay/reaper-gc-named/my-group/upper /run/reaper/overlay/reaper-gc-named/my-group/work >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" mkdir -p /run/reaper/merged/reaper-gc-named/my-group >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" touch /run/reaper/ns/reaper-gc-named--my-group >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" touch /run/reaper/overlay-reaper-gc-named--my-group.lock >> "$LOG_FILE" 2>&1
+
+  # Delete namespace
+  kubectl delete namespace reaper-gc-named --wait=true >> "$LOG_FILE" 2>&1
+
+  # Poll until all artifacts are gone
+  local max_wait=180
+  local elapsed=0
+  while [[ $elapsed -lt $max_wait ]]; do
+    local remaining=0
+    docker exec "$NODE_ID" test -d /run/reaper/overlay/reaper-gc-named 2>/dev/null && remaining=$((remaining + 1))
+    docker exec "$NODE_ID" test -d /run/reaper/merged/reaper-gc-named 2>/dev/null && remaining=$((remaining + 1))
+    docker exec "$NODE_ID" test -f /run/reaper/ns/reaper-gc-named 2>/dev/null && remaining=$((remaining + 1))
+    docker exec "$NODE_ID" test -f /run/reaper/overlay-reaper-gc-named.lock 2>/dev/null && remaining=$((remaining + 1))
+    docker exec "$NODE_ID" test -f /run/reaper/ns/reaper-gc-named--my-group 2>/dev/null && remaining=$((remaining + 1))
+    docker exec "$NODE_ID" test -f /run/reaper/overlay-reaper-gc-named--my-group.lock 2>/dev/null && remaining=$((remaining + 1))
+
+    if [[ $remaining -eq 0 ]]; then
+      log_verbose "overlay GC cleaned all artifacts including named groups"
+      return 0
+    fi
+
+    log_verbose "Waiting for overlay GC ($remaining artifacts remaining, ${elapsed}s/${max_wait}s)..."
+    sleep 10
+    elapsed=$((elapsed + 10))
+  done
+
+  log_error "overlay GC did not clean named group artifacts within ${max_wait}s"
+  docker exec "$NODE_ID" ls -la /run/reaper/overlay/ /run/reaper/merged/ /run/reaper/ns/ >> "$LOG_FILE" 2>&1 || true
+  return 1
+}
+
+test_agent_overlay_gc_skips_running_containers() {
+  # Create namespace + overlay artifacts
+  kubectl create namespace reaper-gc-running >> "$LOG_FILE" 2>&1
+
+  docker exec "$NODE_ID" mkdir -p /run/reaper/overlay/reaper-gc-running/upper /run/reaper/overlay/reaper-gc-running/work >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" mkdir -p /run/reaper/merged/reaper-gc-running >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" mkdir -p /run/reaper/ns >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" touch /run/reaper/ns/reaper-gc-running >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" touch /run/reaper/overlay-reaper-gc-running.lock >> "$LOG_FILE" 2>&1
+
+  # Create a fake container state dir with a running container referencing this namespace
+  # PID 1 is always alive (init process)
+  docker exec "$NODE_ID" mkdir -p /run/reaper/fake-gc-container >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" bash -c 'cat > /run/reaper/fake-gc-container/state.json << EOF
+{
+  "id": "fake-gc-container",
+  "bundle": "/tmp/fake",
+  "status": "running",
+  "pid": 1,
+  "namespace": "reaper-gc-running"
+}
+EOF' >> "$LOG_FILE" 2>&1
+
+  # Delete the namespace
+  kubectl delete namespace reaper-gc-running --wait=true >> "$LOG_FILE" 2>&1
+
+  # Wait 2 overlay GC cycles — artifacts should NOT be removed
+  log_verbose "Waiting 90s (2+ overlay GC cycles) to verify running container prevents cleanup..."
+  sleep 90
+
+  # Assert artifacts still exist (GC skipped due to running container)
+  local ok=true
+  docker exec "$NODE_ID" test -d /run/reaper/overlay/reaper-gc-running 2>/dev/null || { log_error "overlay/reaper-gc-running was removed despite running container"; ok=false; }
+  docker exec "$NODE_ID" test -d /run/reaper/merged/reaper-gc-running 2>/dev/null || { log_error "merged/reaper-gc-running was removed despite running container"; ok=false; }
+
+  if [[ "$ok" != "true" ]]; then
+    docker exec "$NODE_ID" rm -rf /run/reaper/fake-gc-container >> "$LOG_FILE" 2>&1 || true
+    return 1
+  fi
+
+  log_verbose "Confirmed: overlay GC skipped cleanup due to running container"
+
+  # Now remove the fake container state and verify GC cleans up
+  docker exec "$NODE_ID" rm -rf /run/reaper/fake-gc-container >> "$LOG_FILE" 2>&1
+
+  local max_wait=90
+  local elapsed=0
+  while [[ $elapsed -lt $max_wait ]]; do
+    local remaining=0
+    docker exec "$NODE_ID" test -d /run/reaper/overlay/reaper-gc-running 2>/dev/null && remaining=$((remaining + 1))
+    docker exec "$NODE_ID" test -d /run/reaper/merged/reaper-gc-running 2>/dev/null && remaining=$((remaining + 1))
+
+    if [[ $remaining -eq 0 ]]; then
+      log_verbose "overlay GC cleaned up after running container was removed"
+      return 0
+    fi
+
+    sleep 10
+    elapsed=$((elapsed + 10))
+  done
+
+  log_error "overlay GC did not clean up after running container was removed within ${max_wait}s"
+  # Cleanup
+  docker exec "$NODE_ID" rm -rf /run/reaper/overlay/reaper-gc-running /run/reaper/merged/reaper-gc-running >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -f /run/reaper/ns/reaper-gc-running /run/reaper/overlay-reaper-gc-running.lock >> "$LOG_FILE" 2>&1 || true
+  return 1
+}
+
+test_agent_overlay_gc_metrics() {
+  local agent_pod
+  agent_pod=$(kubectl get pods -n reaper-system -l app.kubernetes.io/name=reaper-agent \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+  if [[ -z "$agent_pod" ]]; then
+    log_error "No reaper-agent pod found"
+    return 1
+  fi
+
+  # Use port-forward to reach the metrics endpoint
+  local local_port=19101
+  kubectl port-forward -n reaper-system "$agent_pod" ${local_port}:9100 >> "$LOG_FILE" 2>&1 &
+  local pf_pid=$!
+  sleep 3
+
+  local metrics_response
+  metrics_response=$(curl -s "http://127.0.0.1:${local_port}/metrics" 2>/dev/null || echo "")
+
+  kill "$pf_pid" 2>/dev/null || true
+  wait "$pf_pid" 2>/dev/null || true
+
+  if [[ -z "$metrics_response" ]]; then
+    log_error "Failed to fetch metrics from agent"
+    return 1
+  fi
+
+  local missing=()
+  for metric in reaper_agent_overlay_gc_runs_total reaper_agent_overlay_gc_cleaned_total reaper_agent_overlay_namespaces; do
+    if ! echo "$metrics_response" | grep -q "$metric"; then
+      missing+=("$metric")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log_error "Missing overlay GC metrics: ${missing[*]}"
+    log_error "Metrics output: $metrics_response"
+    return 1
+  fi
+
+  log_verbose "overlay GC metrics verified: all expected metrics present"
+}
+
 cleanup_agent() {
   kubectl delete -f deploy/kubernetes/reaper-agent.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   docker exec "$NODE_ID" rm -rf /run/reaper/stale-gc-test >> "$LOG_FILE" 2>&1 || true
+  # Cleanup any leftover overlay GC test artifacts
+  docker exec "$NODE_ID" rm -rf /run/reaper/overlay/reaper-gc-test /run/reaper/overlay/reaper-gc-named /run/reaper/overlay/reaper-gc-running >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -rf /run/reaper/merged/reaper-gc-test /run/reaper/merged/reaper-gc-named /run/reaper/merged/reaper-gc-running >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -f /run/reaper/ns/reaper-gc-test /run/reaper/ns/reaper-gc-named /run/reaper/ns/reaper-gc-running >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -f /run/reaper/ns/reaper-gc-named--my-group >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -f /run/reaper/overlay-reaper-gc-test.lock /run/reaper/overlay-reaper-gc-named.lock /run/reaper/overlay-reaper-gc-running.lock >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -f /run/reaper/overlay-reaper-gc-named--my-group.lock >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -rf /run/reaper/fake-gc-container >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -rf /run/reaper/overlay/default /run/reaper/merged/default >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -f /run/reaper/ns/default >> "$LOG_FILE" 2>&1 || true
+  kubectl delete namespace reaper-gc-test reaper-gc-named reaper-gc-running --ignore-not-found >> "$LOG_FILE" 2>&1 || true
 }
 
 # ---------------------------------------------------------------------------
@@ -2191,6 +2430,11 @@ phase_agent_tests() {
   run_test test_agent_healthz      "Agent /healthz endpoint"           --hard-fail
   run_test test_agent_metrics      "Agent /metrics endpoint"           --hard-fail
   run_test test_agent_stale_gc     "Agent stale state GC"             --hard-fail
+  run_test test_agent_overlay_gc_metrics "Agent overlay GC metrics"    --hard-fail
+  run_test test_agent_overlay_gc_basic "Agent overlay GC basic cleanup" --hard-fail
+  run_test test_agent_overlay_gc_named_groups "Agent overlay GC named groups" --hard-fail
+  run_test test_agent_overlay_gc_preserves_active "Agent overlay GC preserves active namespaces" --hard-fail
+  run_test test_agent_overlay_gc_skips_running_containers "Agent overlay GC skips running containers" --hard-fail
 
   # Cleanup agent resources
   cleanup_agent

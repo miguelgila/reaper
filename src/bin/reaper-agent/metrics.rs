@@ -30,6 +30,11 @@ struct MetricsInner {
 
     // Health gauge
     healthy: Gauge,
+
+    // Overlay GC metrics
+    overlay_gc_runs_total: Counter,
+    overlay_gc_cleaned_total: Counter,
+    overlay_namespaces: Gauge,
 }
 
 impl MetricsState {
@@ -42,6 +47,9 @@ impl MetricsState {
         let config_syncs_total = Counter::default();
         let gc_runs_total = Counter::default();
         let healthy = Gauge::default();
+        let overlay_gc_runs_total = Counter::default();
+        let overlay_gc_cleaned_total = Counter::default();
+        let overlay_namespaces = Gauge::default();
 
         registry.register(
             "reaper_containers_created",
@@ -73,6 +81,21 @@ impl MetricsState {
             "Whether the agent considers the node healthy (1=healthy, 0=unhealthy)",
             healthy.clone(),
         );
+        registry.register(
+            "reaper_agent_overlay_gc_runs_total",
+            "Total number of overlay GC reconciliation cycles",
+            overlay_gc_runs_total.clone(),
+        );
+        registry.register(
+            "reaper_agent_overlay_gc_cleaned_total",
+            "Total number of overlay namespaces cleaned up",
+            overlay_gc_cleaned_total.clone(),
+        );
+        registry.register(
+            "reaper_agent_overlay_namespaces",
+            "Current number of on-disk overlay namespace directories",
+            overlay_namespaces.clone(),
+        );
 
         Self {
             inner: Arc::new(MetricsInner {
@@ -83,6 +106,9 @@ impl MetricsState {
                 config_syncs_total,
                 gc_runs_total,
                 healthy,
+                overlay_gc_runs_total,
+                overlay_gc_cleaned_total,
+                overlay_namespaces,
             }),
         }
     }
@@ -108,6 +134,20 @@ impl MetricsState {
     #[allow(dead_code)]
     pub fn is_healthy(&self) -> bool {
         self.inner.healthy.get() == 1
+    }
+
+    pub fn inc_overlay_gc_runs(&self) {
+        self.inner.overlay_gc_runs_total.inc();
+    }
+
+    pub fn inc_overlay_gc_cleaned(&self, count: u64) {
+        for _ in 0..count {
+            self.inner.overlay_gc_cleaned_total.inc();
+        }
+    }
+
+    pub fn set_overlay_namespaces(&self, count: u64) {
+        self.inner.overlay_namespaces.set(count as i64);
     }
 
     pub fn encode(&self) -> String {

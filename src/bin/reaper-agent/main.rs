@@ -8,6 +8,7 @@ mod config_sync;
 mod gc;
 mod health;
 mod metrics;
+mod overlay_gc;
 
 // config.rs is available as shared module but not needed by the agent
 // (the agent writes config files, it doesn't read them)
@@ -62,6 +63,14 @@ struct Cli {
     /// GC scan interval in seconds
     #[arg(long, default_value = "60", env = "REAPER_AGENT_GC_INTERVAL")]
     gc_interval: u64,
+
+    /// Overlay GC reconciliation interval in seconds
+    #[arg(long, default_value = "300", env = "REAPER_AGENT_OVERLAY_GC_INTERVAL")]
+    overlay_gc_interval: u64,
+
+    /// Enable overlay GC (reconcile overlay dirs against K8s namespaces)
+    #[arg(long, default_value = "true", env = "REAPER_AGENT_OVERLAY_GC_ENABLED")]
+    overlay_gc_enabled: bool,
 
     /// Base state directory (via hostPath mount)
     #[arg(
@@ -146,6 +155,19 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Spawn overlay GC loop (reconcile overlay dirs against K8s namespaces)
+    let overlay_gc_handle = if cli.overlay_gc_enabled {
+        let ogc_state_dir = cli.state_dir.clone();
+        let ogc_metrics = metrics_state.clone();
+        let ogc_interval = cli.overlay_gc_interval;
+        Some(tokio::spawn(async move {
+            overlay_gc::overlay_gc_loop(&ogc_state_dir, ogc_interval, &ogc_metrics).await;
+        }))
+    } else {
+        info!("overlay GC disabled via --overlay-gc-enabled=false");
+        None
+    };
+
     let server_metrics = metrics_state.clone();
     let server_shim = cli.shim_path.clone();
     let server_runtime = cli.runtime_path.clone();
@@ -175,6 +197,9 @@ async fn main() -> anyhow::Result<()> {
     health_handle.abort();
     sync_handle.abort();
     server_handle.abort();
+    if let Some(h) = overlay_gc_handle {
+        h.abort();
+    }
 
     Ok(())
 }
