@@ -30,6 +30,15 @@ struct MetricsInner {
 
     // Health gauge
     healthy: Gauge,
+
+    // Overlay GC metrics
+    overlay_gc_runs_total: Counter,
+    overlay_gc_cleaned_total: Counter,
+    overlay_namespaces: Gauge,
+
+    // Namespace cleanup metrics
+    ns_cleanup_runs_total: Counter,
+    ns_cleaned_total: Counter,
 }
 
 impl MetricsState {
@@ -42,6 +51,11 @@ impl MetricsState {
         let config_syncs_total = Counter::default();
         let gc_runs_total = Counter::default();
         let healthy = Gauge::default();
+        let overlay_gc_runs_total = Counter::default();
+        let overlay_gc_cleaned_total = Counter::default();
+        let overlay_namespaces = Gauge::default();
+        let ns_cleanup_runs_total = Counter::default();
+        let ns_cleaned_total = Counter::default();
 
         registry.register(
             "reaper_containers_created",
@@ -73,6 +87,31 @@ impl MetricsState {
             "Whether the agent considers the node healthy (1=healthy, 0=unhealthy)",
             healthy.clone(),
         );
+        registry.register(
+            "reaper_agent_overlay_gc_runs_total",
+            "Total number of overlay GC reconciliation cycles",
+            overlay_gc_runs_total.clone(),
+        );
+        registry.register(
+            "reaper_agent_overlay_gc_cleaned_total",
+            "Total number of overlay namespaces cleaned up",
+            overlay_gc_cleaned_total.clone(),
+        );
+        registry.register(
+            "reaper_agent_overlay_namespaces",
+            "Current number of on-disk overlay namespace directories",
+            overlay_namespaces.clone(),
+        );
+        registry.register(
+            "reaper_agent_ns_cleanup_runs_total",
+            "Total number of mount namespace cleanup passes",
+            ns_cleanup_runs_total.clone(),
+        );
+        registry.register(
+            "reaper_agent_ns_cleaned_total",
+            "Total number of stale namespace bind-mount files removed",
+            ns_cleaned_total.clone(),
+        );
 
         Self {
             inner: Arc::new(MetricsInner {
@@ -83,6 +122,11 @@ impl MetricsState {
                 config_syncs_total,
                 gc_runs_total,
                 healthy,
+                overlay_gc_runs_total,
+                overlay_gc_cleaned_total,
+                overlay_namespaces,
+                ns_cleanup_runs_total,
+                ns_cleaned_total,
             }),
         }
     }
@@ -108,6 +152,30 @@ impl MetricsState {
     #[allow(dead_code)]
     pub fn is_healthy(&self) -> bool {
         self.inner.healthy.get() == 1
+    }
+
+    pub fn inc_overlay_gc_runs(&self) {
+        self.inner.overlay_gc_runs_total.inc();
+    }
+
+    pub fn inc_overlay_gc_cleaned(&self, count: u64) {
+        for _ in 0..count {
+            self.inner.overlay_gc_cleaned_total.inc();
+        }
+    }
+
+    pub fn inc_ns_cleanup_runs(&self) {
+        self.inner.ns_cleanup_runs_total.inc();
+    }
+
+    pub fn inc_ns_cleaned(&self, count: u64) {
+        for _ in 0..count {
+            self.inner.ns_cleaned_total.inc();
+        }
+    }
+
+    pub fn set_overlay_namespaces(&self, count: u64) {
+        self.inner.overlay_namespaces.set(count as i64);
     }
 
     pub fn encode(&self) -> String {

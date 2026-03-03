@@ -50,10 +50,20 @@ pub async fn run_gc(state_dir: &str, metrics: &MetricsState) {
     let mut created = 0u64;
     let mut cleaned = 0u64;
 
+    // Infrastructure directories that are NOT container state dirs — skip during GC
+    const INFRA_DIRS: &[&str] = &["overlay", "merged", "ns"];
+
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
             continue;
+        }
+
+        // Skip overlay infrastructure directories (managed by overlay GC, not container GC)
+        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if INFRA_DIRS.contains(&name) {
+                continue;
+            }
         }
 
         let state_file = path.join("state.json");
