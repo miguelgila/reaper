@@ -67,6 +67,228 @@ fn is_pid_alive(pid: i32) -> bool {
     signal::kill(Pid::from_raw(pid), None).is_ok()
 }
 
+/// Check whether a path is a mount point by checking mountinfo.
+///
+/// First checks `/proc/self/mountinfo` (agent's own mount namespace).
+/// If not found and the path starts with `/host/`, also checks `/proc/1/mountinfo`
+/// (host mount namespace via hostPID) with the `/host` prefix stripped.
+/// This handles the case where the agent runs in a container with hostPath volumes
+/// and mount propagation doesn't cross nested container boundaries (e.g., Kind).
+#[cfg(target_os = "linux")]
+fn is_mount_point(path: &Path) -> bool {
+    let canonical = match path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let canonical_str = canonical.to_string_lossy();
+
+    // Check agent's own mount namespace first
+    if check_mountinfo("/proc/self/mountinfo", &canonical_str) {
+        return true;
+    }
+
+    // If path starts with /host/, check host's mount namespace with prefix stripped
+    if let Some(host_path) = canonical_str.strip_prefix("/host") {
+        if check_mountinfo("/proc/1/mountinfo", host_path) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Check if a path appears as a mount point in the given mountinfo file.
+#[cfg(target_os = "linux")]
+fn check_mountinfo(mountinfo_path: &str, target_path: &str) -> bool {
+    use std::io::BufRead;
+
+    let file = match fs::File::open(mountinfo_path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    // mountinfo format: id parent major:minor root mount_point options ...
+    // Field 5 (0-indexed: 4) is the mount point
+    for line in std::io::BufReader::new(file).lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() >= 5 && fields[4] == target_path {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Try to acquire a non-blocking exclusive flock on a lock file.
+/// Returns None if the lock is held by another process (skip this ns).
+/// Returns None if the lock file doesn't exist (nothing to protect).
+#[cfg(target_os = "linux")]
+fn try_lock_nonblocking(lock_path: &Path) -> Option<nix::fcntl::Flock<std::fs::File>> {
+    use nix::fcntl::{Flock, FlockArg};
+    let file = match std::fs::File::open(lock_path) {
+        Ok(f) => f,
+        Err(_) => return None,
+    };
+    match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+        Ok(lock) => Some(lock),
+        Err(_) => None,
+    }
+}
+
+/// Parse a namespace filename into (k8s_namespace, optional_overlay_name).
+/// `"default"` → `("default", None)`
+/// `"default--my-group"` → `("default", Some("my-group"))`
+fn parse_ns_filename(name: &str) -> (&str, Option<&str>) {
+    match name.split_once("--") {
+        Some((ns, group)) => (ns, Some(group)),
+        None => (name, None),
+    }
+}
+
+/// Check whether ANY container state directory has status "running" with a live PID,
+/// regardless of namespace. Used for the legacy `shared-mnt-ns` file.
+fn has_any_running_container(state_dir: &str) -> bool {
+    let base = Path::new(state_dir);
+    let entries = match fs::read_dir(base) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+
+        let state_file = path.join("state.json");
+        let data = match fs::read(&state_file) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        let value: serde_json::Value = match serde_json::from_slice(&data) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let status = value.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status == "running" {
+            if let Some(pid) = value.get("pid").and_then(|v| v.as_i64()) {
+                if pid > 0 && is_pid_alive(pid as i32) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Run a single mount namespace cleanup pass.
+///
+/// Scans `/run/reaper/ns/` for stale bind-mount files (files that are no longer
+/// actual mount points) and removes them after safety checks.
+#[cfg(target_os = "linux")]
+pub fn run_ns_cleanup(state_dir: &str, metrics: &MetricsState) {
+    let ns_dir = Path::new(state_dir).join("ns");
+    if !ns_dir.exists() {
+        debug!(path = ?ns_dir, "ns directory does not exist, skipping cleanup");
+        metrics.inc_ns_cleanup_runs();
+        return;
+    }
+
+    let entries = match fs::read_dir(&ns_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(error = %e, path = ?ns_dir, "failed to read ns directory");
+            metrics.inc_ns_cleanup_runs();
+            return;
+        }
+    };
+
+    let mut scanned = 0u64;
+    let mut cleaned = 0u64;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = match entry.file_name().to_str() {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        scanned += 1;
+
+        // If it's a live mount point, skip
+        if is_mount_point(&path) {
+            debug!(file = %name, "ns file is a live mount point, skipping");
+            continue;
+        }
+
+        // Parse filename to determine k8s namespace
+        let (k8s_ns, overlay_name) = parse_ns_filename(&name);
+
+        // Special case: legacy shared-mnt-ns (node-isolation mode)
+        if name == "shared-mnt-ns" {
+            if has_any_running_container(state_dir) {
+                debug!("shared-mnt-ns has running containers, skipping");
+                continue;
+            }
+        } else {
+            // Safety: skip if any running containers reference this namespace
+            if has_running_containers(state_dir, k8s_ns) {
+                debug!(
+                    namespace = k8s_ns,
+                    overlay_name = ?overlay_name,
+                    "running containers reference namespace, skipping ns cleanup"
+                );
+                continue;
+            }
+        }
+
+        // Try non-blocking lock — skip if runtime holds it
+        let lock_name = format!("overlay-{}.lock", name);
+        let lock_path = Path::new(state_dir).join(&lock_name);
+        let _lock = if lock_path.exists() {
+            match try_lock_nonblocking(&lock_path) {
+                Some(lock) => Some(lock),
+                None => {
+                    debug!(file = %name, "lock held by runtime, skipping ns cleanup");
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+
+        info!(file = %name, "stale ns bind-mount detected, cleaning up");
+        try_unmount(&path);
+        if remove_path(&path, "stale ns file") {
+            cleaned += 1;
+        }
+    }
+
+    metrics.inc_ns_cleanup_runs();
+    if cleaned > 0 {
+        metrics.inc_ns_cleaned(cleaned);
+    }
+
+    info!(
+        scanned = scanned,
+        cleaned = cleaned,
+        "ns cleanup pass complete"
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn run_ns_cleanup(_state_dir: &str, metrics: &MetricsState) {
+    debug!("ns cleanup not supported on this platform");
+    metrics.inc_ns_cleanup_runs();
+}
+
 /// Attempt to unmount a path, ignoring ENOENT and EINVAL.
 fn try_unmount(path: &Path) {
     #[cfg(target_os = "linux")]
@@ -264,6 +486,10 @@ pub async fn overlay_gc_loop(state_dir: &str, interval_secs: u64, metrics: &Metr
 
     loop {
         tokio::time::sleep(interval).await;
+
+        // Clean stale ns bind-mounts before overlay GC so overlay GC sees accurate state
+        run_ns_cleanup(state_dir, metrics);
+
         if let Err(e) = run_overlay_gc(&client, state_dir, metrics).await {
             error!(error = %e, "overlay GC cycle failed");
         }

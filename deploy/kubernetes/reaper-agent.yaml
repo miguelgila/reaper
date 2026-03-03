@@ -137,6 +137,7 @@ spec:
               mountPath: /host/etc/reaper
             - name: run-reaper
               mountPath: /host/run/reaper
+              mountPropagation: HostToContainer
             - name: usr-local-bin
               mountPath: /host/usr/local/bin
               readOnly: true

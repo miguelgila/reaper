@@ -23,5 +23,5 @@ List of tasks to do, not ordered in any specific way.
 - [x] reaper-agent Phase 2: Overlay GC — reconcile overlay namespaces against Kubernetes API, delete overlays for namespaces that no longer exist
 - [ ] reaper-agent Phase 2: Binary self-update — watch ConfigMap version field, download and replace shim/runtime binaries
 - [ ] reaper-agent Phase 2: Node condition reporting — patch Node object with `ReaperReady` condition
-- [ ] reaper-agent Phase 2: Mount namespace cleanup — detect and unmount stale `/run/reaper/ns/*` bind-mounts
+- [x] reaper-agent Phase 2: Mount namespace cleanup — detect and unmount stale `/run/reaper/ns/*` bind-mounts
 - [ ] Fix known bugs documented in [docs/BUGS.md](BUGS.md)

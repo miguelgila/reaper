@@ -2207,22 +2207,18 @@ test_agent_overlay_gc_preserves_active() {
   # Create fake overlay artifacts for the 'default' namespace (which always exists)
   docker exec "$NODE_ID" mkdir -p /run/reaper/overlay/default/upper /run/reaper/overlay/default/work >> "$LOG_FILE" 2>&1
   docker exec "$NODE_ID" mkdir -p /run/reaper/merged/default >> "$LOG_FILE" 2>&1
-  docker exec "$NODE_ID" mkdir -p /run/reaper/ns >> "$LOG_FILE" 2>&1
-  docker exec "$NODE_ID" touch /run/reaper/ns/default >> "$LOG_FILE" 2>&1
 
   # Wait 2 overlay GC cycles (interval=30s in test, so 90s buffer)
   log_verbose "Waiting 90s (2+ overlay GC cycles) to verify artifacts are preserved..."
   sleep 90
 
-  # Assert artifacts still exist
+  # Assert overlay artifacts still exist (ns files are managed by ns cleanup, not overlay GC)
   local ok=true
   docker exec "$NODE_ID" test -d /run/reaper/overlay/default 2>/dev/null || { log_error "overlay/default was removed"; ok=false; }
   docker exec "$NODE_ID" test -d /run/reaper/merged/default 2>/dev/null || { log_error "merged/default was removed"; ok=false; }
-  docker exec "$NODE_ID" test -f /run/reaper/ns/default 2>/dev/null || { log_error "ns/default was removed"; ok=false; }
 
   # Cleanup
   docker exec "$NODE_ID" rm -rf /run/reaper/overlay/default /run/reaper/merged/default >> "$LOG_FILE" 2>&1 || true
-  docker exec "$NODE_ID" rm -f /run/reaper/ns/default >> "$LOG_FILE" 2>&1 || true
 
   if [[ "$ok" == "true" ]]; then
     log_verbose "overlay GC correctly preserved artifacts for active namespace"
@@ -2389,6 +2385,125 @@ test_agent_overlay_gc_metrics() {
   log_verbose "overlay GC metrics verified: all expected metrics present"
 }
 
+test_agent_ns_cleanup_stale_file() {
+  # Create a regular file (not a mount point) at /run/reaper/ns/stale-ns-test
+  docker exec "$NODE_ID" mkdir -p /run/reaper/ns >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" touch /run/reaper/ns/stale-ns-test >> "$LOG_FILE" 2>&1
+
+  # Poll until the stale file is removed (GC interval is 30s in test)
+  local max_wait=180
+  local elapsed=0
+  while [[ $elapsed -lt $max_wait ]]; do
+    if ! docker exec "$NODE_ID" test -f /run/reaper/ns/stale-ns-test 2>/dev/null; then
+      log_verbose "ns cleanup removed stale ns file"
+      return 0
+    fi
+
+    log_verbose "Waiting for ns cleanup to remove stale file (${elapsed}s/${max_wait}s)..."
+    sleep 10
+    elapsed=$((elapsed + 10))
+  done
+
+  log_error "ns cleanup did not remove stale file within ${max_wait}s"
+  docker exec "$NODE_ID" ls -la /run/reaper/ns/ >> "$LOG_FILE" 2>&1 || true
+  return 1
+}
+
+test_agent_ns_cleanup_preserves_active() {
+  # Create a stale ns file, but protect it with a running container reference.
+  # The running container safety check should prevent ns cleanup from removing it.
+  # (In production, mount-point detection via /proc/1/mountinfo is the primary guard,
+  # but in Kind's nested container setup, bind-mounts aren't visible to the agent.)
+  docker exec "$NODE_ID" mkdir -p /run/reaper/ns >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" touch /run/reaper/ns/ns-protect-test >> "$LOG_FILE" 2>&1
+
+  # Create a fake running container referencing the same namespace (PID 1 is always alive)
+  docker exec "$NODE_ID" mkdir -p /run/reaper/fake-ns-protect >> "$LOG_FILE" 2>&1
+  docker exec "$NODE_ID" bash -c 'cat > /run/reaper/fake-ns-protect/state.json << EOF
+{
+  "id": "fake-ns-protect",
+  "bundle": "/tmp/fake",
+  "status": "running",
+  "pid": 1,
+  "namespace": "ns-protect-test"
+}
+EOF' >> "$LOG_FILE" 2>&1
+
+  # Wait 2 GC cycles (interval=30s, so 90s buffer)
+  log_verbose "Waiting 90s (2+ GC cycles) to verify ns file is preserved by running container..."
+  sleep 90
+
+  # Assert ns file still exists (protected by running container)
+  if docker exec "$NODE_ID" test -f /run/reaper/ns/ns-protect-test 2>/dev/null; then
+    log_verbose "ns cleanup correctly preserved ns file with running container"
+
+    # Now remove the fake container and verify the ns file gets cleaned
+    docker exec "$NODE_ID" rm -rf /run/reaper/fake-ns-protect >> "$LOG_FILE" 2>&1
+
+    local max_wait=90
+    local elapsed=0
+    while [[ $elapsed -lt $max_wait ]]; do
+      if ! docker exec "$NODE_ID" test -f /run/reaper/ns/ns-protect-test 2>/dev/null; then
+        log_verbose "ns cleanup removed ns file after running container was removed"
+        return 0
+      fi
+      sleep 10
+      elapsed=$((elapsed + 10))
+    done
+
+    log_error "ns cleanup did not remove ns file after running container was removed within ${max_wait}s"
+    docker exec "$NODE_ID" rm -f /run/reaper/ns/ns-protect-test >> "$LOG_FILE" 2>&1 || true
+    return 1
+  fi
+
+  log_error "ns cleanup removed ns file despite running container reference"
+  docker exec "$NODE_ID" rm -rf /run/reaper/fake-ns-protect >> "$LOG_FILE" 2>&1 || true
+  return 1
+}
+
+test_agent_ns_cleanup_metrics() {
+  local agent_pod
+  agent_pod=$(kubectl get pods -n reaper-system -l app.kubernetes.io/name=reaper-agent \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+  if [[ -z "$agent_pod" ]]; then
+    log_error "No reaper-agent pod found"
+    return 1
+  fi
+
+  # Use port-forward to reach the metrics endpoint
+  local local_port=19102
+  kubectl port-forward -n reaper-system "$agent_pod" ${local_port}:9100 >> "$LOG_FILE" 2>&1 &
+  local pf_pid=$!
+  sleep 3
+
+  local metrics_response
+  metrics_response=$(curl -s "http://127.0.0.1:${local_port}/metrics" 2>/dev/null || echo "")
+
+  kill "$pf_pid" 2>/dev/null || true
+  wait "$pf_pid" 2>/dev/null || true
+
+  if [[ -z "$metrics_response" ]]; then
+    log_error "Failed to fetch metrics from agent"
+    return 1
+  fi
+
+  local missing=()
+  for metric in reaper_agent_ns_cleanup_runs_total reaper_agent_ns_cleaned_total; do
+    if ! echo "$metrics_response" | grep -q "$metric"; then
+      missing+=("$metric")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log_error "Missing ns cleanup metrics: ${missing[*]}"
+    log_error "Metrics output: $metrics_response"
+    return 1
+  fi
+
+  log_verbose "ns cleanup metrics verified: all expected metrics present"
+}
+
 cleanup_agent() {
   kubectl delete -f deploy/kubernetes/reaper-agent.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   docker exec "$NODE_ID" rm -rf /run/reaper/stale-gc-test >> "$LOG_FILE" 2>&1 || true
@@ -2396,6 +2511,8 @@ cleanup_agent() {
   docker exec "$NODE_ID" rm -rf /run/reaper/overlay/reaper-gc-test /run/reaper/overlay/reaper-gc-named /run/reaper/overlay/reaper-gc-running >> "$LOG_FILE" 2>&1 || true
   docker exec "$NODE_ID" rm -rf /run/reaper/merged/reaper-gc-test /run/reaper/merged/reaper-gc-named /run/reaper/merged/reaper-gc-running >> "$LOG_FILE" 2>&1 || true
   docker exec "$NODE_ID" rm -f /run/reaper/ns/reaper-gc-test /run/reaper/ns/reaper-gc-named /run/reaper/ns/reaper-gc-running >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -f /run/reaper/ns/stale-ns-test /run/reaper/ns/ns-protect-test >> "$LOG_FILE" 2>&1 || true
+  docker exec "$NODE_ID" rm -rf /run/reaper/fake-ns-protect >> "$LOG_FILE" 2>&1 || true
   docker exec "$NODE_ID" rm -f /run/reaper/ns/reaper-gc-named--my-group >> "$LOG_FILE" 2>&1 || true
   docker exec "$NODE_ID" rm -f /run/reaper/overlay-reaper-gc-test.lock /run/reaper/overlay-reaper-gc-named.lock /run/reaper/overlay-reaper-gc-running.lock >> "$LOG_FILE" 2>&1 || true
   docker exec "$NODE_ID" rm -f /run/reaper/overlay-reaper-gc-named--my-group.lock >> "$LOG_FILE" 2>&1 || true
@@ -2435,6 +2552,9 @@ phase_agent_tests() {
   run_test test_agent_overlay_gc_named_groups "Agent overlay GC named groups" --hard-fail
   run_test test_agent_overlay_gc_preserves_active "Agent overlay GC preserves active namespaces" --hard-fail
   run_test test_agent_overlay_gc_skips_running_containers "Agent overlay GC skips running containers" --hard-fail
+  run_test test_agent_ns_cleanup_metrics "Agent ns cleanup metrics"    --hard-fail
+  run_test test_agent_ns_cleanup_stale_file "Agent ns cleanup stale file" --hard-fail
+  run_test test_agent_ns_cleanup_preserves_active "Agent ns cleanup preserves active" --hard-fail
 
   # Cleanup agent resources
   cleanup_agent

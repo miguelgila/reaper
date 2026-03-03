@@ -35,6 +35,10 @@ struct MetricsInner {
     overlay_gc_runs_total: Counter,
     overlay_gc_cleaned_total: Counter,
     overlay_namespaces: Gauge,
+
+    // Namespace cleanup metrics
+    ns_cleanup_runs_total: Counter,
+    ns_cleaned_total: Counter,
 }
 
 impl MetricsState {
@@ -50,6 +54,8 @@ impl MetricsState {
         let overlay_gc_runs_total = Counter::default();
         let overlay_gc_cleaned_total = Counter::default();
         let overlay_namespaces = Gauge::default();
+        let ns_cleanup_runs_total = Counter::default();
+        let ns_cleaned_total = Counter::default();
 
         registry.register(
             "reaper_containers_created",
@@ -96,6 +102,16 @@ impl MetricsState {
             "Current number of on-disk overlay namespace directories",
             overlay_namespaces.clone(),
         );
+        registry.register(
+            "reaper_agent_ns_cleanup_runs_total",
+            "Total number of mount namespace cleanup passes",
+            ns_cleanup_runs_total.clone(),
+        );
+        registry.register(
+            "reaper_agent_ns_cleaned_total",
+            "Total number of stale namespace bind-mount files removed",
+            ns_cleaned_total.clone(),
+        );
 
         Self {
             inner: Arc::new(MetricsInner {
@@ -109,6 +125,8 @@ impl MetricsState {
                 overlay_gc_runs_total,
                 overlay_gc_cleaned_total,
                 overlay_namespaces,
+                ns_cleanup_runs_total,
+                ns_cleaned_total,
             }),
         }
     }
@@ -143,6 +161,16 @@ impl MetricsState {
     pub fn inc_overlay_gc_cleaned(&self, count: u64) {
         for _ in 0..count {
             self.inner.overlay_gc_cleaned_total.inc();
+        }
+    }
+
+    pub fn inc_ns_cleanup_runs(&self) {
+        self.inner.ns_cleanup_runs_total.inc();
+    }
+
+    pub fn inc_ns_cleaned(&self, count: u64) {
+        for _ in 0..count {
+            self.inner.ns_cleaned_total.inc();
         }
     }
 
