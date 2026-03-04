@@ -85,7 +85,7 @@ jobs:
           verbose: true
 
   build-musl:
-    name: Build musl binaries
+    name: Build and Cache
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -110,7 +110,7 @@ jobs:
           retention-days: 1
 
   kind-integration:
-    name: Kind Integration Tests
+    name: kind-integration
     needs: build-musl
     runs-on: ubuntu-latest
     steps:
