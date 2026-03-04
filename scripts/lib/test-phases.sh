@@ -42,6 +42,11 @@ phase_setup() {
     setup_args+=(--kind-config "scripts/kind-config.yaml")
   fi
 
+  # In CI with --skip-cargo, binaries are pre-built artifacts — skip compilation
+  if [[ -n "${CI:-}" ]] && $SKIP_CARGO; then
+    setup_args+=(--skip-build)
+  fi
+
   log_status "Running setup-playground.sh for cluster '$CLUSTER_NAME'..."
   ./scripts/setup-playground.sh "${setup_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
     log_error "Cluster setup failed"
@@ -61,9 +66,11 @@ phase_setup() {
 
   # Build and load reaper-agent image (required for Phase 4a tests)
   log_status "Building reaper-agent image for Kind..."
-  "$SCRIPT_DIR/build-agent-image.sh" \
-    --cluster-name "$CLUSTER_NAME" \
-    --quiet 2>&1 | tee -a "$LOG_FILE" || {
+  local agent_args=(--cluster-name "$CLUSTER_NAME" --quiet)
+  if [[ -n "${CI:-}" ]]; then
+    agent_args+=(--skip-build)
+  fi
+  "$SCRIPT_DIR/build-agent-image.sh" "${agent_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
     log_error "reaper-agent image build failed"
     tail -50 "$LOG_FILE" >&2
     exit 1
@@ -84,9 +91,27 @@ phase_readiness() {
   ci_group_start "Phase 3: Kubernetes readiness"
 
   # Node readiness and RuntimeClass are already verified by setup-playground.sh.
-  # Here we handle test-specific readiness: stability buffer, ServiceAccount, stale pods.
+  # Here we handle test-specific readiness: functional probe, ServiceAccount, stale pods.
 
-  sleep 30  # stability buffer for CI test reliability
+  # Functional readiness check: run a trivial Reaper pod instead of a blind sleep
+  log_status "Verifying Reaper runtime is functional..."
+  kubectl run reaper-readiness-probe \
+    --image=busybox --restart=Never \
+    --overrides='{"spec":{"runtimeClassName":"reaper-v2"}}' \
+    -- echo "ready" >> "$LOG_FILE" 2>&1
+  for i in $(seq 1 60); do
+    phase=$(kubectl get pod reaper-readiness-probe -o jsonpath='{.status.phase}' 2>/dev/null || echo "Pending")
+    if [[ "$phase" == "Succeeded" ]]; then
+      log_status "Reaper readiness probe passed."
+      break
+    elif [[ "$phase" == "Failed" ]]; then
+      log_error "Reaper readiness probe failed"
+      kubectl logs reaper-readiness-probe >> "$LOG_FILE" 2>&1 || true
+      break
+    fi
+    sleep 2
+  done
+  kubectl delete pod reaper-readiness-probe --ignore-not-found >> "$LOG_FILE" 2>&1 || true
 
   # Wait for default service account
   log_status "Waiting for default ServiceAccount..."
@@ -107,6 +132,7 @@ phase_readiness() {
     reaper-overlay-writer reaper-overlay-reader reaper-exec-test \
     reaper-ovname-writer reaper-ovname-reader reaper-ovname-same \
     reaper-dns-annot-default reaper-dns-annot-host \
+    reaper-readiness-probe \
     reaper-annot-combined reaper-annot-invalid reaper-annot-unknown \
     reaper-uid-gid-test reaper-privdrop-test \
     reaper-configmap-vol reaper-secret-vol reaper-emptydir-vol reaper-hostpath-vol \
