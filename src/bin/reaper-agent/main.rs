@@ -8,6 +8,7 @@ mod config_sync;
 mod gc;
 mod health;
 mod metrics;
+mod node_condition;
 mod overlay_gc;
 
 // config.rs is available as shared module but not needed by the agent
@@ -95,6 +96,26 @@ struct Cli {
         env = "REAPER_AGENT_RUNTIME_PATH"
     )]
     runtime_path: String,
+
+    /// Enable node condition reporting (patch Node with ReaperReady condition)
+    #[arg(
+        long,
+        default_value = "true",
+        env = "REAPER_AGENT_NODE_CONDITION_ENABLED"
+    )]
+    node_condition_enabled: bool,
+
+    /// Node condition update interval in seconds
+    #[arg(
+        long,
+        default_value = "30",
+        env = "REAPER_AGENT_NODE_CONDITION_INTERVAL"
+    )]
+    node_condition_interval: u64,
+
+    /// Node name (set via downward API). Required when node condition reporting is enabled.
+    #[arg(long, env = "NODE_NAME")]
+    node_name: Option<String>,
 }
 
 #[tokio::main]
@@ -155,6 +176,38 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // Spawn node condition reporting loop (patch Node with ReaperReady condition)
+    let node_condition_handle = if cli.node_condition_enabled {
+        match &cli.node_name {
+            Some(name) => {
+                let nc_node = name.clone();
+                let nc_shim = cli.shim_path.clone();
+                let nc_runtime = cli.runtime_path.clone();
+                let nc_state_dir = cli.state_dir.clone();
+                let nc_metrics = metrics_state.clone();
+                let nc_interval = cli.node_condition_interval;
+                Some(tokio::spawn(async move {
+                    node_condition::node_condition_loop(
+                        &nc_node,
+                        &nc_shim,
+                        &nc_runtime,
+                        &nc_state_dir,
+                        nc_interval,
+                        &nc_metrics,
+                    )
+                    .await;
+                }))
+            }
+            None => {
+                error!("node condition reporting enabled but NODE_NAME not set; disable with --node-condition-enabled=false or set NODE_NAME via downward API");
+                None
+            }
+        }
+    } else {
+        info!("node condition reporting disabled via --node-condition-enabled=false");
+        None
+    };
+
     // Spawn overlay GC loop (reconcile overlay dirs against K8s namespaces)
     let overlay_gc_handle = if cli.overlay_gc_enabled {
         let ogc_state_dir = cli.state_dir.clone();
@@ -197,6 +250,9 @@ async fn main() -> anyhow::Result<()> {
     health_handle.abort();
     sync_handle.abort();
     server_handle.abort();
+    if let Some(h) = node_condition_handle {
+        h.abort();
+    }
     if let Some(h) = overlay_gc_handle {
         h.abort();
     }

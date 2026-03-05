@@ -38,7 +38,12 @@ struct MetricsInner {
 
     // Namespace cleanup metrics
     ns_cleanup_runs_total: Counter,
+    #[allow(dead_code)] // used on Linux only (run_ns_cleanup)
     ns_cleaned_total: Counter,
+
+    // Node condition reporting metrics
+    node_condition_updates_total: Counter,
+    node_condition_healthy: Gauge,
 }
 
 impl MetricsState {
@@ -56,6 +61,8 @@ impl MetricsState {
         let overlay_namespaces = Gauge::default();
         let ns_cleanup_runs_total = Counter::default();
         let ns_cleaned_total = Counter::default();
+        let node_condition_updates_total = Counter::default();
+        let node_condition_healthy = Gauge::default();
 
         registry.register(
             "reaper_containers_created",
@@ -112,6 +119,16 @@ impl MetricsState {
             "Total number of stale namespace bind-mount files removed",
             ns_cleaned_total.clone(),
         );
+        registry.register(
+            "reaper_agent_node_condition_updates_total",
+            "Total number of node condition patch operations",
+            node_condition_updates_total.clone(),
+        );
+        registry.register(
+            "reaper_agent_node_condition_healthy",
+            "Whether the last node condition patch reported healthy (1=healthy, 0=unhealthy)",
+            node_condition_healthy.clone(),
+        );
 
         Self {
             inner: Arc::new(MetricsInner {
@@ -127,6 +144,8 @@ impl MetricsState {
                 overlay_namespaces,
                 ns_cleanup_runs_total,
                 ns_cleaned_total,
+                node_condition_updates_total,
+                node_condition_healthy,
             }),
         }
     }
@@ -168,10 +187,21 @@ impl MetricsState {
         self.inner.ns_cleanup_runs_total.inc();
     }
 
+    #[allow(dead_code)] // used on Linux only (run_ns_cleanup)
     pub fn inc_ns_cleaned(&self, count: u64) {
         for _ in 0..count {
             self.inner.ns_cleaned_total.inc();
         }
+    }
+
+    pub fn inc_node_condition_updates(&self) {
+        self.inner.node_condition_updates_total.inc();
+    }
+
+    pub fn set_node_condition_healthy(&self, healthy: bool) {
+        self.inner
+            .node_condition_healthy
+            .set(if healthy { 1 } else { 0 });
     }
 
     pub fn set_overlay_namespaces(&self, count: u64) {

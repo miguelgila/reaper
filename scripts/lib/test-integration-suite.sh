@@ -2504,6 +2504,136 @@ test_agent_ns_cleanup_metrics() {
   log_verbose "ns cleanup metrics verified: all expected metrics present"
 }
 
+test_agent_node_condition_set() {
+  # The agent should have patched the node with a ReaperReady condition.
+  # Wait for the condition to appear (initial patch happens at startup).
+  local node_name
+  node_name=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+  if [[ -z "$node_name" ]]; then
+    log_error "Could not determine node name"
+    return 1
+  fi
+
+  local max_wait=60
+  for i in $(seq 1 "$max_wait"); do
+    local condition_status
+    condition_status=$(kubectl get node "$node_name" \
+      -o jsonpath='{.status.conditions[?(@.type=="ReaperReady")].status}' 2>/dev/null || true)
+
+    if [[ "$condition_status" == "True" ]]; then
+      log_verbose "ReaperReady condition is True on node $node_name"
+      return 0
+    fi
+    sleep 1
+  done
+
+  log_error "ReaperReady condition not set to True within ${max_wait}s"
+  kubectl get node "$node_name" -o jsonpath='{.status.conditions}' >> "$LOG_FILE" 2>&1 || true
+  return 1
+}
+
+test_agent_node_condition_reflects_health() {
+  # Temporarily rename the shim binary to make health check fail,
+  # then verify the condition transitions to False, then restore and verify True.
+  local node_name
+  node_name=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+  if [[ -z "$node_name" ]]; then
+    log_error "Could not determine node name"
+    return 1
+  fi
+
+  # Break the shim binary (rename it)
+  docker exec "$NODE_ID" mv /usr/local/bin/containerd-shim-reaper-v2 \
+    /usr/local/bin/containerd-shim-reaper-v2.bak >> "$LOG_FILE" 2>&1
+
+  # Wait for condition to flip to False (node condition interval = 30s in defaults,
+  # but the agent re-evaluates health each cycle)
+  local max_wait=90
+  local flipped_false=false
+  for i in $(seq 1 "$max_wait"); do
+    local condition_status
+    condition_status=$(kubectl get node "$node_name" \
+      -o jsonpath='{.status.conditions[?(@.type=="ReaperReady")].status}' 2>/dev/null || true)
+
+    if [[ "$condition_status" == "False" ]]; then
+      log_verbose "ReaperReady condition flipped to False after shim removal"
+      flipped_false=true
+      break
+    fi
+    sleep 1
+  done
+
+  # Restore the shim binary immediately
+  docker exec "$NODE_ID" mv /usr/local/bin/containerd-shim-reaper-v2.bak \
+    /usr/local/bin/containerd-shim-reaper-v2 >> "$LOG_FILE" 2>&1
+
+  if ! $flipped_false; then
+    log_error "ReaperReady condition did not flip to False within ${max_wait}s after shim removal"
+    return 1
+  fi
+
+  # Wait for condition to return to True
+  for i in $(seq 1 "$max_wait"); do
+    local condition_status
+    condition_status=$(kubectl get node "$node_name" \
+      -o jsonpath='{.status.conditions[?(@.type=="ReaperReady")].status}' 2>/dev/null || true)
+
+    if [[ "$condition_status" == "True" ]]; then
+      log_verbose "ReaperReady condition returned to True after shim restore"
+      return 0
+    fi
+    sleep 1
+  done
+
+  log_error "ReaperReady condition did not return to True within ${max_wait}s after shim restore"
+  return 1
+}
+
+test_agent_node_condition_metrics() {
+  local agent_pod
+  agent_pod=$(kubectl get pods -n reaper-system -l app.kubernetes.io/name=reaper-agent \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+  if [[ -z "$agent_pod" ]]; then
+    log_error "No reaper-agent pod found"
+    return 1
+  fi
+
+  # Use port-forward to reach the metrics endpoint
+  local local_port=19104
+  kubectl port-forward -n reaper-system "$agent_pod" ${local_port}:9100 >> "$LOG_FILE" 2>&1 &
+  local pf_pid=$!
+  sleep 2
+
+  local metrics_response
+  metrics_response=$(curl -sf http://localhost:${local_port}/metrics 2>/dev/null || echo "FAILED")
+
+  kill "$pf_pid" 2>/dev/null || true
+  wait "$pf_pid" 2>/dev/null || true
+
+  if [[ "$metrics_response" == "FAILED" ]]; then
+    log_error "Failed to fetch metrics from agent"
+    return 1
+  fi
+
+  local missing=()
+  for metric in reaper_agent_node_condition_updates_total reaper_agent_node_condition_healthy; do
+    if ! echo "$metrics_response" | grep -q "$metric"; then
+      missing+=("$metric")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log_error "Missing node condition metrics: ${missing[*]}"
+    log_error "Metrics output: $metrics_response"
+    return 1
+  fi
+
+  log_verbose "node condition metrics verified: all expected metrics present"
+}
+
 cleanup_agent() {
   kubectl delete -f deploy/kubernetes/reaper-agent.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   docker exec "$NODE_ID" rm -rf /run/reaper/stale-gc-test >> "$LOG_FILE" 2>&1 || true
@@ -2555,6 +2685,9 @@ phase_agent_tests() {
   run_test test_agent_ns_cleanup_metrics "Agent ns cleanup metrics"    --hard-fail
   run_test test_agent_ns_cleanup_stale_file "Agent ns cleanup stale file" --hard-fail
   run_test test_agent_ns_cleanup_preserves_active "Agent ns cleanup preserves active" --hard-fail
+  run_test test_agent_node_condition_set "Agent node condition ReaperReady set" --hard-fail
+  run_test test_agent_node_condition_reflects_health "Agent node condition reflects health" --hard-fail
+  run_test test_agent_node_condition_metrics "Agent node condition metrics" --hard-fail
 
   # Cleanup agent resources
   cleanup_agent
