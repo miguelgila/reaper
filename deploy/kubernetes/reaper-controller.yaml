@@ -1,0 +1,90 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reaper-controller
+  namespace: reaper-system
+  labels:
+    app.kubernetes.io/name: reaper-controller
+    app.kubernetes.io/part-of: reaper
+    app.kubernetes.io/component: controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: reaper-controller
+  labels:
+    app.kubernetes.io/name: reaper-controller
+    app.kubernetes.io/part-of: reaper
+    app.kubernetes.io/component: controller
+rules:
+  # ReaperPod CRD access
+  - apiGroups: ["reaper.io"]
+    resources: ["reaperpods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["reaper.io"]
+    resources: ["reaperpods/status"]
+    verbs: ["get", "patch", "update"]
+  # Pod management (create pods from ReaperPod specs)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Events (record events on ReaperPod resources)
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: reaper-controller
+  labels:
+    app.kubernetes.io/name: reaper-controller
+    app.kubernetes.io/part-of: reaper
+    app.kubernetes.io/component: controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: reaper-controller
+subjects:
+  - kind: ServiceAccount
+    name: reaper-controller
+    namespace: reaper-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reaper-controller
+  namespace: reaper-system
+  labels:
+    app.kubernetes.io/name: reaper-controller
+    app.kubernetes.io/part-of: reaper
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reaper-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: reaper-controller
+        app.kubernetes.io/part-of: reaper
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: reaper-controller
+      containers:
+        - name: controller
+          image: ghcr.io/miguelgila/reaper-controller:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
