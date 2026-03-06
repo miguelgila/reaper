@@ -77,6 +77,19 @@ phase_setup() {
   }
   log_status "reaper-agent image loaded into Kind."
 
+  # Build and load reaper-controller image (required for Phase 4b tests)
+  log_status "Building reaper-controller image for Kind..."
+  local controller_args=(--cluster-name "$CLUSTER_NAME" --quiet)
+  if [[ -n "${CI:-}" ]]; then
+    controller_args+=(--skip-build)
+  fi
+  "$SCRIPT_DIR/build-controller-image.sh" "${controller_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
+    log_error "reaper-controller image build failed"
+    tail -50 "$LOG_FILE" >&2
+    exit 1
+  }
+  log_status "reaper-controller image loaded into Kind."
+
   log_status "Infrastructure setup complete."
   ci_group_end
 }

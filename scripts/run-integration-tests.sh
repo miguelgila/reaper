@@ -125,6 +125,13 @@ main() {
   fi
 
   phase_agent_tests
+
+  if ! $AGENT_ONLY; then
+    phase_controller_tests
+  else
+    log_status "Skipping controller tests (--agent-only)."
+  fi
+
   phase_summary
 }
 
