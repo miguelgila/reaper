@@ -2725,6 +2725,9 @@ test_controller_crd_install() {
 }
 
 test_controller_deployment() {
+  # Ensure the namespace exists (agent setup creates it, but --crd-only skips that)
+  kubectl create namespace reaper-system --dry-run=client -o yaml | kubectl apply -f - >> "$LOG_FILE" 2>&1
+
   # Deploy the controller
   kubectl apply -f deploy/kubernetes/reaper-controller.yaml >> "$LOG_FILE" 2>&1
 
