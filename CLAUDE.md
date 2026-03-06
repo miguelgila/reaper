@@ -190,13 +190,18 @@ reaper/
 ├── src/
 │   ├── config.rs                    # Shared config file loader (/etc/reaper/reaper.conf)
 │   ├── annotations.rs               # Shared pod annotation parsing and validation
+│   ├── crds/                        # ReaperPod CRD types (feature-gated: controller)
 │   └── bin/
 │       ├── containerd-shim-reaper-v2/
 │       │   └── main.rs              # Shim implementation (ttrpc server, Task trait)
-│   └── reaper-runtime/
-│       ├── main.rs              # OCI runtime CLI (fork-first architecture)
-│       ├── state.rs             # State persistence (/run/reaper/<id>/)
-│       └── overlay.rs           # Overlay filesystem (Linux-only)
+│       ├── reaper-controller/       # CRD controller binary
+│       │   ├── main.rs              # Entry point, CRD watcher setup
+│       │   ├── reconciler.rs        # ReaperPod → Pod reconciliation
+│       │   └── pod_builder.rs       # ReaperPod spec → Pod spec translation
+│       └── reaper-runtime/
+│           ├── main.rs              # OCI runtime CLI (fork-first architecture)
+│           ├── state.rs             # State persistence (/run/reaper/<id>/)
+│           └── overlay.rs           # Overlay filesystem (Linux-only)
 ├── tests/                       # Integration tests
 │   ├── integration_basic_binary.rs
 │   ├── integration_io.rs        # FIFO stdout/stderr
@@ -213,15 +218,21 @@ reaper/
 │   ├── 05-kubemix/              # Jobs, DaemonSets, and Deployments on 10-node cluster
 │   ├── 06-ansible-jobs/         # Sequential Jobs: install Ansible, then run playbook
 │   ├── 07-ansible-complex/     # DaemonSet bootstrap + role-based Ansible playbooks
-│   └── 08-mix-container-runtime-engines/  # Mixed runtimes: OpenLDAP (default) + SSSD (Reaper)
+│   ├── 08-mix-container-runtime-engines/  # Mixed runtimes: OpenLDAP (default) + SSSD (Reaper)
+│   └── 09-reaperpod/                     # ReaperPod CRD: simplified Reaper-native workloads
 ├── scripts/
-│   ├── run-integration-tests.sh # Full integration test suite
-│   └── install-reaper.sh        # Installation script (Ansible wrapper)
+│   ├── run-integration-tests.sh   # Full integration test suite
+│   ├── install-reaper.sh          # Installation script (Ansible wrapper)
+│   ├── build-controller-image.sh  # Build controller Docker image for Kind
+│   └── generate-crds.sh           # Generate CRD YAML from Rust types
 ├── deploy/
 │   ├── ansible/
 │   │   └── install-reaper.yml   # Deployment playbook
 │   └── kubernetes/
-│       └── runtimeclass.yaml    # RuntimeClass definition
+│       ├── runtimeclass.yaml    # RuntimeClass definition
+│       ├── reaper-controller.yaml # Controller Deployment, SA, RBAC
+│       └── crds/
+│           └── reaperpods.reaper.io.yaml # ReaperPod CRD
 └── docs/
     ├── SHIMV2_DESIGN.md         # Shim v2 protocol implementation
     ├── SHIM_ARCHITECTURE.md     # Architecture deep-dive
@@ -287,14 +298,15 @@ See [MEMORY.md](.claude/projects/-Users-miguelgi-Documents-CODE-Explorations-rea
 
 ## Integration Test Structure
 
-The integration test suite ([scripts/run-integration-tests.sh](scripts/run-integration-tests.sh)) has four phases:
+The integration test suite ([scripts/run-integration-tests.sh](scripts/run-integration-tests.sh)) has five phases:
 
 1. **Phase 1**: Rust cargo tests (unit and integration tests)
 2. **Phase 2**: Infrastructure setup (Kind cluster, build binaries, install Reaper via Ansible)
 3. **Phase 3**: Kubernetes readiness checks (API server, RuntimeClass, ServiceAccount)
 4. **Phase 4**: Integration tests (DNS, overlay, process cleanup, exec support, etc.)
+5. **Phase 4b**: Controller tests (ReaperPod CRD lifecycle, status mirroring, exit codes, annotations, GC)
 
-All tests must pass for the suite to succeed.
+Use `--crd-only` or `--agent-only` to run subsets. All tests must pass for the suite to succeed.
 
 ## Development Workflow
 

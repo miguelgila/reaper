@@ -251,6 +251,7 @@ Using `kube::runtime::Controller` in `src/bin/reaper-controller/reconciler.rs`:
 **Infrastructure:**
 - `scripts/build-controller-image.sh` — matches agent pattern (--cluster-name, --skip-build, --quiet)
 - Controller image built and loaded into Kind during Phase 2 setup
+- `reaper-system` namespace created idempotently in `test_controller_deployment` (required for `--crd-only` runs that skip agent setup)
 
 ### Step 10: Examples — DONE
 

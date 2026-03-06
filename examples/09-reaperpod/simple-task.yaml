@@ -3,6 +3,7 @@
 # Prerequisites:
 #   - Reaper installed on target nodes
 #   - CRD installed: kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml
+#   - Namespace created: kubectl create namespace reaper-system
 #   - Controller running: kubectl apply -f deploy/kubernetes/reaper-controller.yaml
 #
 # Usage:
