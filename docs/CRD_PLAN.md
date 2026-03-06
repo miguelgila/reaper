@@ -232,19 +232,25 @@ Using `kube::runtime::Controller` in `src/bin/reaper-controller/reconciler.rs`:
 - `Dockerfile.controller` — multi-stage: `rust-musl-cross` build → `distroless/static-debian12:nonroot`
 - `scripts/build-controller-image.sh` — detects arch, builds image, optional `--load-kind` flag
 
-### Step 9: Integration tests — TODO
+### Step 9: Integration tests — DONE
 
-**Unit tests (cargo test) — DONE:**
+**Unit tests (cargo test):**
 - 9 tests in pod_builder covering all field combinations
 - All pass, clippy clean
 
-**Integration tests (Kind) — TODO:**
-- Install CRD, deploy controller
-- Create a ReaperPod, verify Pod is created with correct spec
-- Verify status is mirrored (phase, nodeName, exitCode)
-- Delete ReaperPod, verify Pod is garbage collected
-- Test with volumes, env vars, node selector
-- Add to `scripts/run-integration-tests.sh` as Phase 4b
+**Integration tests (Kind) — Phase 4b in `scripts/run-integration-tests.sh`:**
+- `test_controller_crd_install` — CRD installation and establishment
+- `test_controller_deployment` — Controller Deployment ready
+- `test_controller_simple_reaperpod` — Simple ReaperPod creates Pod with runtimeClassName
+- `test_controller_status_mirroring` — Phase, podName, nodeName mirrored to status
+- `test_controller_exit_code` — Exit code 42 propagated to ReaperPod status
+- `test_controller_reaperpod_annotations` — dnsMode/overlayName translated to pod annotations
+- `test_controller_kubectl_get_columns` — Custom printer columns (Phase, Node, Exit Code)
+- `test_controller_gc_on_delete` — Pod garbage collected when ReaperPod deleted
+
+**Infrastructure:**
+- `scripts/build-controller-image.sh` — matches agent pattern (--cluster-name, --skip-build, --quiet)
+- Controller image built and loaded into Kind during Phase 2 setup
 
 ### Step 10: Examples — DONE
 
