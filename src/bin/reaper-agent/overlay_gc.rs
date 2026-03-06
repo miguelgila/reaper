@@ -142,6 +142,7 @@ fn try_lock_nonblocking(lock_path: &Path) -> Option<nix::fcntl::Flock<std::fs::F
 /// Parse a namespace filename into (k8s_namespace, optional_overlay_name).
 /// `"default"` → `("default", None)`
 /// `"default--my-group"` → `("default", Some("my-group"))`
+#[cfg(target_os = "linux")]
 fn parse_ns_filename(name: &str) -> (&str, Option<&str>) {
     match name.split_once("--") {
         Some((ns, group)) => (ns, Some(group)),
@@ -151,6 +152,7 @@ fn parse_ns_filename(name: &str) -> (&str, Option<&str>) {
 
 /// Check whether ANY container state directory has status "running" with a live PID,
 /// regardless of namespace. Used for the legacy `shared-mnt-ns` file.
+#[cfg(target_os = "linux")]
 fn has_any_running_container(state_dir: &str) -> bool {
     let base = Path::new(state_dir);
     let entries = match fs::read_dir(base) {

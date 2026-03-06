@@ -29,9 +29,10 @@ k8s-openapi = { version = "0.24", features = ["v1_31"], optional = true }
 prometheus-client = { version = "0.23", optional = true }
 axum = { version = "0.8", optional = true }
 futures = { version = "0.3", optional = true }
+chrono = { version = "0.4", optional = true }
 
 [features]
-agent = ["kube", "k8s-openapi", "prometheus-client", "axum", "futures"]
+agent = ["kube", "k8s-openapi", "prometheus-client", "axum", "futures", "chrono"]
 
 [dev-dependencies]
 tempfile = "3"
