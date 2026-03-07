@@ -25,3 +25,4 @@ List of tasks to do, not ordered in any specific way.
 - [x] reaper-agent Phase 2: Node condition reporting — patch Node object with `ReaperReady` condition
 - [x] reaper-agent Phase 2: Mount namespace cleanup — detect and unmount stale `/run/reaper/ns/*` bind-mounts
 - [ ] Fix known bugs documented in [docs/BUGS.md](BUGS.md)
+- [ ] Optimize CI integration test runtime: agent GC tests with long sleeps (waiting for GC cycles) could be parallelized or have their wait times reduced. Currently the full suite takes ~25 minutes on CI runners.
