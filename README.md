@@ -39,23 +39,15 @@ Reaper is a containerd shim that runs processes directly on the host system whil
 
 ### Playground (try it locally)
 
-Spin up a 3-node Kind cluster with Reaper pre-installed. No Rust toolchain needed.
-
-**Quickest way** — download pre-built binaries from the latest [GitHub Release](https://github.com/miguelgila/reaper/releases):
+Spin up a 3-node Kind cluster with Reaper pre-installed. Compiles inside Docker — no local Rust toolchain needed.
 
 ```bash
-# Prerequisites: Docker, kind, kubectl, ansible (pip install ansible)
-./scripts/setup-playground.sh --release
-```
-
-**Build from source** — compiles inside Docker (still no local Rust needed):
-
-```bash
+# Prerequisites: Docker, kind, kubectl, helm
 ./scripts/setup-playground.sh
 ```
 
-Both create a Kind cluster with 1 control-plane + 2 worker nodes, install the
-runtime on all nodes, and run a smoke test. Once ready, try:
+This creates a Kind cluster with 1 control-plane + 2 worker nodes, installs
+Reaper via Helm (node DaemonSet + controller + CRDs + RuntimeClass), and runs a smoke test. Once ready, try:
 
 ```bash
 kubectl run hello --rm -it --image=busybox --restart=Never \
@@ -91,25 +83,16 @@ docker run --rm -v "$(pwd)":/work -w /work \
 
 ### 1. Install Reaper on a Kubernetes Cluster
 
-**For Kind clusters (testing/CI):**
+**Via Helm (recommended):**
 ```bash
-# Install Ansible if not already installed
-pip install ansible  # or: brew install ansible
-
-# Install to Kind cluster
-./scripts/install-reaper.sh --kind <cluster-name>
+helm upgrade --install reaper deploy/helm/reaper/ \
+  --namespace reaper-system --create-namespace \
+  --wait --timeout 120s
 ```
 
-**For production clusters:**
-```bash
-# Create inventory file (see deploy/ansible/inventory.ini.example)
-vim inventory.ini
+This installs the node DaemonSet (binary installer), CRD, controller, RuntimeClass, and RBAC — everything needed to run Reaper workloads.
 
-# Install via Ansible
-ansible-playbook -i inventory.ini deploy/ansible/install-reaper.yml
-```
-
-See [deploy/kubernetes/README.md](deploy/kubernetes/README.md) for detailed installation instructions.
+See [deploy/helm/reaper/](deploy/helm/reaper/) for chart values and configuration.
 
 ### 2. Run a Command on the Host
 
@@ -284,7 +267,7 @@ The [examples/](examples/) directory contains runnable demos, each with a `setup
 - [Docker](https://docs.docker.com/get-docker/)
 - [kind](https://kind.sigs.k8s.io/) (Kubernetes in Docker)
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
-- [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/) (`pip install ansible`)
+- [Helm](https://helm.sh/docs/intro/install/)
 
 **Local development (building from source natively):**
 - All of the above, plus [Rust](https://www.rust-lang.org/tools/install) (toolchain version pinned in `rust-toolchain.toml`)
@@ -305,7 +288,7 @@ cargo test
 
 ## Configuration
 
-Reaper reads configuration from `/etc/reaper/reaper.conf` on each node. The Ansible installer creates this file automatically. Environment variables of the same name override file values.
+Reaper reads configuration from `/etc/reaper/reaper.conf` on each node. The Helm chart creates this file automatically via the node DaemonSet init container. Environment variables of the same name override file values.
 
 ```ini
 # /etc/reaper/reaper.conf

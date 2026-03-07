@@ -31,7 +31,8 @@ phase_setup() {
   ci_group_start "Phase 2: Infrastructure setup"
 
   # Delegate to the shared playground setup script.
-  # It handles: cluster creation, binary build, Ansible install, readiness, smoke test.
+  # It handles: cluster creation, image builds (node + controller),
+  # Helm install (CRD, RuntimeClass, DaemonSet, controller), readiness, smoke test.
   local setup_args=(
     --cluster-name "$CLUSTER_NAME"
     --quiet
@@ -64,7 +65,7 @@ phase_setup() {
   # Capture NODE_ID for diagnostics (used by cleanup trap and test functions)
   NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
 
-  # Build and load reaper-agent image (required for Phase 4a tests)
+  # Build and load reaper-agent image (required for Phase 4a agent tests)
   log_status "Building reaper-agent image for Kind..."
   local agent_args=(--cluster-name "$CLUSTER_NAME" --quiet)
   if [[ -n "${CI:-}" ]]; then
@@ -76,19 +77,6 @@ phase_setup() {
     exit 1
   }
   log_status "reaper-agent image loaded into Kind."
-
-  # Build and load reaper-controller image (required for Phase 4b tests)
-  log_status "Building reaper-controller image for Kind..."
-  local controller_args=(--cluster-name "$CLUSTER_NAME" --quiet)
-  if [[ -n "${CI:-}" ]]; then
-    controller_args+=(--skip-build)
-  fi
-  "$SCRIPT_DIR/build-controller-image.sh" "${controller_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
-    log_error "reaper-controller image build failed"
-    tail -50 "$LOG_FILE" >&2
-    exit 1
-  }
-  log_status "reaper-controller image loaded into Kind."
 
   log_status "Infrastructure setup complete."
   ci_group_end

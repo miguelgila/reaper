@@ -2698,7 +2698,7 @@ phase_agent_tests() {
 # ---------------------------------------------------------------------------
 
 test_controller_crd_install() {
-  # Install the ReaperPod CRD
+  # CRD is installed by Helm during setup. Apply idempotently in case of --crd-only reruns.
   kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml >> "$LOG_FILE" 2>&1
 
   # Verify CRD is established
@@ -2715,21 +2715,21 @@ test_controller_crd_install() {
     return 1
   }
 
-  # Verify we can list (empty) ReaperPods
-  local count
-  count=$(kubectl get reaperpods --all-namespaces --no-headers 2>/dev/null | wc -l | tr -d ' ')
-  [[ "$count" -eq 0 ]] || {
-    log_error "Expected 0 ReaperPods, got $count"
+  # Verify we can list ReaperPods
+  kubectl get reaperpods --all-namespaces --no-headers >> "$LOG_FILE" 2>&1 || {
+    log_error "Cannot list ReaperPods"
     return 1
   }
 }
 
 test_controller_deployment() {
-  # Ensure the namespace exists (agent setup creates it, but --crd-only skips that)
+  # Controller is deployed by Helm during setup. Ensure it's ready (idempotent).
   kubectl create namespace reaper-system --dry-run=client -o yaml | kubectl apply -f - >> "$LOG_FILE" 2>&1
 
-  # Deploy the controller
-  kubectl apply -f deploy/kubernetes/reaper-controller.yaml >> "$LOG_FILE" 2>&1
+  # If the controller deployment doesn't exist (e.g., --crd-only without Helm), apply it
+  if ! kubectl get deployment reaper-controller -n reaper-system &>/dev/null; then
+    kubectl apply -f deploy/kubernetes/reaper-controller.yaml >> "$LOG_FILE" 2>&1
+  fi
 
   # Wait for the controller pod to be ready
   local ready=""

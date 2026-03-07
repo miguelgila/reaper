@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: reaper-node
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "reaper.node.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reaper-node
+  template:
+    metadata:
+      labels:
+        {{- include "reaper.node.labels" . | nindent 8 }}
+    spec:
+      hostPID: true
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: install
+          image: "{{ .Values.node.image.repository }}:{{ .Values.node.image.tag }}"
+          imagePullPolicy: {{ .Values.node.image.pullPolicy }}
+          command: ["/install.sh"]
+          env:
+            - name: INSTALL_PATH
+              value: {{ .Values.node.installPath }}
+            - name: CONFIGURE_CONTAINERD
+              value: "{{ .Values.node.configureContainerd }}"
+            - name: REAPER_DNS_MODE
+              value: {{ .Values.config.dnsMode }}
+            - name: REAPER_RUNTIME_LOG
+              value: {{ .Values.config.runtimeLog }}
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: host-bin
+              mountPath: /host{{ .Values.node.installPath }}
+            - name: host-etc
+              mountPath: /host/etc
+            - name: host-run
+              mountPath: /host/run
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+      volumes:
+        - name: host-bin
+          hostPath:
+            path: {{ .Values.node.installPath }}
+            type: DirectoryOrCreate
+        - name: host-etc
+          hostPath:
+            path: /etc
+            type: Directory
+        - name: host-run
+          hostPath:
+            path: /run
+            type: DirectoryOrCreate
