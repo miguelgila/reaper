@@ -28,6 +28,7 @@ KIND_CONFIG=""          # empty = generate default 3-node config
 SKIP_BUILD=false
 QUIET=false
 CLEANUP=false
+WITH_CONTROLLER=false
 RELEASE_VERSION=""      # empty = build from source; "latest" or "vX.Y.Z" = download
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,6 +105,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_BUILD=true
       shift
       ;;
+    --with-controller)
+      WITH_CONTROLLER=true
+      shift
+      ;;
     --quiet)
       QUIET=true
       shift
@@ -119,6 +124,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --cluster-name <name>   Cluster name (default: reaper-playground)"
       echo "  --kind-config <path>    Custom Kind config file (default: 3-node cluster)"
       echo "  --skip-build            Skip binary cross-compilation (when building from source)"
+      echo "  --with-controller       Install ReaperPod CRD and deploy reaper-controller"
       echo "  --quiet                 Suppress output (for scripted use)"
       echo "  -h, --help              Show this help"
       echo ""
@@ -404,6 +410,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Optional: ReaperPod CRD + controller
+# ---------------------------------------------------------------------------
+if $WITH_CONTROLLER; then
+  info "Installing ReaperPod CRD and controller" | if_log
+
+  # Install CRD
+  kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml >> "$LOG_FILE" 2>&1
+
+  # Wait for CRD to be established
+  for i in $(seq 1 15); do
+    established=$(kubectl get crd reaperpods.reaper.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)
+    if [[ "$established" == "True" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ "$established" == "True" ]] || fail "CRD reaperpods.reaper.io not established after 15s"
+  ok "ReaperPod CRD installed." | if_log
+
+  # Create namespace and deploy controller
+  kubectl create namespace reaper-system --dry-run=client -o yaml | kubectl apply -f - >> "$LOG_FILE" 2>&1
+
+  # Build and load controller image
+  if [[ -x "$REPO_ROOT/scripts/build-controller-image.sh" ]]; then
+    if $QUIET; then
+      "$REPO_ROOT/scripts/build-controller-image.sh" --cluster-name "$CLUSTER_NAME" --quiet >> "$LOG_FILE" 2>&1 || \
+        fail "Controller image build failed. See $LOG_FILE"
+    else
+      "$REPO_ROOT/scripts/build-controller-image.sh" --cluster-name "$CLUSTER_NAME" 2>&1 | tee -a "$LOG_FILE" || \
+        fail "Controller image build failed. See $LOG_FILE"
+    fi
+  else
+    warn "build-controller-image.sh not found, assuming image is pre-loaded" | if_log
+  fi
+
+  kubectl apply -f deploy/kubernetes/reaper-controller.yaml >> "$LOG_FILE" 2>&1
+
+  # Wait for controller pod to be ready
+  for i in $(seq 1 60); do
+    ready=$(kubectl get pods -n reaper-system -l app.kubernetes.io/name=reaper-controller \
+      -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+    if [[ "$ready" == "True" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$ready" == "True" ]] || fail "Controller pod not ready after 120s. See $LOG_FILE"
+  ok "reaper-controller deployed and ready." | if_log
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 if ! $QUIET; then
@@ -437,6 +494,13 @@ if ! $QUIET; then
   echo "    --overrides='{\"spec\":{\"runtimeClassName\":\"reaper-v2\"}}' \\"
   echo "    -- /bin/bash"
   echo ""
+  if $WITH_CONTROLLER; then
+    echo "  ${B}# Create a ReaperPod (CRD)${R}"
+    echo "  kubectl apply -f examples/09-reaperpod/simple-task.yaml"
+    echo "  kubectl get reaperpods"
+    echo ""
+  fi
+
   echo "  ${B}# See the examples${R}"
   echo "  ls examples/"
   echo ""
