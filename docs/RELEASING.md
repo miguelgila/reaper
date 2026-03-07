@@ -119,16 +119,20 @@ Each tarball contains:
 
 ## Installing from a Release
 
+**Via Helm (recommended):**
+```bash
+helm upgrade --install reaper deploy/helm/reaper/ \
+  --namespace reaper-system --create-namespace \
+  --wait --timeout 120s
+```
+
+**Via Ansible (deprecated):**
 ```bash
 # Kind cluster (auto-detects architecture)
 ./scripts/install-reaper.sh --kind my-cluster --release v0.2.0
 
 # Production cluster (defaults to x86_64, use REAPER_TARGET for aarch64)
 ./scripts/install-reaper.sh --inventory my-inventory.ini --release v0.2.0
-
-# Production cluster (aarch64)
-REAPER_TARGET=aarch64-unknown-linux-musl \
-  ./scripts/install-reaper.sh --inventory my-inventory.ini --release v0.2.0
 ```
 
 ## Verifying Installed Version

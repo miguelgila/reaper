@@ -258,8 +258,11 @@ Wait a few seconds after applying the RuntimeClass, as it takes time to propagat
 reaper/
 ├── scripts/
 │   ├── run-integration-tests.sh      [MAIN] Orchestrates all integration tests
-│   ├── install-reaper.sh             Ansible-based installation wrapper
-│   ├── generate-kind-inventory.sh    Auto-generate Kind inventory for Ansible
+│   ├── install-reaper.sh             Ansible-based installation (DEPRECATED)
+│   ├── build-node-image.sh           Build reaper-node installer image for Kind
+│   ├── build-controller-image.sh     Build reaper-controller image for Kind
+│   ├── install-node.sh               Init container script for node DaemonSet
+│   ├── generate-kind-inventory.sh    Auto-generate Kind inventory for Ansible (DEPRECATED)
 │   ├── configure-containerd.sh       Helper to configure containerd
 │   ├── install-hooks.sh              Setup git hooks (optional)
 │   └── docker-coverage.sh            Run coverage in Docker

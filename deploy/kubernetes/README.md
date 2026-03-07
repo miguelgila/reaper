@@ -6,77 +6,39 @@ This directory contains configuration files for integrating the Reaper container
 
 ## Quick Start
 
-**Unified Ansible deployment (recommended)**:
-
-Use the Ansible-based installer for both Kind and production clusters:
-
-### For Kind Clusters (Testing/CI)
+### Via Helm (recommended)
 
 ```bash
-# Install to Kind cluster using Ansible
-./scripts/install-reaper.sh --kind <cluster-name>
+helm upgrade --install reaper deploy/helm/reaper/ \
+  --namespace reaper-system --create-namespace \
+  --wait --timeout 120s
+```
 
-# Dry run (preview changes)
-./scripts/install-reaper.sh --kind test --dry-run
+This installs the node DaemonSet (binary installer), CRD, controller, RuntimeClass, and RBAC.
 
-# Or run full integration test suite
+See [Helm chart README](../helm/reaper/README.md) for configuration options.
+
+### For Testing/CI
+
+```bash
+# Playground (creates Kind cluster + installs via Helm)
+./scripts/setup-playground.sh
+
+# Full integration test suite
 ./scripts/run-integration-tests.sh
 ```
 
 See [TESTING.md](../../docs/TESTING.md) for full details.
 
-### For Production Clusters
+### Via Ansible (deprecated)
+
+> **DEPRECATED**: Use the Helm chart instead. See [ansible/README.md](../ansible/README.md).
 
 ```bash
-# 1. Create inventory
-cp deploy/ansible/inventory.ini.example deploy/ansible/inventory.ini
-# Edit deploy/ansible/inventory.ini with your nodes
-
-# 2. Test connectivity
-ansible -i deploy/ansible/inventory.ini k8s_nodes -m ping
-
-# 3. Install using wrapper script
-./scripts/install-reaper.sh --inventory deploy/ansible/inventory.ini
-
-# Or call Ansible directly
-# ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/install-reaper.yml
-```
-
-See [ansible/README.md](../ansible/README.md) for complete Ansible documentation.
-
-## Installation Options
-
-### Option 1: Unified Ansible Installer (Recommended)
-
-**Why use Ansible for everything?**
-- **Single deployment method**: Same code path for Kind and production
-- **Better tested**: Kind tests validate production deployment
-- **Idempotent**: Safe to re-run without side effects
-- **Rollback support**: Built-in rollback playbook
-- **External orchestration**: No containerd circular dependencies
-
-**How it works:**
-- **Kind clusters**: Uses Docker connection (`ansible_connection=docker`)
-- **Production clusters**: Uses SSH connection (default)
-- **Same playbook**: Works with both without modification
-
-**Quick usage:**
-```bash
-# Kind clusters
 ./scripts/install-reaper.sh --kind <cluster-name>
-
-# Production clusters
-./scripts/install-reaper.sh --inventory deploy/ansible/inventory.ini
 ```
 
-See [ansible/README.md](../ansible/README.md) for:
-- Inventory configuration examples (Kind and production)
-- Cloud provider setup (GKE, EKS, AKS)
-- Rolling updates and parallel deployment
-- Rollback procedures
-- Troubleshooting
-
-### Option 2: Manual Installation
+### Manual Installation
 
 If you need manual control over the installation process:
 
@@ -144,10 +106,10 @@ Expected output: `Hello from Reaper runtime!`
 
 ## Configuration
 
-Reaper reads configuration from `/etc/reaper/reaper.conf` on each node. The Ansible installer creates this file automatically. Environment variables of the same name override file values.
+Reaper reads configuration from `/etc/reaper/reaper.conf` on each node. The Helm chart creates this file automatically via the node DaemonSet init container. Environment variables of the same name override file values.
 
 ```ini
-# /etc/reaper/reaper.conf — written by Ansible installer
+# /etc/reaper/reaper.conf — written by Helm node DaemonSet
 REAPER_DNS_MODE=kubernetes
 REAPER_RUNTIME_LOG=/run/reaper/runtime.log
 ```
