@@ -164,7 +164,7 @@ Pure function in `src/bin/reaper-controller/pod_builder.rs` with 9 unit tests co
 - Security context (runAsUser/runAsGroup)
 - Volume translation (configMap name -> ConfigMapVolumeSource, readOnly, mountPath)
 - Node targeting (nodeName passthrough)
-- generateName (no fixed name, K8s generates suffix)
+- Pod name matches ReaperPod name (1:1 mapping, enables `kubectl logs <name>` directly)
 - Environment variables (literal values, secretKeyRef, configMapKeyRef)
 - Tolerations
 

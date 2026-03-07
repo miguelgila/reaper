@@ -94,7 +94,7 @@ pub fn build_pod(rp: &ReaperPod) -> Result<Pod> {
 
     let pod = Pod {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-            generate_name: Some(format!("{}-", name)),
+            name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
             labels: Some(labels),
             annotations: if annotations.is_empty() {
@@ -370,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_name() {
+    fn test_pod_name_matches_reaperpod() {
         let rp = make_reaper_pod(
             "my-task",
             ReaperPodSpec {
@@ -379,8 +379,8 @@ mod tests {
             },
         );
         let pod = build_pod(&rp).unwrap();
-        assert_eq!(pod.metadata.generate_name.as_deref(), Some("my-task-"));
-        assert!(pod.metadata.name.is_none());
+        assert_eq!(pod.metadata.name.as_deref(), Some("my-task"));
+        assert!(pod.metadata.generate_name.is_none());
     }
 
     #[test]
