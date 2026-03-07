@@ -1,0 +1,38 @@
+# Multi-stage build for reaper-node installer image.
+# Contains containerd-shim-reaper-v2, reaper-runtime, and an install script.
+# Used as an init container in the Helm chart's DaemonSet to install
+# Reaper binaries onto cluster nodes.
+
+# --- Builder stage (amd64) ---
+FROM messense/rust-musl-cross:x86_64-musl AS builder-amd64
+WORKDIR /work
+COPY . .
+RUN cargo build --release \
+  --bin containerd-shim-reaper-v2 \
+  --bin reaper-runtime \
+  --target x86_64-unknown-linux-musl
+
+# --- Builder stage (arm64) ---
+FROM messense/rust-musl-cross:aarch64-musl AS builder-arm64
+WORKDIR /work
+COPY . .
+RUN cargo build --release \
+  --bin containerd-shim-reaper-v2 \
+  --bin reaper-runtime \
+  --target aarch64-unknown-linux-musl
+
+# --- Runtime stage ---
+FROM alpine:3.19
+
+ARG TARGETARCH=amd64
+
+# Copy both architectures, select based on TARGETARCH
+COPY --from=builder-amd64 /work/target/x86_64-unknown-linux-musl/release/containerd-shim-reaper-v2 /binaries/amd64/containerd-shim-reaper-v2
+COPY --from=builder-amd64 /work/target/x86_64-unknown-linux-musl/release/reaper-runtime /binaries/amd64/reaper-runtime
+COPY --from=builder-arm64 /work/target/aarch64-unknown-linux-musl/release/containerd-shim-reaper-v2 /binaries/arm64/containerd-shim-reaper-v2
+COPY --from=builder-arm64 /work/target/aarch64-unknown-linux-musl/release/reaper-runtime /binaries/arm64/reaper-runtime
+
+COPY scripts/install-node.sh /install.sh
+RUN chmod +x /install.sh
+
+ENTRYPOINT ["/install.sh"]

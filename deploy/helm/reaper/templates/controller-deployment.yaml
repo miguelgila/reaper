@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reaper-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "reaper.controller.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reaper-controller
+  template:
+    metadata:
+      labels:
+        {{- include "reaper.controller.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: reaper-controller
+      containers:
+        - name: controller
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}

@@ -130,6 +130,34 @@ kubectl apply -f examples/08-mix-container-runtime-engines/
 kubectl rollout status daemonset/base-config --timeout=300s
 ```
 
+### [09-reaperpod/](09-reaperpod/) — ReaperPod CRD
+
+Demonstrates the **ReaperPod Custom Resource Definition** — a simplified, Reaper-native way to run workloads without container boilerplate. A `reaper-controller` watches `ReaperPod` resources and creates real Pods with `runtimeClassName: reaper-v2` pre-configured.
+
+- No `image:` field needed (busybox placeholder handled automatically)
+- Reaper-specific fields: `dnsMode`, `overlayName`, simplified volumes
+- Status tracks phase, podName, nodeName, exitCode
+
+```bash
+# Prerequisites: install CRD and controller
+kubectl create namespace reaper-system
+kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml
+kubectl apply -f deploy/kubernetes/reaper-controller.yaml
+
+# Run a simple task
+kubectl apply -f examples/09-reaperpod/simple-task.yaml
+kubectl get reaperpods
+kubectl describe reaperpod hello-world
+
+# With volumes (create ConfigMap first)
+kubectl create configmap app-config --from-literal=greeting="Hello from ConfigMap"
+kubectl apply -f examples/09-reaperpod/with-volumes.yaml
+
+# With node selector (label a node first)
+kubectl label node <name> workload-type=compute
+kubectl apply -f examples/09-reaperpod/with-node-selector.yaml
+```
+
 ## Cleanup
 
 Each example can be cleaned up independently:

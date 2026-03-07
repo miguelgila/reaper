@@ -1,5 +1,11 @@
 # Ansible Playbooks for Reaper Runtime
 
+> **DEPRECATED**: Ansible-based installation is deprecated in favor of the **Helm chart** (`deploy/helm/reaper/`).
+> The Helm chart handles binary installation via DaemonSet init containers, CRD installation, controller deployment,
+> and RuntimeClass creation — all in a single `helm install`. See the [Helm chart README](../helm/reaper/README.md).
+>
+> These playbooks remain available for legacy workflows but are no longer actively tested in CI.
+
 This directory contains Ansible playbooks for deploying and managing Reaper runtime on Kubernetes cluster nodes.
 
 ## Overview

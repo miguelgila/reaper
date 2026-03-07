@@ -2694,6 +2694,318 @@ phase_agent_tests() {
 }
 
 # ---------------------------------------------------------------------------
+# Phase 4b: reaper-controller tests (ReaperPod CRD)
+# ---------------------------------------------------------------------------
+
+test_controller_crd_install() {
+  # CRD is installed by Helm during setup. Apply idempotently in case of --crd-only reruns.
+  kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml >> "$LOG_FILE" 2>&1
+
+  # Verify CRD is established
+  local established=""
+  for i in $(seq 1 15); do
+    established=$(kubectl get crd reaperpods.reaper.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)
+    if [[ "$established" == "True" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ "$established" == "True" ]] || {
+    log_error "CRD reaperpods.reaper.io not established after 15s"
+    return 1
+  }
+
+  # Verify we can list ReaperPods
+  kubectl get reaperpods --all-namespaces --no-headers >> "$LOG_FILE" 2>&1 || {
+    log_error "Cannot list ReaperPods"
+    return 1
+  }
+}
+
+test_controller_deployment() {
+  # Controller is deployed by Helm during setup. Ensure it's ready (idempotent).
+  kubectl create namespace reaper-system --dry-run=client -o yaml | kubectl apply -f - >> "$LOG_FILE" 2>&1
+
+  # If the controller deployment doesn't exist (e.g., --crd-only without Helm), apply it
+  if ! kubectl get deployment reaper-controller -n reaper-system &>/dev/null; then
+    kubectl apply -f deploy/kubernetes/reaper-controller.yaml >> "$LOG_FILE" 2>&1
+  fi
+
+  # Wait for the controller pod to be ready
+  local ready=""
+  for i in $(seq 1 60); do
+    ready=$(kubectl get pods -n reaper-system -l app.kubernetes.io/name=reaper-controller \
+      -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+    if [[ "$ready" == "True" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$ready" == "True" ]] || {
+    log_error "Controller pod not ready after 120s"
+    kubectl describe pods -n reaper-system -l app.kubernetes.io/name=reaper-controller >> "$LOG_FILE" 2>&1 || true
+    kubectl logs -n reaper-system -l app.kubernetes.io/name=reaper-controller --tail=50 >> "$LOG_FILE" 2>&1 || true
+    return 1
+  }
+}
+
+test_controller_simple_reaperpod() {
+  # Create a simple ReaperPod
+  kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
+metadata:
+  name: test-simple
+spec:
+  command: ["/bin/sh", "-c", "echo hello-from-reaperpod && hostname"]
+YAML
+
+  # Wait for the underlying Pod to be created
+  local pod_name=""
+  for i in $(seq 1 30); do
+    pod_name=$(kubectl get pods -l reaper.io/owner=test-simple \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -n "$pod_name" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ -n "$pod_name" ]] || {
+    log_error "No Pod created for ReaperPod test-simple after 30s"
+    return 1
+  }
+
+  # Verify the Pod has runtimeClassName set
+  local runtime_class
+  runtime_class=$(kubectl get pod "$pod_name" -o jsonpath='{.spec.runtimeClassName}' 2>/dev/null || true)
+  [[ "$runtime_class" == "reaper-v2" ]] || {
+    log_error "Expected runtimeClassName=reaper-v2, got '$runtime_class'"
+    return 1
+  }
+
+  # Wait for Pod to complete (succeeded or failed)
+  kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/"$pod_name" --timeout=60s >> "$LOG_FILE" 2>&1 || {
+    log_error "Pod $pod_name did not succeed"
+    kubectl describe pod "$pod_name" >> "$LOG_FILE" 2>&1 || true
+    return 1
+  }
+
+  # Verify the output
+  local output
+  output=$(kubectl logs "$pod_name" 2>/dev/null || true)
+  echo "$output" | grep -q "hello-from-reaperpod" || {
+    log_error "Pod output missing expected string. Output: $output"
+    return 1
+  }
+}
+
+test_controller_status_mirroring() {
+  # The previous test's ReaperPod should have status mirrored
+  local phase
+  for i in $(seq 1 15); do
+    phase=$(kubectl get reaperpod test-simple -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$phase" == "Succeeded" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$phase" == "Succeeded" ]] || {
+    log_error "Expected ReaperPod phase=Succeeded, got '$phase'"
+    return 1
+  }
+
+  # Verify podName is set
+  local pod_name
+  pod_name=$(kubectl get reaperpod test-simple -o jsonpath='{.status.podName}' 2>/dev/null || true)
+  [[ -n "$pod_name" ]] || {
+    log_error "ReaperPod status.podName not set"
+    return 1
+  }
+
+  # Verify nodeName is set
+  local node_name
+  node_name=$(kubectl get reaperpod test-simple -o jsonpath='{.status.nodeName}' 2>/dev/null || true)
+  [[ -n "$node_name" ]] || {
+    log_error "ReaperPod status.nodeName not set"
+    return 1
+  }
+}
+
+test_controller_exit_code() {
+  # Create a ReaperPod that exits with code 42
+  kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
+metadata:
+  name: test-exit-code
+spec:
+  command: ["/bin/sh", "-c", "exit 42"]
+YAML
+
+  # Wait for the underlying Pod to complete
+  local pod_name=""
+  for i in $(seq 1 30); do
+    pod_name=$(kubectl get pods -l reaper.io/owner=test-exit-code \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -n "$pod_name" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ -n "$pod_name" ]] || {
+    log_error "No Pod created for ReaperPod test-exit-code"
+    return 1
+  }
+
+  # Wait for pod to finish (it should fail)
+  kubectl wait --for=jsonpath='{.status.phase}'=Failed pod/"$pod_name" --timeout=60s >> "$LOG_FILE" 2>&1 || true
+
+  # Verify the exit code is mirrored to ReaperPod status
+  local exit_code
+  for i in $(seq 1 15); do
+    exit_code=$(kubectl get reaperpod test-exit-code -o jsonpath='{.status.exitCode}' 2>/dev/null || true)
+    if [[ "$exit_code" == "42" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$exit_code" == "42" ]] || {
+    log_error "Expected exitCode=42, got '$exit_code'"
+    return 1
+  }
+}
+
+test_controller_reaperpod_annotations() {
+  # Create a ReaperPod with dnsMode and overlayName
+  kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
+metadata:
+  name: test-annotations
+spec:
+  command: ["/bin/sh", "-c", "echo ok"]
+  dnsMode: kubernetes
+  overlayName: test-group
+YAML
+
+  # Wait for Pod to be created
+  local pod_name=""
+  for i in $(seq 1 30); do
+    pod_name=$(kubectl get pods -l reaper.io/owner=test-annotations \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -n "$pod_name" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ -n "$pod_name" ]] || {
+    log_error "No Pod created for ReaperPod test-annotations"
+    return 1
+  }
+
+  # Verify the annotations are set on the Pod
+  local dns_mode overlay_name
+  dns_mode=$(kubectl get pod "$pod_name" -o jsonpath='{.metadata.annotations.reaper\.runtime/dns-mode}' 2>/dev/null || true)
+  overlay_name=$(kubectl get pod "$pod_name" -o jsonpath='{.metadata.annotations.reaper\.runtime/overlay-name}' 2>/dev/null || true)
+
+  [[ "$dns_mode" == "kubernetes" ]] || {
+    log_error "Expected dns-mode=kubernetes, got '$dns_mode'"
+    return 1
+  }
+  [[ "$overlay_name" == "test-group" ]] || {
+    log_error "Expected overlay-name=test-group, got '$overlay_name'"
+    return 1
+  }
+}
+
+test_controller_gc_on_delete() {
+  # Delete the ReaperPod and verify the owned Pod is garbage collected
+  local pod_name
+  pod_name=$(kubectl get pods -l reaper.io/owner=test-simple \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+  kubectl delete reaperpod test-simple >> "$LOG_FILE" 2>&1
+
+  # Wait for the owned Pod to be deleted
+  local remaining=""
+  for i in $(seq 1 30); do
+    remaining=$(kubectl get pod "$pod_name" --no-headers 2>/dev/null || true)
+    if [[ -z "$remaining" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ -z "$remaining" ]] || {
+    log_error "Pod $pod_name still exists after ReaperPod deletion"
+    return 1
+  }
+}
+
+test_controller_kubectl_get_columns() {
+  # Verify that kubectl get reaperpods shows the custom columns
+  local output
+  output=$(kubectl get reaperpods 2>&1 || true)
+
+  echo "$output" | grep -q "PHASE" || {
+    log_error "Missing PHASE column in kubectl get reaperpods output"
+    return 1
+  }
+  echo "$output" | grep -q "NODE" || {
+    log_error "Missing NODE column in kubectl get reaperpods output"
+    return 1
+  }
+  echo "$output" | grep -q "EXIT CODE" || {
+    log_error "Missing EXIT CODE column in kubectl get reaperpods output"
+    return 1
+  }
+}
+
+cleanup_controller() {
+  kubectl delete reaperpod --all --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete -f deploy/kubernetes/reaper-controller.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  # Wait for pods to terminate
+  for i in $(seq 1 15); do
+    local remaining
+    remaining=$(kubectl get pods -l reaper.io/owner --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    if [[ "$remaining" -eq 0 ]]; then
+      break
+    fi
+    sleep 1
+  done
+}
+
+phase_controller_tests() {
+  log_status ""
+  log_status "${CLR_PHASE}Phase 4b: reaper-controller tests (ReaperPod CRD)${CLR_RESET}"
+  log_status "========================================"
+
+  # Verify controller image is available in the cluster
+  local image_loaded
+  image_loaded=$(docker exec "$NODE_ID" crictl images 2>/dev/null \
+    | grep -c "reaper-controller" || true)
+
+  if [[ "$image_loaded" -lt 1 ]]; then
+    log_error "reaper-controller image not found in Kind cluster"
+    log_error "This should have been built and loaded during Phase 2 setup."
+    log_error "Check build-controller-image.sh output in the log file."
+    return 1
+  fi
+
+  run_test test_controller_crd_install        "CRD installation and establishment"  --hard-fail
+  run_test test_controller_deployment         "Controller Deployment ready"         --hard-fail
+  run_test test_controller_simple_reaperpod   "Simple ReaperPod creates Pod"        --hard-fail
+  run_test test_controller_status_mirroring   "ReaperPod status mirroring"          --hard-fail
+  run_test test_controller_exit_code          "Exit code propagation"               --hard-fail
+  run_test test_controller_reaperpod_annotations "Reaper annotations on Pod"        --hard-fail
+  run_test test_controller_kubectl_get_columns   "kubectl get reaperpods columns"   --hard-fail
+  run_test test_controller_gc_on_delete       "GC Pod on ReaperPod delete"          --hard-fail
+
+  # Cleanup controller resources
+  cleanup_controller
+}
+
+# ---------------------------------------------------------------------------
 # Phase 4: Integration test orchestrator
 # ---------------------------------------------------------------------------
 phase_integration_tests() {
