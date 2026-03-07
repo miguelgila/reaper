@@ -95,10 +95,11 @@ jobs:
             -v ${{ github.workspace }}:/work \
             -w /work \
             messense/rust-musl-cross:x86_64-musl \
-            cargo build --release --features agent \
+            cargo build --release --features agent,controller \
               --bin containerd-shim-reaper-v2 \
               --bin reaper-runtime \
               --bin reaper-agent \
+              --bin reaper-controller \
               --target x86_64-unknown-linux-musl
       - uses: actions/upload-artifact@v4
         with:
@@ -107,6 +108,7 @@ jobs:
             target/x86_64-unknown-linux-musl/release/containerd-shim-reaper-v2
             target/x86_64-unknown-linux-musl/release/reaper-runtime
             target/x86_64-unknown-linux-musl/release/reaper-agent
+            target/x86_64-unknown-linux-musl/release/reaper-controller
           retention-days: 1
 
   kind-integration:
@@ -136,8 +138,10 @@ jobs:
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
 
-      - name: Install Ansible
-        run: pip install ansible
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: "v3.14.0"
 
       - name: Run integration tests
         uses: nick-fields/retry@v3
