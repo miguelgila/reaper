@@ -155,10 +155,6 @@ jobs:
           path: /tmp/reaper-integration-logs/
           retention-days: 7
 
-  playground-release:
-    name: Playground Release Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Test --release resolution modes
-        run: ./scripts/test-playground-release.sh
+  # playground-release job removed: setup-playground.sh now uses Helm
+  # instead of --release flag. The release-utils.sh library is retained
+  # for the deprecated install-reaper.sh script.
