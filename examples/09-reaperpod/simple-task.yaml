@@ -1,0 +1,24 @@
+# Simple ReaperPod: run a command to completion on any node.
+#
+# Prerequisites:
+#   - Reaper installed on target nodes
+#   - CRD installed: kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml
+#   - Namespace created: kubectl create namespace reaper-system
+#   - Controller running: kubectl apply -f deploy/kubernetes/reaper-controller.yaml
+#
+# Usage:
+#   kubectl apply -f simple-task.yaml
+#   kubectl get reaperpods
+#   kubectl describe reaperpod hello-world
+#   kubectl delete reaperpod hello-world
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
+metadata:
+  name: hello-world
+spec:
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "Hello from $(hostname) at $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+      echo "Kernel: $(uname -r)"
+      echo "Uptime: $(uptime)"

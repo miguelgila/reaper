@@ -1,0 +1,32 @@
+# ReaperPod with node targeting: run on a specific subset of nodes.
+#
+# Prerequisites:
+#   - Same as simple-task.yaml
+#   - At least one node labeled: kubectl label node <name> workload-type=compute
+#
+# Usage:
+#   kubectl apply -f with-node-selector.yaml
+#   kubectl get reaperpods
+#   kubectl describe reaperpod node-info
+#   kubectl delete reaperpod node-info
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
+metadata:
+  name: node-info
+spec:
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "=== Node Info ==="
+      echo "Hostname: $(hostname)"
+      echo "Kernel: $(uname -r)"
+      echo "CPUs: $(nproc)"
+      echo "Memory: $(grep MemTotal /proc/meminfo | awk '{print $2}') kB"
+      echo "Load: $(cat /proc/loadavg)"
+  nodeSelector:
+    workload-type: compute
+  dnsMode: kubernetes
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule

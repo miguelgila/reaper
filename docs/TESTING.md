@@ -67,6 +67,8 @@ Options:
 - `--skip-cargo` — Skip Rust unit tests (useful for rapid K8s-only reruns)
 - `--no-cleanup` — Keep the kind cluster running after tests (for debugging)
 - `--verbose` — Also print debug output to stdout (in addition to log file)
+- `--agent-only` — Only run agent tests (skip cargo, integration, and controller tests)
+- `--crd-only` — Only run CRD controller tests (skip cargo, integration, and agent tests)
 - `--help` — Show usage
 
 ### Examples
@@ -77,10 +79,16 @@ Rerun K8s tests against an existing cluster:
 ./scripts/run-integration-tests.sh --skip-cargo --no-cleanup
 ```
 
-Then modify the overlay code and test again:
+Run only CRD controller tests (fast iteration on ReaperPod CRD):
 
 ```bash
-./scripts/run-integration-tests.sh --skip-cargo
+./scripts/run-integration-tests.sh --crd-only --no-cleanup
+```
+
+Run only agent tests:
+
+```bash
+./scripts/run-integration-tests.sh --agent-only --no-cleanup
 ```
 
 Keep cluster for interactive debugging:
@@ -119,7 +127,9 @@ The test harness orchestrates:
    - Wait for default ServiceAccount
 4. **Phase 4**: Integration tests
    - DNS, echo, overlay, host protection, UID/GID switching, privilege drop, exec, zombie check
-5. **Phase 5**: Summary & reporting
+5. **Phase 4b**: Controller tests (ReaperPod CRD)
+   - CRD installation, controller deployment, ReaperPod lifecycle, status mirroring, exit code propagation, annotations, custom printer columns, garbage collection
+6. **Phase 5**: Summary & reporting
 
 ## Coverage
 
@@ -248,8 +258,11 @@ Wait a few seconds after applying the RuntimeClass, as it takes time to propagat
 reaper/
 ├── scripts/
 │   ├── run-integration-tests.sh      [MAIN] Orchestrates all integration tests
-│   ├── install-reaper.sh             Ansible-based installation wrapper
-│   ├── generate-kind-inventory.sh    Auto-generate Kind inventory for Ansible
+│   ├── install-reaper.sh             Ansible-based installation (DEPRECATED)
+│   ├── build-node-image.sh           Build reaper-node installer image for Kind
+│   ├── build-controller-image.sh     Build reaper-controller image for Kind
+│   ├── install-node.sh               Init container script for node DaemonSet
+│   ├── generate-kind-inventory.sh    Auto-generate Kind inventory for Ansible (DEPRECATED)
 │   ├── configure-containerd.sh       Helper to configure containerd
 │   ├── install-hooks.sh              Setup git hooks (optional)
 │   └── docker-coverage.sh            Run coverage in Docker

@@ -31,8 +31,12 @@ axum = { version = "0.8", optional = true }
 futures = { version = "0.3", optional = true }
 chrono = { version = "0.4", optional = true }
 
+# reaper-controller dependencies
+schemars = { version = "0.8", optional = true }
+
 [features]
 agent = ["kube", "k8s-openapi", "prometheus-client", "axum", "futures", "chrono"]
+controller = ["kube", "k8s-openapi", "schemars", "futures", "chrono"]
 
 [dev-dependencies]
 tempfile = "3"
@@ -50,6 +54,11 @@ path = "src/bin/containerd-shim-reaper-v2/main.rs"
 name = "reaper-agent"
 path = "src/bin/reaper-agent/main.rs"
 required-features = ["agent"]
+
+[[bin]]
+name = "reaper-controller"
+path = "src/bin/reaper-controller/main.rs"
+required-features = ["controller"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

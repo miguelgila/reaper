@@ -152,8 +152,9 @@ fn test_shim_detects_fake_runtime_mismatch() {
         std::fs::set_permissions(&fake_runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    // Brief yield to avoid ETXTBSY on Linux (kernel may still hold the file)
-    std::thread::yield_now();
+    // Brief sleep to avoid ETXTBSY on Linux (kernel may still hold the inode
+    // after chmod; yield_now is not sufficient under CI load).
+    std::thread::sleep(std::time::Duration::from_millis(50));
 
     // Invoke the shim with REAPER_RUNTIME_PATH pointing at the fake runtime.
     // The shim's --version flag exits before new() is called, so we use a

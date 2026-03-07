@@ -2048,6 +2048,7 @@ dependencies = [
  "nix 0.28.0",
  "prometheus-client",
  "protobuf",
+ "schemars",
  "serde",
  "serde_json",
  "serial_test",

@@ -1,0 +1,25 @@
+## Build stage: cross-compile static musl binary
+ARG RUST_TARGET=x86_64-unknown-linux-musl
+ARG MUSL_IMAGE=x86_64-musl
+
+FROM messense/rust-musl-cross:${MUSL_IMAGE} AS builder
+ARG RUST_TARGET
+
+WORKDIR /work
+COPY . .
+
+# Set build metadata
+RUN export GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown") && \
+    export BUILD_DATE=$(date -u '+%Y-%m-%d') && \
+    cargo build --release --features controller --bin reaper-controller --target "${RUST_TARGET}"
+
+RUN cp target/${RUST_TARGET}/release/reaper-controller /reaper-controller
+
+## Runtime stage: distroless static (no shell, no libc needed for musl)
+FROM gcr.io/distroless/static-debian12:nonroot
+
+COPY --from=builder /reaper-controller /usr/local/bin/reaper-controller
+
+USER nonroot:nonroot
+
+ENTRYPOINT ["/usr/local/bin/reaper-controller"]

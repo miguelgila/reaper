@@ -1,0 +1,230 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: reaperpods.reaper.io
+spec:
+  group: reaper.io
+  names:
+    kind: ReaperPod
+    plural: reaperpods
+    singular: reaperpod
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.nodeName
+      name: Node
+      type: string
+    - jsonPath: .status.exitCode
+      name: Exit Code
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ReaperPodSpec via `CustomResource`
+        properties:
+          spec:
+            description: 'ReaperPod is a simplified, Reaper-native way to run workloads
+              on Kubernetes. The controller translates it into a real Pod with runtimeClassName:
+              reaper-v2.'
+            properties:
+              args:
+                description: Arguments to the command.
+                items:
+                  type: string
+                type: array
+              command:
+                description: Command to execute on the node.
+                items:
+                  type: string
+                type: array
+              dnsMode:
+                description: 'DNS resolution mode: "host" (default) or "kubernetes".'
+                nullable: true
+                type: string
+              env:
+                description: Environment variables.
+                items:
+                  description: Simplified environment variable (name + literal value
+                    or secret/configmap ref).
+                  properties:
+                    configMapKeyRef:
+                      description: Reference to a ConfigMap key.
+                      nullable: true
+                      properties:
+                        key:
+                          description: Key within the Secret or ConfigMap.
+                          type: string
+                        name:
+                          description: Name of the Secret or ConfigMap.
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    name:
+                      description: Environment variable name.
+                      type: string
+                    secretKeyRef:
+                      description: Reference to a Secret key.
+                      nullable: true
+                      properties:
+                        key:
+                          description: Key within the Secret or ConfigMap.
+                          type: string
+                        name:
+                          description: Name of the Secret or ConfigMap.
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    value:
+                      description: Literal value.
+                      nullable: true
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              nodeName:
+                description: Pin to a specific node by name.
+                nullable: true
+                type: string
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: Select nodes by labels.
+                nullable: true
+                type: object
+              overlayName:
+                description: Named overlay group for shared overlay filesystem.
+                nullable: true
+                type: string
+              restartPolicy:
+                description: Restart policy for the underlying Pod. Defaults to "Never".
+                type: string
+              runAsGroup:
+                description: Run the process as this GID.
+                format: int64
+                nullable: true
+                type: integer
+              runAsUser:
+                description: Run the process as this UID.
+                format: int64
+                nullable: true
+                type: integer
+              tolerations:
+                description: Tolerations passed through to the underlying Pod.
+                items:
+                  description: Simplified toleration.
+                  properties:
+                    effect:
+                      description: 'Effect: "NoSchedule", "PreferNoSchedule", or "NoExecute".'
+                      nullable: true
+                      type: string
+                    key:
+                      description: Toleration key.
+                      nullable: true
+                      type: string
+                    operator:
+                      description: 'Operator: "Exists" or "Equal".'
+                      nullable: true
+                      type: string
+                    value:
+                      description: Value to match (when operator is "Equal").
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
+              volumes:
+                description: Volumes with inline mount paths.
+                items:
+                  description: A simplified volume definition with inline mountPath.
+                  properties:
+                    configMap:
+                      description: ConfigMap name to mount.
+                      nullable: true
+                      type: string
+                    emptyDir:
+                      default: false
+                      description: Use an emptyDir volume.
+                      type: boolean
+                    hostPath:
+                      description: Host path to mount.
+                      nullable: true
+                      type: string
+                    mountPath:
+                      description: Path inside the overlay where this volume is mounted.
+                      type: string
+                    name:
+                      description: Volume name (used internally).
+                      type: string
+                    readOnly:
+                      default: false
+                      description: Mount as read-only.
+                      type: boolean
+                    secret:
+                      description: Secret name to mount.
+                      nullable: true
+                      type: string
+                  required:
+                  - mountPath
+                  - name
+                  type: object
+                type: array
+              workingDir:
+                description: Working directory for the command.
+                nullable: true
+                type: string
+            required:
+            - command
+            type: object
+          status:
+            description: Status of a ReaperPod.
+            nullable: true
+            properties:
+              completionTime:
+                description: When the Pod completed (succeeded or failed).
+                nullable: true
+                type: string
+              exitCode:
+                description: Exit code of the main process (set when phase is Succeeded
+                  or Failed).
+                format: int32
+                nullable: true
+                type: integer
+              message:
+                description: Human-readable message about the current state.
+                nullable: true
+                type: string
+              nodeName:
+                description: Node where the Pod was scheduled.
+                nullable: true
+                type: string
+              phase:
+                description: 'Current phase: Pending, Running, Succeeded, Failed.'
+                nullable: true
+                type: string
+              podName:
+                description: Name of the underlying Pod created by the controller.
+                nullable: true
+                type: string
+              startTime:
+                description: When the Pod started running.
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: ReaperPod
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

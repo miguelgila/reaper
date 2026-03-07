@@ -28,7 +28,6 @@ KIND_CONFIG=""          # empty = generate default 3-node config
 SKIP_BUILD=false
 QUIET=false
 CLEANUP=false
-RELEASE_VERSION=""      # empty = build from source; "latest" or "vX.Y.Z" = download
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -90,16 +89,6 @@ while [[ $# -gt 0 ]]; do
       [[ ! -f "$KIND_CONFIG" ]] && fail "Kind config not found: $KIND_CONFIG"
       shift 2
       ;;
-    --release)
-      # Accept optional version argument; default to "latest"
-      if [[ -n "${2:-}" ]] && [[ "$2" != --* ]]; then
-        RELEASE_VERSION="$2"
-        shift 2
-      else
-        RELEASE_VERSION="latest"
-        shift
-      fi
-      ;;
     --skip-build)
       SKIP_BUILD=true
       shift
@@ -114,19 +103,14 @@ while [[ $# -gt 0 ]]; do
       echo "Create a Reaper-enabled Kind cluster for testing."
       echo ""
       echo "Options:"
-      echo "  --release [version]     Use pre-built binaries from GitHub Releases (default: latest)"
       echo "  --cleanup               Delete the playground cluster"
       echo "  --cluster-name <name>   Cluster name (default: reaper-playground)"
       echo "  --kind-config <path>    Custom Kind config file (default: 3-node cluster)"
-      echo "  --skip-build            Skip binary cross-compilation (when building from source)"
+      echo "  --skip-build            Skip binary cross-compilation (use existing images)"
       echo "  --quiet                 Suppress output (for scripted use)"
       echo "  -h, --help              Show this help"
       echo ""
-      echo "Prerequisites: Docker, kind, kubectl, ansible-playbook"
-      echo ""
-      echo "Environment:"
-      echo "  CI                      Set in CI; uses target-specific binary dir"
-      echo "  REAPER_BINARY_DIR       Override binary directory for Ansible installer"
+      echo "Prerequisites: Docker, kind, kubectl, helm"
       exit 0
       ;;
     *)
@@ -153,9 +137,9 @@ command -v docker >/dev/null 2>&1         || fail "docker not found. Install Doc
 docker info >/dev/null 2>&1               || fail "Docker daemon not running."
 command -v kind >/dev/null 2>&1           || fail "kind not found. Install from https://kind.sigs.k8s.io/"
 command -v kubectl >/dev/null 2>&1        || fail "kubectl not found. Install from https://kubernetes.io/docs/tasks/tools/"
-command -v ansible-playbook >/dev/null 2>&1 || fail "ansible-playbook not found. Install with: pip install ansible"
+command -v helm >/dev/null 2>&1            || fail "helm not found. Install from https://helm.sh/docs/intro/install/"
 
-if [[ ! -f "$REPO_ROOT/scripts/install-reaper.sh" ]]; then
+if [[ ! -f "$REPO_ROOT/deploy/helm/reaper/Chart.yaml" ]]; then
   fail "Run this script from the repository root: ./scripts/setup-playground.sh"
 fi
 
@@ -222,120 +206,53 @@ export KUBECONFIG="$KUBECONFIG_FILE"
 info "Using KUBECONFIG=$KUBECONFIG_FILE" | if_log
 
 # ---------------------------------------------------------------------------
-# Resolve "latest" release version
-# ---------------------------------------------------------------------------
-# shellcheck source=lib/release-utils.sh
-source "$SCRIPT_DIR/lib/release-utils.sh"
-
-if [[ -n "$RELEASE_VERSION" ]]; then
-  if [[ "$RELEASE_VERSION" == "latest" ]]; then
-    info "Resolving latest release..." | if_log
-    RELEASE_VERSION=$(resolve_latest_release) || \
-      fail "Could not determine latest release. Check https://github.com/${GITHUB_REPO}/releases or specify a version: --release v0.2.4"
-    ok "Latest release: $RELEASE_VERSION" | if_log
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-# Obtain binaries (release download OR build from source)
+# Build and load images
 # ---------------------------------------------------------------------------
 cd "$REPO_ROOT"
 
-if [[ -n "$RELEASE_VERSION" ]]; then
-  # --release mode: delegate to install-reaper.sh which handles download
-  info "Using pre-built release $RELEASE_VERSION (skipping build)" | if_log
-  INSTALL_RELEASE_ARGS="--release $RELEASE_VERSION"
-
-elif ! $SKIP_BUILD; then
-  info "Building Reaper binaries for Kind nodes" | if_log
-
-  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
-  NODE_ARCH=$(docker exec "$NODE_ID" uname -m 2>&1) || fail "Cannot detect node architecture"
-
-  case "$NODE_ARCH" in
-    aarch64)
-      TARGET_TRIPLE="aarch64-unknown-linux-musl"
-      MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
-      ;;
-    x86_64)
-      TARGET_TRIPLE="x86_64-unknown-linux-musl"
-      MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
-      ;;
-    *)
-      fail "Unsupported architecture: $NODE_ARCH"
-      ;;
-  esac
-
-  {
-    echo "  Architecture: $NODE_ARCH ($TARGET_TRIPLE)"
-  } | if_log
-
-  if $QUIET; then
-    docker run --rm \
-      -v "$(pwd)":/work \
-      -w /work \
-      "$MUSL_IMAGE" \
-      cargo build --release \
-        --bin containerd-shim-reaper-v2 \
-        --bin reaper-runtime \
-        --target "$TARGET_TRIPLE" \
-      >> "$LOG_FILE" 2>&1 || fail "Build failed. See $LOG_FILE for details."
-  else
-    docker run --rm \
-      -v "$(pwd)":/work \
-      -w /work \
-      "$MUSL_IMAGE" \
-      cargo build --release \
-        --bin containerd-shim-reaper-v2 \
-        --bin reaper-runtime \
-        --target "$TARGET_TRIPLE" \
-      2>&1 | tee -a "$LOG_FILE" || fail "Build failed. See $LOG_FILE for details."
-  fi
-
-  # Set binary directory for Ansible installer
-  if [[ -n "${CI:-}" ]]; then
-    export REAPER_BINARY_DIR="$(pwd)/target/$TARGET_TRIPLE/release"
-    info "Using binaries from $REAPER_BINARY_DIR (CI mode)" | if_log
-  else
-    mkdir -p target/release
-    cp "target/$TARGET_TRIPLE/release/containerd-shim-reaper-v2" target/release/
-    cp "target/$TARGET_TRIPLE/release/reaper-runtime" target/release/
-  fi
-
-  ok "Binaries built." | if_log
-  INSTALL_RELEASE_ARGS=""
-else
-  info "Skipping build (--skip-build)" | if_log
-  if [[ -n "${CI:-}" ]]; then
-    # CI: binaries were downloaded as artifacts to the musl target dir
-    for triple in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
-      if [[ -f "target/$triple/release/containerd-shim-reaper-v2" ]]; then
-        export REAPER_BINARY_DIR="$(pwd)/target/$triple/release"
-        info "Using pre-built binaries from $REAPER_BINARY_DIR" | if_log
-        break
-      fi
-    done
-  fi
-  INSTALL_RELEASE_ARGS=""
+# Build reaper-node image (contains shim + runtime + install script)
+info "Building reaper-node image" | if_log
+local_build_args=(--cluster-name "$CLUSTER_NAME")
+if $SKIP_BUILD; then
+  local_build_args+=(--skip-build)
 fi
-
-# ---------------------------------------------------------------------------
-# Install Reaper on all nodes via Ansible
-# ---------------------------------------------------------------------------
-info "Installing Reaper runtime on all nodes" | if_log
-
-# shellcheck disable=SC2086
 if $QUIET; then
-  ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" $INSTALL_RELEASE_ARGS >> "$LOG_FILE" 2>&1 || {
-    fail "Ansible install failed. See $LOG_FILE for details."
-  }
+  local_build_args+=(--quiet)
+fi
+"$SCRIPT_DIR/build-node-image.sh" "${local_build_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
+  fail "reaper-node image build failed. See $LOG_FILE"
+}
+ok "reaper-node image loaded into Kind." | if_log
+
+# Build reaper-controller image
+info "Building reaper-controller image" | if_log
+"$SCRIPT_DIR/build-controller-image.sh" "${local_build_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
+  fail "reaper-controller image build failed. See $LOG_FILE"
+}
+ok "reaper-controller image loaded into Kind." | if_log
+
+# ---------------------------------------------------------------------------
+# Install Reaper via Helm
+# ---------------------------------------------------------------------------
+info "Installing Reaper via Helm" | if_log
+
+if $QUIET; then
+  helm upgrade --install reaper deploy/helm/reaper/ \
+    --namespace reaper-system --create-namespace \
+    --set node.image.pullPolicy=IfNotPresent \
+    --set controller.image.pullPolicy=IfNotPresent \
+    --wait --timeout 120s \
+    >> "$LOG_FILE" 2>&1 || fail "Helm install failed. See $LOG_FILE"
 else
-  ./scripts/install-reaper.sh --kind "$CLUSTER_NAME" $INSTALL_RELEASE_ARGS 2>&1 | tee -a "$LOG_FILE" || {
-    fail "Ansible install failed. See $LOG_FILE for details."
-  }
+  helm upgrade --install reaper deploy/helm/reaper/ \
+    --namespace reaper-system --create-namespace \
+    --set node.image.pullPolicy=IfNotPresent \
+    --set controller.image.pullPolicy=IfNotPresent \
+    --wait --timeout 120s \
+    2>&1 | tee -a "$LOG_FILE" || fail "Helm install failed. See $LOG_FILE"
 fi
 
-ok "Reaper installed on all nodes." | if_log
+ok "Reaper installed via Helm." | if_log
 
 # ---------------------------------------------------------------------------
 # Wait for readiness
@@ -403,6 +320,7 @@ else
   warn "Smoke test output unexpected: $SMOKE_OUTPUT" | if_log
 fi
 
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
@@ -422,21 +340,38 @@ if ! $QUIET; then
   echo "${B}RuntimeClass:${R}"
   echo "  $(kubectl get runtimeclass reaper-v2 -o custom-columns='NAME:.metadata.name,HANDLER:.handler' --no-headers 2>/dev/null)"
 
+  CTX="kind-${CLUSTER_NAME}"
+
   echo ""
   echo "${C}────────────────────────────────────────${R}"
   echo ""
   echo "Try it out:"
   echo ""
   echo "  ${B}# Run a command on the host${R}"
-  echo "  kubectl run hello --rm -it --image=busybox --restart=Never \\"
+  echo "  kubectl --context=${CTX} run hello --rm -it --image=busybox --restart=Never \\"
   echo "    --overrides='{\"spec\":{\"runtimeClassName\":\"reaper-v2\"}}' \\"
   echo "    -- /bin/sh -c 'echo Hello from \$(hostname) && uname -a'"
   echo ""
   echo "  ${B}# Interactive shell${R}"
-  echo "  kubectl run debug --rm -it --image=busybox --restart=Never \\"
+  echo "  kubectl --context=${CTX} run debug --rm -it --image=busybox --restart=Never \\"
   echo "    --overrides='{\"spec\":{\"runtimeClassName\":\"reaper-v2\"}}' \\"
   echo "    -- /bin/bash"
   echo ""
+  echo "  ${B}# Create a ReaperPod (CRD)${R}"
+  echo "  kubectl --context=${CTX} apply -f examples/09-reaperpod/simple-task.yaml"
+  echo "  kubectl --context=${CTX} get reaperpods"
+  echo ""
+  echo "  ${B}# Quick inline ReaperPod${R}"
+  echo "  kubectl --context=${CTX} apply -f - <<'YAML'"
+  echo "apiVersion: reaper.io/v1alpha1"
+  echo "kind: ReaperPod"
+  echo "metadata:"
+  echo "  name: quick-test"
+  echo "spec:"
+  echo "  command: [\"/bin/sh\", \"-c\", \"echo Hello from \\\$(hostname) at \\\$(date)\"]"
+  echo "YAML"
+  echo ""
+
   echo "  ${B}# See the examples${R}"
   echo "  ls examples/"
   echo ""

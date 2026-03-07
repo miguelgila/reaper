@@ -8,6 +8,7 @@
 #   ./scripts/run-integration-tests.sh --no-cleanup       # Keep kind cluster after run
 #   ./scripts/run-integration-tests.sh --verbose          # Print verbose output to stdout too
 #   ./scripts/run-integration-tests.sh --agent-only       # Only run agent tests (fast iteration)
+#   ./scripts/run-integration-tests.sh --crd-only        # Only run CRD controller tests (fast iteration)
 
 set -euo pipefail
 
@@ -34,6 +35,7 @@ SKIP_CARGO=false
 NO_CLEANUP=false
 VERBOSE=false
 AGENT_ONLY=false
+CRD_ONLY=false
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -44,17 +46,19 @@ while [[ $# -gt 0 ]]; do
     --no-cleanup)  NO_CLEANUP=true; shift ;;
     --verbose)     VERBOSE=true; shift ;;
     --agent-only)  AGENT_ONLY=true; SKIP_CARGO=true; shift ;;
+    --crd-only)    CRD_ONLY=true; SKIP_CARGO=true; shift ;;
     -h|--help)
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--agent-only]"
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--agent-only] [--crd-only]"
       echo "  --skip-cargo  Skip Rust cargo tests (for quick K8s-only reruns)"
       echo "  --no-cleanup  Keep kind cluster after run"
       echo "  --verbose     Also print verbose output to stdout"
       echo "  --agent-only  Only run agent tests (skip cargo + integration tests)"
+      echo "  --crd-only    Only run CRD controller tests (skip cargo + other tests)"
       exit 0
       ;;
     *)
       echo "Unknown option: $1" >&2
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--agent-only]" >&2
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--agent-only] [--crd-only]" >&2
       exit 1
       ;;
   esac
@@ -118,13 +122,24 @@ main() {
   phase_setup
   phase_readiness
 
-  if ! $AGENT_ONLY; then
+  if ! $AGENT_ONLY && ! $CRD_ONLY; then
     phase_integration_tests
   else
-    log_status "Skipping integration tests (--agent-only)."
+    log_status "Skipping integration tests (--agent-only or --crd-only)."
   fi
 
-  phase_agent_tests
+  if ! $CRD_ONLY; then
+    phase_agent_tests
+  else
+    log_status "Skipping agent tests (--crd-only)."
+  fi
+
+  if ! $AGENT_ONLY; then
+    phase_controller_tests
+  else
+    log_status "Skipping controller tests (--agent-only)."
+  fi
+
   phase_summary
 }
 

@@ -1,0 +1,37 @@
+# Reaper Helm chart values
+
+# Node installer + agent DaemonSet
+node:
+  image:
+    repository: ghcr.io/miguelgila/reaper-node
+    tag: latest
+    pullPolicy: IfNotPresent
+  # Install path for shim and runtime binaries on the host
+  installPath: /usr/local/bin
+  # Whether to configure containerd and restart it (set to true for non-Kind clusters)
+  configureContainerd: false
+
+# CRD controller Deployment
+controller:
+  image:
+    repository: ghcr.io/miguelgila/reaper-controller
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# RuntimeClass
+runtimeClass:
+  name: reaper-v2
+  handler: reaper-v2
+
+# Reaper configuration written to /etc/reaper/reaper.conf on nodes
+config:
+  dnsMode: kubernetes
+  runtimeLog: /run/reaper/runtime.log

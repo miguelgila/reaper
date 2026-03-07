@@ -31,7 +31,8 @@ phase_setup() {
   ci_group_start "Phase 2: Infrastructure setup"
 
   # Delegate to the shared playground setup script.
-  # It handles: cluster creation, binary build, Ansible install, readiness, smoke test.
+  # It handles: cluster creation, image builds (node + controller),
+  # Helm install (CRD, RuntimeClass, DaemonSet, controller), readiness, smoke test.
   local setup_args=(
     --cluster-name "$CLUSTER_NAME"
     --quiet
@@ -64,7 +65,7 @@ phase_setup() {
   # Capture NODE_ID for diagnostics (used by cleanup trap and test functions)
   NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
 
-  # Build and load reaper-agent image (required for Phase 4a tests)
+  # Build and load reaper-agent image (required for Phase 4a agent tests)
   log_status "Building reaper-agent image for Kind..."
   local agent_args=(--cluster-name "$CLUSTER_NAME" --quiet)
   if [[ -n "${CI:-}" ]]; then

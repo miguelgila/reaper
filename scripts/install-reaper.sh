@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # install-reaper.sh - Deploy Reaper runtime using Ansible
 #
-# This is a unified installation script that uses Ansible for both Kind
-# and production clusters. It provides a single, consistent deployment method.
+# DEPRECATED: Use the Helm chart instead:
+#   helm upgrade --install reaper deploy/helm/reaper/ \
+#     --namespace reaper-system --create-namespace
+#
+# This script is kept for legacy workflows but is no longer the recommended
+# installation method. See deploy/helm/reaper/ for the Helm-based approach.
 #
 # Usage:
 #   ./scripts/install-reaper.sh --kind <cluster-name>

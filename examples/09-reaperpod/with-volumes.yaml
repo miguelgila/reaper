@@ -1,0 +1,40 @@
+# ReaperPod with volumes: mount a ConfigMap and an emptyDir scratch space.
+#
+# Prerequisites:
+#   - Same as simple-task.yaml
+#   - ConfigMap 'app-config' exists in the same namespace
+#
+# Create the ConfigMap first:
+#   kubectl create configmap app-config --from-literal=greeting="Hello from ConfigMap"
+#
+# Usage:
+#   kubectl apply -f with-volumes.yaml
+#   kubectl get reaperpods
+#   kubectl logs <pod-name>     # check the pod created by the controller
+#   kubectl delete reaperpod config-reader
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
+metadata:
+  name: config-reader
+spec:
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "=== Reading ConfigMap ==="
+      cat /config/greeting
+      echo ""
+
+      echo "=== Writing to scratch space ==="
+      echo "timestamp: $(date -u)" > /scratch/output.txt
+      cat /scratch/output.txt
+  env:
+    - name: APP_NAME
+      value: "config-reader"
+  volumes:
+    - name: config
+      mountPath: /config
+      readOnly: true
+      configMap: app-config
+    - name: scratch
+      mountPath: /scratch
+      emptyDir: true

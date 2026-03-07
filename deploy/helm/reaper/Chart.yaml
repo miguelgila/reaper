@@ -1,0 +1,16 @@
+apiVersion: v2
+name: reaper
+description: Reaper — lightweight Kubernetes runtime for direct host execution
+type: application
+version: 0.1.0
+appVersion: "0.2.10"
+keywords:
+  - kubernetes
+  - runtime
+  - containerd
+  - host-execution
+home: https://github.com/miguelgila/reaper
+sources:
+  - https://github.com/miguelgila/reaper
+maintainers:
+  - name: Miguel Gil Álvarez
