@@ -83,18 +83,34 @@ impl JobManager {
             cmd.env(key, value);
         }
 
-        // Set working directory
-        if let Some(ref dir) = request.working_dir {
-            cmd.current_dir(dir);
+        // When host_exec is true, working_dir must be set AFTER nsenter
+        // (inside pre_exec), not via cmd.current_dir() which runs in the
+        // container's mount namespace.
+        #[cfg(unix)]
+        let working_dir_in_preexec = self.host_exec && request.working_dir.is_some();
+        #[cfg(not(unix))]
+        let working_dir_in_preexec = false;
+
+        if !working_dir_in_preexec {
+            if let Some(ref dir) = request.working_dir {
+                cmd.current_dir(dir);
+            }
         }
 
-        // pre_exec: host namespace entry + privilege dropping (Unix only)
+        // pre_exec: host namespace entry + chdir + privilege dropping (Unix only)
         #[cfg(unix)]
         {
             let uid = request.uid;
             let gid = request.gid;
             let supplemental_groups = request.supplemental_groups.clone();
             let host_exec = self.host_exec;
+            // Used inside #[cfg(target_os = "linux")] block in pre_exec
+            #[allow(unused_variables)]
+            let working_dir = if working_dir_in_preexec {
+                request.working_dir.clone()
+            } else {
+                None
+            };
 
             if host_exec || uid.is_some() || gid.is_some() {
                 unsafe {
@@ -116,6 +132,19 @@ impl JobManager {
                             libc::close(fd);
                             if ret != 0 {
                                 return Err(std::io::Error::last_os_error());
+                            }
+
+                            // chdir after nsenter so path resolves in host namespace
+                            if let Some(ref dir) = working_dir {
+                                let c_dir = std::ffi::CString::new(dir.as_str()).map_err(|_| {
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::InvalidInput,
+                                        "invalid working_dir path",
+                                    )
+                                })?;
+                                if libc::chdir(c_dir.as_ptr()) != 0 {
+                                    return Err(std::io::Error::last_os_error());
+                                }
                             }
                         }
 
@@ -149,15 +178,23 @@ impl JobManager {
             }
         }
 
-        // Write MPI hostfile to disk if provided
+        // Write MPI hostfile to disk if provided.
+        // When host_exec is true, write through /proc/1/root so the file
+        // lands in the host filesystem (the job runs in the host mount
+        // namespace after nsenter).
         if let (Some(ref content), Some(ref path)) = (&request.hostfile, &request.hostfile_path) {
-            if let Some(parent) = std::path::Path::new(path).parent() {
+            let write_path = if self.host_exec {
+                format!("/proc/1/root{path}")
+            } else {
+                path.clone()
+            };
+            if let Some(parent) = std::path::Path::new(&write_path).parent() {
                 let _ = tokio::fs::create_dir_all(parent).await;
             }
-            tokio::fs::write(path, content)
+            tokio::fs::write(&write_path, content)
                 .await
                 .map_err(|e| format!("failed to write hostfile to {path}: {e}"))?;
-            debug!(path = %path, "wrote MPI hostfile");
+            debug!(path = %path, write_path = %write_path, "wrote MPI hostfile");
         }
 
         let child = cmd
@@ -171,7 +208,14 @@ impl JobManager {
             child: Some(child),
             exit_code: None,
             message: None,
-            hostfile_path: request.hostfile_path.clone(),
+            hostfile_path: if self.host_exec {
+                request
+                    .hostfile_path
+                    .as_ref()
+                    .map(|p| format!("/proc/1/root{p}"))
+            } else {
+                request.hostfile_path.clone()
+            },
         };
 
         let mut jobs = self.jobs.lock().await;

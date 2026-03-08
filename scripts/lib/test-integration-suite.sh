@@ -2665,16 +2665,19 @@ test_agent_node_condition_metrics() {
 test_agent_job_submit() {
   start_agent_pf
 
-  # Submit a simple job
-  local response
-  response=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+  # Submit a simple job — capture both status code and body for diagnostics
+  local response http_code
+  local tmpfile=$(mktemp)
+  http_code=$(curl -s -o "$tmpfile" -w "%{http_code}" -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
     -H "Content-Type: application/json" \
-    -d '{"script":"echo hello-wren","environment":{}}' 2>/dev/null || echo "FAILED")
+    -d '{"script":"echo hello-wren","environment":{}}' 2>/dev/null)
+  response=$(cat "$tmpfile")
+  rm -f "$tmpfile"
 
   stop_agent_pf
 
-  if [[ "$response" == "FAILED" ]]; then
-    log_error "POST /api/v1/jobs failed"
+  if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+    log_error "POST /api/v1/jobs returned HTTP $http_code: $response"
     return 1
   fi
 
@@ -2850,8 +2853,8 @@ test_agent_job_not_found() {
   start_agent_pf
 
   local http_code
-  http_code=$(curl -sf -o /dev/null -w "%{http_code}" \
-    http://localhost:${AGENT_PF_PORT}/api/v1/jobs/nonexistent-job-id 2>/dev/null || echo "000")
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    http://localhost:${AGENT_PF_PORT}/api/v1/jobs/nonexistent-job-id 2>/dev/null)
 
   stop_agent_pf
 

@@ -108,6 +108,10 @@ spec:
           imagePullPolicy: IfNotPresent
           securityContext:
             runAsUser: 0
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - SYS_PTRACE
           env:
             - name: NODE_NAME
               valueFrom:
