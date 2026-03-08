@@ -49,12 +49,17 @@ struct JobEntry {
 #[derive(Clone)]
 pub struct JobManager {
     jobs: Arc<Mutex<HashMap<String, JobEntry>>>,
+    /// When true, enter PID 1's mount namespace before exec so that
+    /// `/bin/sh` resolves to the host's shell (required when running
+    /// inside a distroless container with hostPID: true).
+    host_exec: bool,
 }
 
 impl JobManager {
-    pub fn new() -> Self {
+    pub fn new(host_exec: bool) -> Self {
         Self {
             jobs: Arc::new(Mutex::new(HashMap::new())),
+            host_exec,
         }
     }
 
@@ -83,16 +88,37 @@ impl JobManager {
             cmd.current_dir(dir);
         }
 
-        // Privilege dropping via pre_exec (Unix only)
+        // pre_exec: host namespace entry + privilege dropping (Unix only)
         #[cfg(unix)]
         {
             let uid = request.uid;
             let gid = request.gid;
             let supplemental_groups = request.supplemental_groups.clone();
+            let host_exec = self.host_exec;
 
-            if uid.is_some() || gid.is_some() {
+            if host_exec || uid.is_some() || gid.is_some() {
                 unsafe {
                     cmd.pre_exec(move || {
+                        // Enter host mount namespace so /bin/sh resolves to the
+                        // host's shell (required when agent runs in a container
+                        // with hostPID: true).
+                        #[cfg(target_os = "linux")]
+                        if host_exec {
+                            let fd = libc::open(
+                                b"/proc/1/ns/mnt\0".as_ptr() as *const libc::c_char,
+                                libc::O_RDONLY,
+                            );
+                            if fd < 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                            // setns(fd, CLONE_NEWNS=0x00020000)
+                            let ret = libc::syscall(libc::SYS_setns, fd, 0x0002_0000i32);
+                            libc::close(fd);
+                            if ret != 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                        }
+
                         // Order matters: setgroups → setgid → setuid (uid last, irreversible)
                         if let Some(ref groups) = supplemental_groups {
                             let gids: Vec<libc::gid_t> =
@@ -288,7 +314,7 @@ mod tests {
 
     #[tokio::test]
     async fn submit_and_status_success() {
-        let manager = JobManager::new();
+        let manager = JobManager::new(false);
         let req = make_request("exit 0");
         let job_id = manager.submit(req).await.expect("submit should succeed");
 
@@ -310,7 +336,7 @@ mod tests {
 
     #[tokio::test]
     async fn submit_and_status_failure() {
-        let manager = JobManager::new();
+        let manager = JobManager::new(false);
         let req = make_request("exit 1");
         let job_id = manager.submit(req).await.expect("submit should succeed");
 
@@ -331,20 +357,20 @@ mod tests {
 
     #[tokio::test]
     async fn status_unknown_job_returns_none() {
-        let manager = JobManager::new();
+        let manager = JobManager::new(false);
         let result = manager.status("nonexistent-job-id").await;
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn terminate_unknown_job_returns_false() {
-        let manager = JobManager::new();
+        let manager = JobManager::new(false);
         assert!(!manager.terminate("no-such-job").await);
     }
 
     #[tokio::test]
     async fn terminate_running_job() {
-        let manager = JobManager::new();
+        let manager = JobManager::new(false);
         // Long-running job
         let req = make_request("sleep 60");
         let job_id = manager.submit(req).await.expect("submit should succeed");
@@ -361,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn environment_variables_passed_to_job() {
-        let manager = JobManager::new();
+        let manager = JobManager::new(false);
         let mut env = HashMap::new();
         env.insert("TEST_VAR".to_string(), "hello_world".to_string());
         let req = JobRequest {
@@ -398,7 +424,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_writes_hostfile() {
-        let manager = JobManager::new();
+        let manager = JobManager::new(false);
         let hostfile_path = format!("/tmp/reaper-test-hostfile-{}", uuid::Uuid::new_v4());
         let request = JobRequest {
             script: "true".to_string(),
@@ -441,7 +467,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submit_without_hostfile() {
-        let manager = JobManager::new();
+        let manager = JobManager::new(false);
         let request = JobRequest {
             script: "echo hello".to_string(),
             environment: HashMap::new(),

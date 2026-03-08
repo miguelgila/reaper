@@ -223,7 +223,7 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    let job_manager = executor::JobManager::new();
+    let job_manager = executor::JobManager::new(true);
     let server_metrics = metrics_state.clone();
     let server_shim = cli.shim_path.clone();
     let server_runtime = cli.runtime_path.clone();
