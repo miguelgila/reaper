@@ -158,6 +158,21 @@ kubectl label node <name> workload-type=compute
 kubectl apply -f examples/09-reaperpod/with-node-selector.yaml
 ```
 
+### [10-wren-job-api/](10-wren-job-api/) — Wren Job Execution API
+
+Demonstrates the reaper-agent's HTTP job execution API used by the Wren controller to run jobs on bare-metal nodes. Shows all API operations: submit, status polling, termination, environment variables, working directory, and MPI hostfile.
+
+- POST/GET/DELETE `/api/v1/jobs` endpoints
+- User identity privilege dropping (uid/gid)
+- Hostfile write-to-disk for MPI jobs
+- Working directory support
+
+```bash
+./examples/10-wren-job-api/setup.sh
+
+# Manual testing with port-forward (see README for curl examples)
+```
+
 ## Cleanup
 
 Each example can be cleaned up independently:
@@ -171,4 +186,5 @@ Each example can be cleaned up independently:
 ./examples/06-ansible-jobs/setup.sh --cleanup
 ./examples/07-ansible-complex/setup.sh --cleanup
 ./examples/08-mix-container-runtime-engines/setup.sh --cleanup
+./examples/10-wren-job-api/setup.sh --cleanup
 ```
