@@ -8,7 +8,9 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
+use crate::executor::JobManager;
 use crate::health;
+use crate::jobs::{JobRequest, JobResponse, JobState};
 
 /// Shared metrics state used across all agent tasks.
 #[derive(Clone)]
@@ -223,6 +225,7 @@ struct AppState {
     shim_path: String,
     runtime_path: String,
     state_dir: String,
+    job_manager: JobManager,
 }
 
 async fn healthz_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -252,25 +255,70 @@ async fn readyz_handler() -> impl IntoResponse {
     (StatusCode::OK, "ok\n")
 }
 
-/// Start the HTTP server for health and metrics endpoints.
+async fn submit_job_handler(
+    State(state): State<AppState>,
+    axum::Json(request): axum::Json<JobRequest>,
+) -> impl IntoResponse {
+    match state.job_manager.submit(request).await {
+        Ok(job_id) => (
+            StatusCode::CREATED,
+            axum::Json(JobResponse {
+                job_id,
+                status: JobState::Running,
+            }),
+        )
+            .into_response(),
+        Err(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response(),
+    }
+}
+
+async fn job_status_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(job_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    match state.job_manager.status(&job_id).await {
+        Some(status) => (StatusCode::OK, axum::Json(status)).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn terminate_job_handler(
+    State(state): State<AppState>,
+    axum::extract::Path(job_id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if state.job_manager.terminate(&job_id).await {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+/// Start the HTTP server for health, metrics, and job execution endpoints.
 pub async fn serve(
     addr: SocketAddr,
     metrics: MetricsState,
     shim_path: &str,
     runtime_path: &str,
     state_dir: &str,
+    job_manager: JobManager,
 ) -> anyhow::Result<()> {
     let state = AppState {
         metrics,
         shim_path: shim_path.to_string(),
         runtime_path: runtime_path.to_string(),
         state_dir: state_dir.to_string(),
+        job_manager,
     };
 
     let app = Router::new()
         .route("/healthz", get(healthz_handler))
         .route("/readyz", get(readyz_handler))
         .route("/metrics", get(metrics_handler))
+        .route("/api/v1/jobs", axum::routing::post(submit_job_handler))
+        .route(
+            "/api/v1/jobs/{id}",
+            get(job_status_handler).delete(terminate_job_handler),
+        )
         .with_state(state);
 
     info!(addr = %addr, "starting HTTP server");
