@@ -1991,10 +1991,21 @@ start_agent_pf() {
   local agent_pod
   agent_pod=$(kubectl get pods -n reaper-system -l app.kubernetes.io/name=reaper-agent \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-  AGENT_PF_PORT=19200
+  AGENT_PF_PORT=$((RANDOM % 1000 + 19000))
   kubectl port-forward -n reaper-system "$agent_pod" ${AGENT_PF_PORT}:9100 >> "$LOG_FILE" 2>&1 &
   AGENT_PF_PID=$!
-  sleep 2
+  # Wait for port-forward to be ready
+  local max_wait=10
+  local elapsed=0
+  while [[ $elapsed -lt $max_wait ]]; do
+    if curl -sf http://localhost:${AGENT_PF_PORT}/healthz > /dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  log_error "Port-forward to agent did not become ready within ${max_wait}s"
+  return 1
 }
 
 stop_agent_pf() {
