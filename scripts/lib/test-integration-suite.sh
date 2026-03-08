@@ -1985,6 +1985,23 @@ YAML
   log_verbose "Unknown annotations silently ignored, known annotations applied correctly"
 }
 
+# Helper: start port-forward to reaper-agent and return local port + PF PID
+# Usage: start_agent_pf; then use $AGENT_PF_PORT and $AGENT_PF_PID
+start_agent_pf() {
+  local agent_pod
+  agent_pod=$(kubectl get pods -n reaper-system -l app.kubernetes.io/name=reaper-agent \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  AGENT_PF_PORT=19200
+  kubectl port-forward -n reaper-system "$agent_pod" ${AGENT_PF_PORT}:9100 >> "$LOG_FILE" 2>&1 &
+  AGENT_PF_PID=$!
+  sleep 2
+}
+
+stop_agent_pf() {
+  kill "$AGENT_PF_PID" 2>/dev/null || true
+  wait "$AGENT_PF_PID" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 # reaper-agent integration tests
 # These require the reaper-agent image to be loaded into the Kind cluster.
@@ -2634,6 +2651,329 @@ test_agent_node_condition_metrics() {
   log_verbose "node condition metrics verified: all expected metrics present"
 }
 
+test_agent_job_submit() {
+  start_agent_pf
+
+  # Submit a simple job
+  local response
+  response=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"echo hello-wren","environment":{}}' 2>/dev/null || echo "FAILED")
+
+  stop_agent_pf
+
+  if [[ "$response" == "FAILED" ]]; then
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  # Verify response has job_id and status
+  local job_id
+  job_id=$(echo "$response" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+  if [[ -z "$job_id" ]]; then
+    log_error "Response missing job_id: $response"
+    return 1
+  fi
+
+  local status
+  status=$(echo "$response" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+  if [[ "$status" != "running" ]]; then
+    log_error "Expected status 'running', got '$status'"
+    return 1
+  fi
+
+  log_verbose "Job submitted successfully: job_id=$job_id status=$status"
+}
+
+test_agent_job_status_poll() {
+  start_agent_pf
+
+  # Submit a job that takes a moment
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"echo status-test && sleep 1","environment":{}}' 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  # Poll until succeeded (max 15s)
+  local max_wait=15
+  local elapsed=0
+  local final_status=""
+  while [[ $elapsed -lt $max_wait ]]; do
+    local status_resp
+    status_resp=$(curl -sf http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "FAILED")
+    if [[ "$status_resp" == "FAILED" ]]; then
+      sleep 1
+      elapsed=$((elapsed + 1))
+      continue
+    fi
+
+    final_status=$(echo "$status_resp" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [[ "$final_status" == "succeeded" ]]; then
+      # Verify exit_code is 0
+      local exit_code
+      exit_code=$(echo "$status_resp" | grep -o '"exit_code":[0-9]*' | head -1 | cut -d: -f2)
+      if [[ "$exit_code" != "0" ]]; then
+        stop_agent_pf
+        log_error "Expected exit_code 0, got $exit_code"
+        return 1
+      fi
+      stop_agent_pf
+      log_verbose "Job completed successfully: job_id=$job_id exit_code=0"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  stop_agent_pf
+  log_error "Job did not complete within ${max_wait}s, last status: $final_status"
+  return 1
+}
+
+test_agent_job_failed_exit_code() {
+  start_agent_pf
+
+  # Submit a job that exits with non-zero
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"exit 42","environment":{}}' 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  # Poll until failed
+  local max_wait=10
+  local elapsed=0
+  while [[ $elapsed -lt $max_wait ]]; do
+    local status_resp
+    status_resp=$(curl -sf http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "")
+    local status
+    status=$(echo "$status_resp" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [[ "$status" == "failed" ]]; then
+      local exit_code
+      exit_code=$(echo "$status_resp" | grep -o '"exit_code":[0-9]*' | head -1 | cut -d: -f2)
+      if [[ "$exit_code" != "42" ]]; then
+        stop_agent_pf
+        log_error "Expected exit_code 42, got $exit_code"
+        return 1
+      fi
+      stop_agent_pf
+      log_verbose "Job failed as expected: exit_code=42"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  stop_agent_pf
+  log_error "Job did not fail within ${max_wait}s"
+  return 1
+}
+
+test_agent_job_terminate() {
+  start_agent_pf
+
+  # Submit a long-running job
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"sleep 300","environment":{}}' 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  # Wait for it to be running
+  sleep 1
+
+  # Terminate it
+  local delete_status
+  delete_status=$(curl -sf -o /dev/null -w "%{http_code}" -X DELETE \
+    http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "000")
+
+  if [[ "$delete_status" != "200" ]]; then
+    stop_agent_pf
+    log_error "DELETE returned status $delete_status, expected 200"
+    return 1
+  fi
+
+  # Verify it's now failed/terminated
+  sleep 1
+  local status_resp
+  status_resp=$(curl -sf http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "")
+  local status
+  status=$(echo "$status_resp" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  stop_agent_pf
+
+  if [[ "$status" != "failed" ]]; then
+    log_error "Expected terminated job to be 'failed', got '$status'"
+    return 1
+  fi
+
+  log_verbose "Job terminated successfully"
+}
+
+test_agent_job_not_found() {
+  start_agent_pf
+
+  local http_code
+  http_code=$(curl -sf -o /dev/null -w "%{http_code}" \
+    http://localhost:${AGENT_PF_PORT}/api/v1/jobs/nonexistent-job-id 2>/dev/null || echo "000")
+
+  stop_agent_pf
+
+  if [[ "$http_code" != "404" ]]; then
+    log_error "Expected 404 for nonexistent job, got $http_code"
+    return 1
+  fi
+
+  log_verbose "GET nonexistent job correctly returns 404"
+}
+
+test_agent_job_env_vars() {
+  start_agent_pf
+
+  # Submit a job that writes env vars to a file we can check
+  # The job writes to /tmp which is in the overlay
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"env > /tmp/reaper-job-env-test.txt","environment":{"WREN_TEST_VAR":"hello","WREN_MPI_RANK":"0"}}' 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  # Wait for completion
+  sleep 3
+  local status_resp
+  status_resp=$(curl -sf http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "")
+  local status
+  status=$(echo "$status_resp" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  stop_agent_pf
+
+  if [[ "$status" != "succeeded" ]]; then
+    log_error "Job did not succeed, status: $status"
+    return 1
+  fi
+
+  # Check the env file on the node
+  local env_content
+  env_content=$(docker exec "$NODE_ID" cat /tmp/reaper-job-env-test.txt 2>/dev/null || echo "")
+
+  if ! echo "$env_content" | grep -q "WREN_TEST_VAR=hello"; then
+    log_error "WREN_TEST_VAR not found in job environment"
+    log_error "Env content: $env_content"
+    return 1
+  fi
+
+  if ! echo "$env_content" | grep -q "WREN_MPI_RANK=0"; then
+    log_error "WREN_MPI_RANK not found in job environment"
+    return 1
+  fi
+
+  # Cleanup
+  docker exec "$NODE_ID" rm -f /tmp/reaper-job-env-test.txt >> "$LOG_FILE" 2>&1 || true
+
+  log_verbose "Environment variables correctly passed to job"
+}
+
+test_agent_job_hostfile_written() {
+  start_agent_pf
+
+  local hostfile_path="/tmp/reaper-test-hostfile"
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d "{\"script\":\"cat ${hostfile_path}\",\"environment\":{},\"hostfile\":\"node-0 slots=4\nnode-1 slots=4\",\"hostfile_path\":\"${hostfile_path}\"}" 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  # Wait for completion
+  sleep 3
+  local status_resp
+  status_resp=$(curl -sf http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "")
+  local status
+  status=$(echo "$status_resp" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  stop_agent_pf
+
+  if [[ "$status" != "succeeded" ]]; then
+    log_error "Job did not succeed, status: $status (hostfile may not have been written)"
+    return 1
+  fi
+
+  # Hostfile should have been cleaned up after job completion (or still there if cleanup is lazy)
+  log_verbose "Hostfile written and job executed successfully"
+}
+
+test_agent_job_working_dir() {
+  start_agent_pf
+
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"pwd > /tmp/reaper-cwd-test.txt","environment":{},"working_dir":"/tmp"}' 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  sleep 3
+  stop_agent_pf
+
+  local cwd
+  cwd=$(docker exec "$NODE_ID" cat /tmp/reaper-cwd-test.txt 2>/dev/null | tr -d '[:space:]')
+  docker exec "$NODE_ID" rm -f /tmp/reaper-cwd-test.txt >> "$LOG_FILE" 2>&1 || true
+
+  if [[ "$cwd" != "/tmp" ]]; then
+    log_error "Expected working dir /tmp, got '$cwd'"
+    return 1
+  fi
+
+  log_verbose "Working directory correctly set to /tmp"
+}
+
 cleanup_agent() {
   kubectl delete -f deploy/kubernetes/reaper-agent.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   docker exec "$NODE_ID" rm -rf /run/reaper/stale-gc-test >> "$LOG_FILE" 2>&1 || true
@@ -2688,6 +3028,16 @@ phase_agent_tests() {
   run_test test_agent_node_condition_set "Agent node condition ReaperReady set" --hard-fail
   run_test test_agent_node_condition_reflects_health "Agent node condition reflects health" --hard-fail
   run_test test_agent_node_condition_metrics "Agent node condition metrics" --hard-fail
+
+  # Job execution API tests (Wren integration)
+  run_test test_agent_job_submit          "Agent job API: submit job"             --hard-fail
+  run_test test_agent_job_status_poll     "Agent job API: status polling"         --hard-fail
+  run_test test_agent_job_failed_exit_code "Agent job API: failed exit code"     --hard-fail
+  run_test test_agent_job_terminate       "Agent job API: terminate running job"  --hard-fail
+  run_test test_agent_job_not_found       "Agent job API: 404 for unknown job"   --hard-fail
+  run_test test_agent_job_env_vars        "Agent job API: environment variables"  --hard-fail
+  run_test test_agent_job_hostfile_written "Agent job API: hostfile written to disk" --hard-fail
+  run_test test_agent_job_working_dir     "Agent job API: working directory"      --hard-fail
 
   # Cleanup agent resources
   cleanup_agent

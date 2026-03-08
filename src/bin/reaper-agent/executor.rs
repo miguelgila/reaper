@@ -5,6 +5,35 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info};
 
+/// Platform-specific wrapper for setgroups syscall.
+/// Linux uses size_t (usize), macOS/BSD uses c_int (i32).
+#[cfg(unix)]
+unsafe fn safe_setgroups(gids: &[libc::gid_t]) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let ret = libc::setgroups(gids.len(), gids.as_ptr());
+    #[cfg(not(target_os = "linux"))]
+    let ret = libc::setgroups(gids.len() as libc::c_int, gids.as_ptr());
+    if ret != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Clear all supplementary groups.
+#[cfg(unix)]
+unsafe fn safe_setgroups_empty() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let ret = libc::setgroups(0, std::ptr::null());
+    #[cfg(not(target_os = "linux"))]
+    let ret = libc::setgroups(0 as libc::c_int, std::ptr::null());
+    if ret != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 /// Tracks a running or completed job.
 struct JobEntry {
     state: JobState,
@@ -68,16 +97,10 @@ impl JobManager {
                         if let Some(ref groups) = supplemental_groups {
                             let gids: Vec<libc::gid_t> =
                                 groups.iter().map(|&g| g as libc::gid_t).collect();
-                            let ret = libc::setgroups(gids.len() as libc::c_int, gids.as_ptr());
-                            if ret != 0 {
-                                return Err(std::io::Error::last_os_error());
-                            }
+                            safe_setgroups(&gids)?;
                         } else if gid.is_some() {
                             // Clear supplementary groups when setting gid without explicit groups
-                            let ret = libc::setgroups(0 as libc::c_int, std::ptr::null());
-                            if ret != 0 {
-                                return Err(std::io::Error::last_os_error());
-                            }
+                            safe_setgroups_empty()?;
                         }
 
                         if let Some(g) = gid {
