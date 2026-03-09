@@ -1,8 +1,8 @@
 use anyhow::Result;
 use k8s_openapi::api::core::v1::{
     ConfigMapKeySelector, ConfigMapVolumeSource, Container, EmptyDirVolumeSource, EnvVar,
-    EnvVarSource, HostPathVolumeSource, Pod, PodSpec, SecretKeySelector, SecretVolumeSource,
-    SecurityContext, Toleration, Volume, VolumeMount,
+    EnvVarSource, HostPathVolumeSource, Pod, PodSecurityContext, PodSpec, SecretKeySelector,
+    SecretVolumeSource, SecurityContext, Toleration, Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use reaper::crds::{ReaperEnvVar, ReaperPod, ReaperToleration, ReaperVolume};
@@ -92,6 +92,15 @@ pub fn build_pod(rp: &ReaperPod) -> Result<Pod> {
     // Build tolerations
     let tolerations = build_tolerations(&spec.tolerations);
 
+    // Pod-level security context for supplemental groups
+    let pod_security_context = spec
+        .supplemental_groups
+        .as_ref()
+        .map(|groups| PodSecurityContext {
+            supplemental_groups: Some(groups.clone()),
+            ..Default::default()
+        });
+
     let pod = Pod {
         metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
             name: Some(name.to_string()),
@@ -111,6 +120,7 @@ pub fn build_pod(rp: &ReaperPod) -> Result<Pod> {
             restart_policy: Some(spec.restart_policy.clone()),
             node_name: spec.node_name.clone(),
             node_selector: spec.node_selector.clone(),
+            security_context: pod_security_context,
             tolerations: if tolerations.is_empty() {
                 None
             } else {
@@ -434,6 +444,49 @@ mod tests {
         let sr = vf.secret_key_ref.as_ref().unwrap();
         assert_eq!(&sr.name, "db-creds");
         assert_eq!(sr.key, "password");
+    }
+
+    #[test]
+    fn test_supplemental_groups() {
+        let rp = make_reaper_pod(
+            "groups-test",
+            ReaperPodSpec {
+                command: vec!["id".into()],
+                run_as_user: Some(1000),
+                run_as_group: Some(1000),
+                supplemental_groups: Some(vec![1000, 5000, 9999]),
+                ..Default::default()
+            },
+        );
+        let pod = build_pod(&rp).unwrap();
+        let pod_spec = pod.spec.unwrap();
+
+        // Container-level security context has uid/gid
+        let sc = pod_spec.containers[0].security_context.as_ref().unwrap();
+        assert_eq!(sc.run_as_user, Some(1000));
+        assert_eq!(sc.run_as_group, Some(1000));
+
+        // Pod-level security context has supplemental groups
+        let psc = pod_spec.security_context.as_ref().unwrap();
+        assert_eq!(
+            psc.supplemental_groups.as_ref().unwrap(),
+            &vec![1000, 5000, 9999]
+        );
+    }
+
+    #[test]
+    fn test_no_supplemental_groups_when_none() {
+        let rp = make_reaper_pod(
+            "no-groups",
+            ReaperPodSpec {
+                command: vec!["echo".into()],
+                run_as_user: Some(1000),
+                ..Default::default()
+            },
+        );
+        let pod = build_pod(&rp).unwrap();
+        let pod_spec = pod.spec.unwrap();
+        assert!(pod_spec.security_context.is_none());
     }
 
     #[test]
