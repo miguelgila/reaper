@@ -48,6 +48,14 @@ phase_setup() {
     setup_args+=(--skip-build)
   fi
 
+  # Always start with a fresh cluster for integration tests.
+  # Reusing a cluster from a previous --no-cleanup run leaves stale containerd
+  # sandbox state that causes "fork/exec shim: no such file or directory" errors.
+  if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
+    log_status "Deleting existing cluster '$CLUSTER_NAME' for clean test run..."
+    kind delete cluster --name "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1 || true
+  fi
+
   log_status "Running setup-playground.sh for cluster '$CLUSTER_NAME'..."
   ./scripts/setup-playground.sh "${setup_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
     log_error "Cluster setup failed"
@@ -128,6 +136,8 @@ phase_readiness() {
   }
 
   # Clean stale pods from previous runs (--no-cleanup reuse)
+  # Use --grace-period=0 --force to avoid pods stuck in Terminating state
+  # with dead shim processes blocking containerd.
   log_verbose "Cleaning stale pods from previous runs..."
   kubectl delete pod reaper-example reaper-integration-test reaper-dns-check \
     reaper-overlay-writer reaper-overlay-reader reaper-exec-test \
@@ -143,7 +153,7 @@ phase_readiness() {
     reaper-concurrent-a reaper-concurrent-b reaper-concurrent-c \
     reaper-stress-1 reaper-stress-2 reaper-stress-3 \
     reaper-stress-4 reaper-stress-5 \
-    --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+    --ignore-not-found --grace-period=0 --force >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete secret reaper-test-secret --ignore-not-found >> "$LOG_FILE" 2>&1 || true
 
