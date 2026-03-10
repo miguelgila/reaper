@@ -1,4 +1,14 @@
-# 10 — Wren Job Execution API
+# 10 — Wren Job Execution API (DEPRECATED)
+
+> **DEPRECATED:** The HTTP job execution API (`POST/GET/DELETE /api/v1/jobs`) is
+> deprecated. The recommended way to run Wren-managed workloads is via the
+> **ReaperPod CRD** (see [example 09](../09-reaperpod/)). The CRD approach
+> delegates job lifecycle to Kubernetes, providing native volumes, logs, exec,
+> and event handling without reinventing what Kubernetes already provides.
+>
+> This example is kept for reference only. The `reaper-agent` binary remains
+> available behind the `--features agent` flag but is no longer the recommended
+> integration path.
 
 Demonstrates the Reaper agent's HTTP job execution API, which the Wren
 controller uses to run jobs on bare-metal nodes.

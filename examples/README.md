@@ -158,7 +158,9 @@ kubectl label node <name> workload-type=compute
 kubectl apply -f examples/09-reaperpod/with-node-selector.yaml
 ```
 
-### [10-wren-job-api/](10-wren-job-api/) — Wren Job Execution API
+### [10-wren-job-api/](10-wren-job-api/) — Wren Job Execution API *(DEPRECATED)*
+
+> **DEPRECATED:** Use the ReaperPod CRD ([example 09](09-reaperpod/)) instead.
 
 Demonstrates the reaper-agent's HTTP job execution API used by the Wren controller to run jobs on bare-metal nodes. Shows all API operations: submit, status polling, termination, environment variables, working directory, and MPI hostfile.
 
