@@ -236,20 +236,40 @@ ok "reaper-controller image loaded into Kind." | if_log
 # ---------------------------------------------------------------------------
 info "Installing Reaper via Helm" | if_log
 
-if $QUIET; then
-  helm upgrade --install reaper deploy/helm/reaper/ \
-    --namespace reaper-system --create-namespace \
-    --set node.image.pullPolicy=IfNotPresent \
-    --set controller.image.pullPolicy=IfNotPresent \
-    --wait --timeout 120s \
-    >> "$LOG_FILE" 2>&1 || fail "Helm install failed. See $LOG_FILE"
-else
-  helm upgrade --install reaper deploy/helm/reaper/ \
-    --namespace reaper-system --create-namespace \
-    --set node.image.pullPolicy=IfNotPresent \
-    --set controller.image.pullPolicy=IfNotPresent \
-    --wait --timeout 120s \
-    2>&1 | tee -a "$LOG_FILE" || fail "Helm install failed. See $LOG_FILE"
+# Retry Helm install up to 3 times. On freshly-created Kind clusters the API
+# server may not be fully stabilized when we reach this point, causing the
+# first attempt to fail (CRD establishment race, transient API errors, etc.).
+HELM_INSTALLED=false
+for attempt in 1 2 3; do
+  if $QUIET; then
+    if helm upgrade --install reaper deploy/helm/reaper/ \
+      --namespace reaper-system --create-namespace \
+      --set node.image.pullPolicy=IfNotPresent \
+      --set controller.image.pullPolicy=IfNotPresent \
+      --wait --timeout 120s \
+      >> "$LOG_FILE" 2>&1; then
+      HELM_INSTALLED=true
+      break
+    fi
+  else
+    if helm upgrade --install reaper deploy/helm/reaper/ \
+      --namespace reaper-system --create-namespace \
+      --set node.image.pullPolicy=IfNotPresent \
+      --set controller.image.pullPolicy=IfNotPresent \
+      --wait --timeout 120s \
+      2>&1 | tee -a "$LOG_FILE"; then
+      HELM_INSTALLED=true
+      break
+    fi
+  fi
+  warn "Helm install attempt $attempt failed, retrying in 5s..." | if_log
+  sleep 5
+done
+
+if ! $HELM_INSTALLED; then
+  echo "--- Last 30 lines of $LOG_FILE ---" >&2
+  tail -30 "$LOG_FILE" >&2
+  fail "Helm install failed after 3 attempts. See $LOG_FILE"
 fi
 
 ok "Reaper installed via Helm." | if_log

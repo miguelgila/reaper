@@ -156,7 +156,9 @@ jobs:
         continue-on-error: true
         with:
           name: integration-test-logs
-          path: /tmp/reaper-integration-logs/
+          path: |
+            /tmp/reaper-integration-logs/
+            /tmp/reaper-playground-setup.log
           retention-days: 7
 
   example-validation:
