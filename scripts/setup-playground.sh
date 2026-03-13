@@ -254,6 +254,11 @@ ok "reaper-agent image loaded into Kind." | if_log
 # ---------------------------------------------------------------------------
 info "Installing Reaper via Helm" | if_log
 
+# Pre-create namespace idempotently.  helm upgrade --install --create-namespace
+# fails with "namespace already exists" when retrying after a partial install,
+# so we create it up front and omit --create-namespace.
+kubectl create namespace reaper-system --dry-run=client -o yaml | kubectl apply -f - >> "$LOG_FILE" 2>&1
+
 # Retry Helm install up to 3 times. On freshly-created Kind clusters the API
 # server may not be fully stabilized when we reach this point, causing the
 # first attempt to fail (CRD establishment race, transient API errors, etc.).
@@ -261,7 +266,7 @@ HELM_INSTALLED=false
 for attempt in 1 2 3; do
   if $QUIET; then
     if helm upgrade --install reaper deploy/helm/reaper/ \
-      --namespace reaper-system --create-namespace \
+      --namespace reaper-system \
       --set node.image.pullPolicy=IfNotPresent \
       --set controller.image.pullPolicy=IfNotPresent \
       --set agent.image.pullPolicy=IfNotPresent \
@@ -272,7 +277,7 @@ for attempt in 1 2 3; do
     fi
   else
     if helm upgrade --install reaper deploy/helm/reaper/ \
-      --namespace reaper-system --create-namespace \
+      --namespace reaper-system \
       --set node.image.pullPolicy=IfNotPresent \
       --set controller.image.pullPolicy=IfNotPresent \
       --set agent.image.pullPolicy=IfNotPresent \
