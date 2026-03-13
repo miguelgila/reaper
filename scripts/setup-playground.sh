@@ -318,6 +318,17 @@ done
 
 kubectl get runtimeclass reaper-v2 &>/dev/null || fail "RuntimeClass reaper-v2 not found"
 
+# Wait for reaper-node DaemonSet to be fully rolled out (init container copies
+# shim + runtime binaries to host).  Helm --wait considers a DaemonSet ready
+# when pods are Running, but containerd may not have picked up the new shim yet.
+info "Waiting for reaper-node DaemonSet rollout" | if_log
+
+kubectl rollout status daemonset/reaper-node -n reaper-system --timeout=120s >> "$LOG_FILE" 2>&1 || {
+  fail "reaper-node DaemonSet did not become ready. Binaries may not be installed. See $LOG_FILE"
+}
+
+ok "reaper-node DaemonSet rolled out." | if_log
+
 # ---------------------------------------------------------------------------
 # Smoke test
 # ---------------------------------------------------------------------------
