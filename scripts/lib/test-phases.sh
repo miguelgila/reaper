@@ -58,7 +58,10 @@ phase_setup() {
 
   log_status "Running setup-playground.sh for cluster '$CLUSTER_NAME'..."
   ./scripts/setup-playground.sh "${setup_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
-    log_error "Cluster setup failed"
+    log_error "Cluster setup failed; review why and fix it"
+    echo "--- setup-playground.sh log (/tmp/reaper-playground-setup.log) ---" >&2
+    cat /tmp/reaper-playground-setup.log >&2 2>/dev/null || echo "(log file not found)" >&2
+    echo "--- integration test log (last 100 lines) ---" >&2
     tail -100 "$LOG_FILE" >&2
     exit 1
   }
