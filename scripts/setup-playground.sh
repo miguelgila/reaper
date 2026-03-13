@@ -361,6 +361,21 @@ for i in $(seq 1 30); do
     kubectl logs reaper-smoke-test >&2 2>/dev/null || true
     echo "--- reaper-node daemonset pods ---" >&2
     kubectl get pods -n reaper-system -l app.kubernetes.io/component=node -o wide >&2 2>/dev/null || true
+    # Dump node-level Reaper runtime diagnostics
+    SMOKE_NODE=$(kubectl get pod reaper-smoke-test -o jsonpath='{.spec.nodeName}' 2>/dev/null || true)
+    if [[ -n "$SMOKE_NODE" ]]; then
+      NODE_CTR=$(docker ps --filter "name=${SMOKE_NODE}" --format '{{.ID}}' 2>/dev/null | head -1)
+      if [[ -n "$NODE_CTR" ]]; then
+        echo "--- reaper runtime log (last 50 lines) ---" >&2
+        docker exec "$NODE_CTR" tail -50 /run/reaper/runtime.log 2>&1 >&2 || echo "(no runtime log)" >&2
+        echo "--- reaper state files ---" >&2
+        docker exec "$NODE_CTR" find /run/reaper -name 'state.json' -exec echo '{}:' \; -exec cat {} \; 2>&1 >&2 || true
+        echo "--- installed binaries ---" >&2
+        docker exec "$NODE_CTR" ls -la /usr/local/bin/containerd-shim-reaper-v2 /usr/local/bin/reaper-runtime 2>&1 >&2 || true
+        echo "--- containerd shim logs ---" >&2
+        docker exec "$NODE_CTR" journalctl -u containerd --no-pager -n 30 2>&1 >&2 || true
+      fi
+    fi
     kubectl delete pod reaper-smoke-test --ignore-not-found >> "$LOG_FILE" 2>&1
     fail "Smoke test failed. Check output above for details."
   fi
