@@ -1,0 +1,93 @@
+{{- if .Values.agent.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: reaper-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "reaper.agent.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: reaper-agent
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        {{- include "reaper.agent.labels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: reaper-agent
+      hostPID: true
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: agent
+          image: "{{ .Values.agent.image.repository }}:{{ .Values.agent.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - SYS_PTRACE
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          args:
+            - --config-namespace={{ .Release.Namespace }}
+            - --config-name=reaper-config
+            - --config-path=/host/etc/reaper/reaper.conf
+            - --state-dir=/host/run/reaper
+            - --shim-path=/host/usr/local/bin/containerd-shim-reaper-v2
+            - --runtime-path=/host/usr/local/bin/reaper-runtime
+          ports:
+            - containerPort: 9100
+              name: metrics
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          volumeMounts:
+            - name: etc-reaper
+              mountPath: /host/etc/reaper
+            - name: run-reaper
+              mountPath: /host/run/reaper
+              mountPropagation: HostToContainer
+            - name: usr-local-bin
+              mountPath: /host/usr/local/bin
+              readOnly: true
+      volumes:
+        - name: etc-reaper
+          hostPath:
+            path: /etc/reaper
+            type: DirectoryOrCreate
+        - name: run-reaper
+          hostPath:
+            path: /run/reaper
+            type: DirectoryOrCreate
+        - name: usr-local-bin
+          hostPath:
+            path: {{ .Values.node.installPath }}
+            type: Directory
+{{- end }}

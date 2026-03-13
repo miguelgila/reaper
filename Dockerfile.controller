@@ -1,25 +1,23 @@
-## Build stage: cross-compile static musl binary
-ARG RUST_TARGET=x86_64-unknown-linux-musl
-ARG MUSL_IMAGE=x86_64-musl
+# Multi-stage build for reaper-controller
+# Produces a minimal static binary for Kubernetes Deployment.
+# Supports multi-arch builds via docker buildx.
 
-FROM messense/rust-musl-cross:${MUSL_IMAGE} AS builder
-ARG RUST_TARGET
-
+# --- Builder stages (cross-compile on native platform) ---
+FROM --platform=$BUILDPLATFORM messense/rust-musl-cross:x86_64-musl AS builder-amd64
 WORKDIR /work
 COPY . .
+RUN cargo build --release --features controller --bin reaper-controller --target x86_64-unknown-linux-musl && \
+    cp target/x86_64-unknown-linux-musl/release/reaper-controller /reaper-controller
 
-# Set build metadata
-RUN export GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown") && \
-    export BUILD_DATE=$(date -u '+%Y-%m-%d') && \
-    cargo build --release --features controller --bin reaper-controller --target "${RUST_TARGET}"
+FROM --platform=$BUILDPLATFORM messense/rust-musl-cross:aarch64-musl AS builder-arm64
+WORKDIR /work
+COPY . .
+RUN cargo build --release --features controller --bin reaper-controller --target aarch64-unknown-linux-musl && \
+    cp target/aarch64-unknown-linux-musl/release/reaper-controller /reaper-controller
 
-RUN cp target/${RUST_TARGET}/release/reaper-controller /reaper-controller
-
-## Runtime stage: distroless static (no shell, no libc needed for musl)
+# --- Runtime stage ---
 FROM gcr.io/distroless/static-debian12:nonroot
-
-COPY --from=builder /reaper-controller /usr/local/bin/reaper-controller
-
+ARG TARGETARCH
+COPY --from=builder-${TARGETARCH} /reaper-controller /usr/local/bin/reaper-controller
 USER nonroot:nonroot
-
 ENTRYPOINT ["/usr/local/bin/reaper-controller"]

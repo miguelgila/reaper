@@ -31,8 +31,8 @@ phase_setup() {
   ci_group_start "Phase 2: Infrastructure setup"
 
   # Delegate to the shared playground setup script.
-  # It handles: cluster creation, image builds (node + controller),
-  # Helm install (CRD, RuntimeClass, DaemonSet, controller), readiness, smoke test.
+  # It handles: cluster creation, image builds (node + controller + agent),
+  # Helm install (CRD, RuntimeClass, DaemonSet, controller, agent), readiness, smoke test.
   local setup_args=(
     --cluster-name "$CLUSTER_NAME"
     --quiet
@@ -73,18 +73,8 @@ phase_setup() {
   # Capture NODE_ID for diagnostics (used by cleanup trap and test functions)
   NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
 
-  # Build and load reaper-agent image (required for Phase 4a agent tests)
-  log_status "Building reaper-agent image for Kind..."
-  local agent_args=(--cluster-name "$CLUSTER_NAME" --quiet)
-  if [[ -n "${CI:-}" ]]; then
-    agent_args+=(--skip-build)
-  fi
-  "$SCRIPT_DIR/build-agent-image.sh" "${agent_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
-    log_error "reaper-agent image build failed"
-    tail -50 "$LOG_FILE" >&2
-    exit 1
-  }
-  log_status "reaper-agent image loaded into Kind."
+  # Note: reaper-agent image is now built by setup-playground.sh alongside
+  # reaper-node and reaper-controller (all 3 images loaded into Kind).
 
   log_status "Infrastructure setup complete."
   ci_group_end

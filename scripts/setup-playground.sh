@@ -210,6 +210,11 @@ info "Using KUBECONFIG=$KUBECONFIG_FILE" | if_log
 # ---------------------------------------------------------------------------
 cd "$REPO_ROOT"
 
+# Extract version from Cargo.toml so images are tagged with the version under test
+# (matches what the Helm chart defaults to via appVersion).
+REAPER_VERSION=$(sed -n '/^\[package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+info "Reaper version: $REAPER_VERSION" | if_log
+
 # Build reaper-node image (contains shim + runtime + install script)
 info "Building reaper-node image" | if_log
 local_build_args=(--cluster-name "$CLUSTER_NAME")
@@ -219,17 +224,30 @@ fi
 if $QUIET; then
   local_build_args+=(--quiet)
 fi
-"$SCRIPT_DIR/build-node-image.sh" "${local_build_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
+"$SCRIPT_DIR/build-node-image.sh" "${local_build_args[@]}" \
+  --image "ghcr.io/miguelgila/reaper-node:${REAPER_VERSION}" \
+  2>&1 | tee -a "$LOG_FILE" || {
   fail "reaper-node image build failed. See $LOG_FILE"
 }
 ok "reaper-node image loaded into Kind." | if_log
 
 # Build reaper-controller image
 info "Building reaper-controller image" | if_log
-"$SCRIPT_DIR/build-controller-image.sh" "${local_build_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
+"$SCRIPT_DIR/build-controller-image.sh" "${local_build_args[@]}" \
+  --image "ghcr.io/miguelgila/reaper-controller:${REAPER_VERSION}" \
+  2>&1 | tee -a "$LOG_FILE" || {
   fail "reaper-controller image build failed. See $LOG_FILE"
 }
 ok "reaper-controller image loaded into Kind." | if_log
+
+# Build reaper-agent image
+info "Building reaper-agent image" | if_log
+"$SCRIPT_DIR/build-agent-image.sh" "${local_build_args[@]}" \
+  --image "ghcr.io/miguelgila/reaper-agent:${REAPER_VERSION}" \
+  2>&1 | tee -a "$LOG_FILE" || {
+  fail "reaper-agent image build failed. See $LOG_FILE"
+}
+ok "reaper-agent image loaded into Kind." | if_log
 
 # ---------------------------------------------------------------------------
 # Install Reaper via Helm
@@ -246,6 +264,7 @@ for attempt in 1 2 3; do
       --namespace reaper-system --create-namespace \
       --set node.image.pullPolicy=IfNotPresent \
       --set controller.image.pullPolicy=IfNotPresent \
+      --set agent.image.pullPolicy=IfNotPresent \
       --wait --timeout 120s \
       >> "$LOG_FILE" 2>&1; then
       HELM_INSTALLED=true
@@ -256,6 +275,7 @@ for attempt in 1 2 3; do
       --namespace reaper-system --create-namespace \
       --set node.image.pullPolicy=IfNotPresent \
       --set controller.image.pullPolicy=IfNotPresent \
+      --set agent.image.pullPolicy=IfNotPresent \
       --wait --timeout 120s \
       2>&1 | tee -a "$LOG_FILE"; then
       HELM_INSTALLED=true
