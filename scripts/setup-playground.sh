@@ -254,14 +254,6 @@ ok "reaper-agent image loaded into Kind." | if_log
 # ---------------------------------------------------------------------------
 info "Installing Reaper via Helm" | if_log
 
-# Clean up stale namespace from a previous failed Helm install.  If the
-# namespace exists but has no Helm release, --create-namespace will fail.
-if kubectl get namespace reaper-system &>/dev/null && \
-   ! helm status reaper -n reaper-system &>/dev/null; then
-  warn "Stale namespace reaper-system found without Helm release, cleaning up..." | if_log
-  kubectl delete namespace reaper-system --wait=true --timeout=60s >> "$LOG_FILE" 2>&1 || true
-fi
-
 # Retry Helm install up to 3 times. On freshly-created Kind clusters the API
 # server may not be fully stabilized when we reach this point, causing the
 # first attempt to fail (CRD establishment race, transient API errors, etc.).
