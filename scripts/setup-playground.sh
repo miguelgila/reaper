@@ -355,9 +355,14 @@ for i in $(seq 1 30); do
     break
   elif [[ "$phase" == "Failed" ]]; then
     warn "Smoke test pod failed" | if_log
-    kubectl logs reaper-smoke-test 2>/dev/null | if_log
+    echo "--- pod describe ---" >&2
+    kubectl describe pod reaper-smoke-test >&2 2>/dev/null || true
+    echo "--- pod logs ---" >&2
+    kubectl logs reaper-smoke-test >&2 2>/dev/null || true
+    echo "--- reaper-node daemonset pods ---" >&2
+    kubectl get pods -n reaper-system -l app.kubernetes.io/component=node -o wide >&2 2>/dev/null || true
     kubectl delete pod reaper-smoke-test --ignore-not-found >> "$LOG_FILE" 2>&1
-    fail "Smoke test failed. Check $LOG_FILE"
+    fail "Smoke test failed. Check output above for details."
   fi
   sleep 1
 done
