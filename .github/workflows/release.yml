@@ -50,6 +50,17 @@ jobs:
           fi
           echo "Tag version matches Cargo.toml: $TAG_VERSION"
 
+      - name: Verify tag matches Chart.yaml version
+        run: |
+          TAG_VERSION="${{ needs.resolve-tag.outputs.tag }}"
+          TAG_VERSION="${TAG_VERSION#v}"
+          CHART_VERSION=$(grep '^version:' deploy/helm/reaper/Chart.yaml | awk '{print $2}')
+          if [ "$TAG_VERSION" != "$CHART_VERSION" ]; then
+            echo "ERROR: Tag version ($TAG_VERSION) does not match Chart.yaml version ($CHART_VERSION)"
+            exit 1
+          fi
+          echo "Tag version matches Chart.yaml: $TAG_VERSION"
+
   build:
     name: Build (${{ matrix.target }})
     needs: [resolve-tag, validate-tag]
@@ -110,9 +121,115 @@ jobs:
           name: release-${{ matrix.target }}
           path: "*.tar.gz"
 
+  container-images:
+    name: Container Images (${{ matrix.image }})
+    needs: [resolve-tag, validate-tag]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      id-token: write  # Required for cosign keyless signing via GitHub OIDC
+    strategy:
+      matrix:
+        include:
+          - image: reaper-agent
+            dockerfile: Dockerfile.agent
+          - image: reaper-controller
+            dockerfile: Dockerfile.controller
+          - image: reaper-node
+            dockerfile: Dockerfile.node
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${{ needs.resolve-tag.outputs.tag }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: build-push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with cosign (keyless)
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}@${{ steps.build-push.outputs.digest }}
+
+  helm-chart:
+    name: Helm Chart
+    needs: [resolve-tag, validate-tag]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      id-token: write  # Required for cosign keyless signing via GitHub OIDC
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          ref: ${{ needs.resolve-tag.outputs.tag }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Login to GHCR OCI registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${{ needs.resolve-tag.outputs.tag }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Package Helm chart
+        run: helm package deploy/helm/reaper --destination .
+
+      - name: Push to OCI registry
+        run: |
+          helm push "reaper-${{ steps.version.outputs.version }}.tgz" \
+            oci://ghcr.io/${{ github.repository_owner }}/charts
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign chart with cosign (keyless)
+        run: |
+          cosign sign --yes \
+            ghcr.io/${{ github.repository_owner }}/charts/reaper:${{ steps.version.outputs.version }}
+
   release:
     name: Create Release
-    needs: [resolve-tag, build]
+    needs: [resolve-tag, build, helm-chart]
     runs-on: ubuntu-latest
     permissions:
       contents: write
