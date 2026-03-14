@@ -144,11 +144,8 @@ jobs:
           version: "v3.14.0"
 
       - name: Run integration tests
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 30
-          max_attempts: 2
-          command: ./scripts/run-integration-tests.sh --skip-cargo
+        timeout-minutes: 30
+        run: ./scripts/run-integration-tests.sh --skip-cargo
 
       - name: Upload integration test logs
         if: always()
