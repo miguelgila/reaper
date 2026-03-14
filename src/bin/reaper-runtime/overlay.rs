@@ -1157,6 +1157,47 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
 
     info!("volume: applying {} volume mount(s)", volume_mounts.len());
 
+    // Diagnostic: log filesystem state visible after enter_overlay + adopt_overlay_root.
+    // Logged at ERROR so it appears in CI logs (which filter to error|fail|panic).
+    // TODO: remove once the CI ENOENT on /var/run/secrets is resolved.
+    {
+        use std::os::unix::fs::MetadataExt;
+        let root_info = fs::metadata("/")
+            .ok()
+            .map(|m| format!("dev={} ino={}", m.dev(), m.ino()));
+        let run_exists = Path::new("/run").exists();
+        let run_is_dir = Path::new("/run").is_dir();
+        let var_run_exists = Path::new("/var/run").exists();
+        let var_run_is_symlink = Path::new("/var/run").is_symlink();
+        let var_run_target = fs::read_link("/var/run").ok();
+        let run_contents = fs::read_dir("/run").ok().map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .take(20)
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
+        let mounts_with_run = fs::read_to_string("/proc/self/mountinfo")
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.contains("/run"))
+            .map(String::from)
+            .collect::<Vec<_>>();
+        tracing::error!(
+            "volume: DIAG root={:?} /run exists={} is_dir={} contents=[{:?}] \
+             /var/run exists={} is_symlink={} target={:?} \
+             mountinfo_with_run={:?}",
+            root_info,
+            run_exists,
+            run_is_dir,
+            run_contents,
+            var_run_exists,
+            var_run_is_symlink,
+            var_run_target,
+            mounts_with_run,
+        );
+    }
+
     for m in &volume_mounts {
         let source = m.source.as_deref().unwrap_or("");
         let dest = &m.destination;
