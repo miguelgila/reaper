@@ -468,7 +468,7 @@ fn helper_pid_path(ns_path: &Path) -> PathBuf {
 /// Returns `None` on any error (missing file, parse failure, etc.).
 fn read_helper_info(pid_path: &Path) -> Option<(i32, u64)> {
     let content = fs::read_to_string(pid_path).ok()?;
-    let mut parts = content.trim().split_whitespace();
+    let mut parts = content.split_whitespace();
     let pid: i32 = parts.next()?.parse().ok()?;
     let inode: u64 = parts.next()?.parse().ok()?;
     Some((pid, inode))
