@@ -515,28 +515,54 @@ fn namespace_exists(ns_path: &Path) -> bool {
     false
 }
 
-/// After setns(CLONE_NEWNS), adopt the overlay namespace's root filesystem.
+/// Open the overlay root directory via /proc/<pid>/root BEFORE setns.
+///
+/// Must be called while still in the host mount namespace where /proc is
+/// accessible. After setns, /proc is on a foreign mount and may not be
+/// traversable.
+fn open_overlay_root_fd(helper_pid: i32) -> Option<fs::File> {
+    let helper_root = format!("/proc/{}/root", helper_pid);
+    match fs::File::open(&helper_root) {
+        Ok(f) => {
+            info!(
+                "overlay: opened helper root fd (pid={}, path={})",
+                helper_pid, helper_root
+            );
+            Some(f)
+        }
+        Err(e) => {
+            tracing::warn!("overlay: failed to open {}: {}", helper_root, e);
+            None
+        }
+    }
+}
+
+/// After setns(CLONE_NEWNS), adopt the overlay namespace's root filesystem
+/// using a pre-opened directory fd.
 ///
 /// The process root still points to the old (host) namespace's root after setns.
 /// Absolute paths resolve through this stale root, which doesn't see mounts
-/// from the overlay namespace (e.g., /run tmpfs). This causes ENOENT when
-/// creating volume mount destinations like /var/run/secrets/...
+/// from the overlay namespace (e.g., /run tmpfs is on a foreign mount). This
+/// causes ENOENT when creating volume mount destinations.
 ///
-/// Fix: chroot into the helper's root via /proc/<pid>/root. The kernel resolves
-/// this magic symlink to the helper's root dentry (the overlay root after
-/// pivot_root). Then chdir("/") adopts it as CWD.
-fn adopt_overlay_root(helper_pid: Option<i32>) {
-    if let Some(pid) = helper_pid {
-        let helper_root = format!("/proc/{}/root", pid);
-        match nix::unistd::chroot(helper_root.as_str()) {
-            Ok(()) => info!("overlay: chroot to helper root (pid={})", pid),
-            Err(e) => tracing::warn!(
-                "overlay: chroot to {} failed: {} (falling back to chdir only)",
-                helper_root,
-                e
-            ),
+/// Fix: fchdir to the pre-opened overlay root fd (opened via /proc/<pid>/root
+/// before setns), then chroot(".") to adopt it as the process root.
+fn adopt_overlay_root(overlay_root_fd: Option<&fs::File>) {
+    use std::os::unix::io::AsRawFd;
+    if let Some(fd) = overlay_root_fd {
+        match nix::unistd::fchdir(fd.as_raw_fd()) {
+            Ok(()) => match nix::unistd::chroot(".") {
+                Ok(()) => {
+                    info!("overlay: adopted overlay root via fchdir+chroot");
+                    std::env::set_current_dir("/").ok();
+                    return;
+                }
+                Err(e) => tracing::warn!("overlay: chroot(\".\") failed: {}", e),
+            },
+            Err(e) => tracing::warn!("overlay: fchdir to overlay root fd failed: {}", e),
         }
     }
+    // Fallback: just chdir("/") (may not resolve to the overlay root)
     std::env::set_current_dir("/").ok();
 }
 
@@ -548,17 +574,22 @@ fn adopt_overlay_root(helper_pid: Option<i32>) {
 /// Tested by kind-integration (requires root + Linux namespaces).
 #[cfg(not(tarpaulin_include))]
 fn join_namespace(ns_path: &Path) -> Result<()> {
-    // Read helper PID upfront — we need it for chroot after setns.
+    // Read helper PID upfront — we need it to open the overlay root fd.
     // Must read BEFORE setns because the PID file lives on the host's /run
     // tmpfs and may not be accessible through the old process root after
     // entering the overlay namespace.
     let pid_path = helper_pid_path(ns_path);
     let helper_info = read_helper_info(&pid_path);
 
+    // Open overlay root fd BEFORE setns (while /proc is still accessible)
+    let overlay_root_fd = helper_info
+        .as_ref()
+        .and_then(|(pid, _)| open_overlay_root_fd(*pid));
+
     // Try bind-mount path first (normal case on real clusters)
     if let Ok(f) = fs::File::open(ns_path) {
         if setns(&f, CloneFlags::CLONE_NEWNS).is_ok() {
-            adopt_overlay_root(helper_info.map(|(pid, _)| pid));
+            adopt_overlay_root(overlay_root_fd.as_ref());
             info!("overlay: successfully joined shared namespace via bind-mount");
             return Ok(());
         }
@@ -583,7 +614,7 @@ fn join_namespace(ns_path: &Path) -> Result<()> {
     let f = fs::File::open(&ns_proc_path)
         .with_context(|| format!("opening helper namespace at {}", ns_proc_path))?;
     setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace via PID fallback")?;
-    adopt_overlay_root(Some(pid));
+    adopt_overlay_root(overlay_root_fd.as_ref());
     info!(
         "overlay: successfully joined shared namespace via PID fallback (helper pid={})",
         pid
@@ -792,10 +823,12 @@ fn inner_parent_persist(
         join_namespace(&config.ns_path)?;
     } else {
         // Join directly via /proc/<pid>/ns/mnt (EINVAL fallback)
+        // Open overlay root fd BEFORE setns (while /proc is still accessible)
+        let overlay_root_fd = open_overlay_root_fd(helper_pid.as_raw());
         let f = fs::File::open(&ns_source)
             .with_context(|| format!("opening namespace at {}", ns_source))?;
         setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace")?;
-        adopt_overlay_root(Some(helper_pid.as_raw()));
+        adopt_overlay_root(overlay_root_fd.as_ref());
         info!("overlay: successfully joined shared namespace via direct /proc path");
     }
 
