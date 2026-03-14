@@ -429,6 +429,33 @@ YAML
     log_verbose "Reader output (file not found expected): '$reader_output'"
   fi
 
+  # Diagnostic: check helper process and PID file state before same-group reader
+  log_verbose "=== Overlay-name diagnostic: helper state before same-group reader ==="
+  docker exec "${CLUSTER_NAME}-control-plane" sh -c '
+    echo "=== PID files ==="
+    ls -la /run/reaper/ns/*.pid 2>&1 || echo "(no PID files)"
+    echo "=== NS dir ==="
+    ls -la /run/reaper/ns/ 2>&1
+    echo "=== Helper alive? ==="
+    for pf in /run/reaper/ns/*.pid; do
+      [ -f "$pf" ] || continue
+      pid=$(cut -d" " -f1 "$pf" 2>/dev/null)
+      inode=$(cut -d" " -f2 "$pf" 2>/dev/null)
+      name=$(basename "$pf")
+      if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+        echo "  $name: pid=$pid inode=$inode ALIVE (ns/mnt=$(ls -la /proc/$pid/ns/mnt 2>&1))"
+      else
+        echo "  $name: pid=$pid inode=$inode DEAD"
+      fi
+    done
+    echo "=== Overlay upper dirs ==="
+    find /run/reaper/overlay/ -maxdepth 3 -type f 2>/dev/null | head -20 || echo "(empty)"
+    echo "=== Runtime log (last 20 overlay/namespace lines) ==="
+    grep -E "overlay|namespace|helper|setns|EINVAL" /run/reaper/runtime.log 2>/dev/null | tail -20 || echo "(no matching log lines)"
+  ' 2>&1 | while IFS= read -r line; do
+    log_verbose "  diag: $line"
+  done
+
   # Bonus: verify a pod with the SAME overlay-name CAN see the file
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -506,44 +533,59 @@ test_shim_cleanup_after_delete() {
   # After all test pods have been deleted, there should be no lingering
   # containerd-shim-reaper-v2 processes for k8s.io containers.
   # Each shim's shutdown() must signal ExitSignal so the process exits.
-  sleep 5
+  #
+  # Under load (many pods created/deleted during the test suite), the
+  # containerd sandbox teardown can exceed 5s, so we retry with backoff.
+  local max_wait=30
+  local interval=3
+  local elapsed=0
 
-  # Count reaper shim processes still running
+  while [[ $elapsed -lt $max_wait ]]; do
+    sleep $interval
+    elapsed=$((elapsed + interval))
+
+    local shim_pids
+    shim_pids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
+      | grep '[c]ontainerd-shim-reaper-v2' \
+      | grep -v 'shim-path=' \
+      | grep -v grep || true)
+
+    local shim_count=0
+    [[ -n "$shim_pids" ]] && shim_count=$(echo "$shim_pids" | wc -l | tr -d ' ')
+
+    # Count how many reaper pods are still actually running
+    local running_pods
+    running_pods=$(kubectl get pods --no-headers 2>/dev/null \
+      | grep -c '^reaper-' || true)
+
+    log_verbose "Shim cleanup check (${elapsed}s/${max_wait}s): $shim_count shims, $running_pods pods"
+
+    # Success: no orphaned shims, or pods still exist (shims are expected)
+    if [[ "$shim_count" -eq 0 || "$running_pods" -gt 0 ]]; then
+      log_verbose "Shim cleanup OK after ${elapsed}s: $shim_count shims, $running_pods pods"
+      return 0
+    fi
+
+    log_verbose "Still $shim_count orphaned shims after ${elapsed}s, retrying..."
+  done
+
+  # Final failure with diagnostics
   local shim_pids
   shim_pids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
     | grep '[c]ontainerd-shim-reaper-v2' \
     | grep -v grep || true)
 
-  local shim_count
-  if [[ -z "$shim_pids" ]]; then
-    shim_count=0
-  else
-    shim_count=$(echo "$shim_pids" | wc -l | tr -d ' ')
-  fi
+  log_error "Found orphaned containerd-shim-reaper-v2 processes after ${max_wait}s:"
+  log_error "$shim_pids"
 
-  # Count how many reaper pods are still actually running
-  local running_pods
-  running_pods=$(kubectl get pods --no-headers 2>/dev/null \
-    | grep -c '^reaper-' || true)
+  # Grab container IDs from the shim command lines for diagnostics
+  local shim_ids
+  shim_ids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
+    | grep '[c]ontainerd-shim-reaper-v2' \
+    | sed -n 's/.*-id \([0-9a-f]\{1,\}\).*/\1/p' || true)
+  log_verbose "Orphaned shim container IDs: $shim_ids"
 
-  log_verbose "Shim processes: $shim_count, Running reaper pods: $running_pods"
-
-  if [[ "$shim_count" -gt 0 && "$running_pods" -eq 0 ]]; then
-    log_error "Found $shim_count orphaned containerd-shim-reaper-v2 processes with no reaper pods running:"
-    log_error "$shim_pids"
-
-    # Grab container IDs from the shim command lines for diagnostics
-    local shim_ids
-    shim_ids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
-      | grep '[c]ontainerd-shim-reaper-v2' \
-      | grep -oP '(?<=-id )[0-9a-f]+' || true)
-    log_verbose "Orphaned shim container IDs: $shim_ids"
-
-    return 1
-  fi
-
-  log_verbose "Shim cleanup OK: $shim_count shims for $running_pods pods."
-  return 0
+  return 1
 }
 
 test_uid_gid_switching() {
@@ -2020,8 +2062,18 @@ stop_agent_pf() {
 # ---------------------------------------------------------------------------
 
 test_agent_deployment() {
-  # Deploy agent manifests
-  kubectl apply -f deploy/kubernetes/reaper-agent.yaml >> "$LOG_FILE" 2>&1
+  # Agent DaemonSet is deployed by Helm during setup. If it doesn't exist
+  # (e.g., --agent-only without Helm), apply the raw YAML as fallback but
+  # patch the image tag to match what's loaded in Kind (avoids :latest pull).
+  if ! kubectl get daemonset reaper-agent -n reaper-system &>/dev/null; then
+    log_verbose "Agent DaemonSet not found (non-Helm run), deploying from raw YAML..."
+    kubectl apply -f deploy/kubernetes/reaper-agent.yaml >> "$LOG_FILE" 2>&1
+    # Patch image tag to match Cargo.toml version (raw YAML uses :latest)
+    local reaper_version
+    reaper_version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    kubectl set image daemonset/reaper-agent -n reaper-system \
+      "agent=ghcr.io/miguelgila/reaper-agent:${reaper_version}" >> "$LOG_FILE" 2>&1
+  fi
 
   # Patch DaemonSet to use faster overlay GC interval for testing (30s instead of 300s)
   kubectl patch daemonset reaper-agent -n reaper-system --type=json \
@@ -2989,7 +3041,8 @@ test_agent_job_working_dir() {
 }
 
 cleanup_agent() {
-  kubectl delete -f deploy/kubernetes/reaper-agent.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  # Don't delete the Helm-managed agent DaemonSet — only clean up test artifacts.
+  # The agent is deployed by Helm and needed for subsequent test phases.
   docker exec "$NODE_ID" rm -rf /run/reaper/stale-gc-test >> "$LOG_FILE" 2>&1 || true
   # Cleanup any leftover overlay GC test artifacts
   docker exec "$NODE_ID" rm -rf /run/reaper/overlay/reaper-gc-test /run/reaper/overlay/reaper-gc-named /run/reaper/overlay/reaper-gc-running >> "$LOG_FILE" 2>&1 || true
@@ -3091,8 +3144,13 @@ test_controller_deployment() {
   kubectl create namespace reaper-system --dry-run=client -o yaml | kubectl apply -f - >> "$LOG_FILE" 2>&1
 
   # If the controller deployment doesn't exist (e.g., --crd-only without Helm), apply it
+  # and patch the image tag to match what's loaded in Kind (raw YAML uses :latest).
   if ! kubectl get deployment reaper-controller -n reaper-system &>/dev/null; then
     kubectl apply -f deploy/kubernetes/reaper-controller.yaml >> "$LOG_FILE" 2>&1
+    local reaper_version
+    reaper_version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    kubectl set image deployment/reaper-controller -n reaper-system \
+      "controller=ghcr.io/miguelgila/reaper-controller:${reaper_version}" >> "$LOG_FILE" 2>&1
   fi
 
   # Wait for the controller pod to be ready

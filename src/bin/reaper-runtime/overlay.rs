@@ -526,6 +526,12 @@ fn join_namespace(ns_path: &Path) -> Result<()> {
     // Try bind-mount path first (normal case on real clusters)
     if let Ok(f) = fs::File::open(ns_path) {
         if setns(&f, CloneFlags::CLONE_NEWNS).is_ok() {
+            // After setns(CLONE_NEWNS), the process is in the new mount namespace
+            // but its root directory and CWD still reference the old namespace.
+            // chdir("/") adopts the new namespace's root (the pivot_root'd overlay).
+            // See setns(2): "a call to chdir() may be necessary to set the ...
+            // current working directory appropriately".
+            std::env::set_current_dir("/").ok();
             info!("overlay: successfully joined shared namespace via bind-mount");
             return Ok(());
         }
@@ -551,6 +557,10 @@ fn join_namespace(ns_path: &Path) -> Result<()> {
     let f = fs::File::open(&ns_proc_path)
         .with_context(|| format!("opening helper namespace at {}", ns_proc_path))?;
     setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace via PID fallback")?;
+    // After setns(CLONE_NEWNS), adopt the new namespace's root filesystem.
+    // Without this, the process's root/CWD still reference the old namespace
+    // and path resolution may not traverse the pivot_root'd overlay.
+    std::env::set_current_dir("/").ok();
     info!(
         "overlay: successfully joined shared namespace via PID fallback (helper pid={})",
         pid
@@ -762,6 +772,7 @@ fn inner_parent_persist(
         let f = fs::File::open(&ns_source)
             .with_context(|| format!("opening namespace at {}", ns_source))?;
         setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace")?;
+        std::env::set_current_dir("/").ok();
         info!("overlay: successfully joined shared namespace via direct /proc path");
     }
 

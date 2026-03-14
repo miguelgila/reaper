@@ -250,9 +250,29 @@ info "Building reaper-agent image" | if_log
 ok "reaper-agent image loaded into Kind." | if_log
 
 # ---------------------------------------------------------------------------
+# Verify image availability before Helm install
+# ---------------------------------------------------------------------------
+info "Verifying images are loaded in Kind nodes" | if_log
+
+# Check Chart.yaml appVersion matches Cargo.toml version
+CHART_APP_VERSION=$(grep 'appVersion:' deploy/helm/reaper/Chart.yaml | sed 's/.*"\(.*\)"/\1/')
+if [[ "$CHART_APP_VERSION" != "$REAPER_VERSION" ]]; then
+  warn "Chart.yaml appVersion ($CHART_APP_VERSION) != Cargo.toml version ($REAPER_VERSION)" | if_log
+  warn "This may cause ImagePullBackOff if Helm resolves a different tag than loaded images" | if_log
+fi
+
+# Log images available in Kind node for debugging
+log_images() {
+  docker exec "${CLUSTER_NAME}-control-plane" crictl images 2>/dev/null \
+    | grep -E "reaper-(node|controller|agent)" || echo "  (no reaper images found)"
+}
+info "Images in Kind node:" | if_log
+log_images 2>&1 | tee -a "$LOG_FILE" | if_log
+
+# ---------------------------------------------------------------------------
 # Install Reaper via Helm
 # ---------------------------------------------------------------------------
-info "Installing Reaper via Helm" | if_log
+info "Installing Reaper via Helm (image tag: $REAPER_VERSION)" | if_log
 
 # Retry Helm install up to 3 times. On freshly-created Kind clusters the API
 # server may not be fully stabilized when we reach this point, causing the
