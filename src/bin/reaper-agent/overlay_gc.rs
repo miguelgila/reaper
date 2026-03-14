@@ -67,6 +67,41 @@ fn is_pid_alive(pid: i32) -> bool {
     signal::kill(Pid::from_raw(pid), None).is_ok()
 }
 
+/// Kill a stale helper process (best-effort).
+fn kill_helper(pid: i32) {
+    use nix::sys::signal::{self, Signal};
+    use nix::unistd::Pid;
+    match signal::kill(Pid::from_raw(pid), Signal::SIGKILL) {
+        Ok(()) => info!(pid = pid, "killed stale namespace helper"),
+        Err(e) => debug!(pid = pid, error = %e, "failed to kill stale helper (already dead?)"),
+    }
+}
+
+/// Read a PID file in `<pid> <inode>` format. Returns None on any error.
+fn read_pid_file(path: &Path) -> Option<(i32, u64)> {
+    let content = fs::read_to_string(path).ok()?;
+    let mut parts = content.trim().split_whitespace();
+    let pid: i32 = parts.next()?.parse().ok()?;
+    let inode: u64 = parts.next()?.parse().ok()?;
+    Some((pid, inode))
+}
+
+/// Check if a helper process's mount namespace inode matches the expected value.
+#[cfg(target_os = "linux")]
+fn ns_inode_matches(pid: i32, expected_inode: u64) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let ns_path = format!("/proc/{}/ns/mnt", pid);
+    match fs::metadata(&ns_path) {
+        Ok(meta) => meta.ino() == expected_inode,
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ns_inode_matches(_pid: i32, _expected_inode: u64) -> bool {
+    false
+}
+
 /// Check whether a path is a mount point by checking mountinfo.
 ///
 /// First checks `/proc/self/mountinfo` (agent's own mount namespace).
@@ -222,12 +257,34 @@ pub fn run_ns_cleanup(state_dir: &str, metrics: &MetricsState) {
             None => continue,
         };
 
+        // Skip .pid files — they are managed alongside their ns files
+        if name.ends_with(".pid") {
+            continue;
+        }
+
         scanned += 1;
 
         // If it's a live mount point, skip
         if is_mount_point(&path) {
             debug!(file = %name, "ns file is a live mount point, skipping");
             continue;
+        }
+
+        // Check PID file fallback: if a .pid file exists with a live helper
+        // whose namespace inode matches, the namespace is live via PID fallback
+        // (bind-mount returned EINVAL in nested container environments)
+        let pid_file = path.with_extension("pid");
+        if pid_file.exists() {
+            if let Some((pid, expected_inode)) = read_pid_file(&pid_file) {
+                if is_pid_alive(pid) && ns_inode_matches(pid, expected_inode) {
+                    debug!(
+                        file = %name,
+                        helper_pid = pid,
+                        "namespace live via PID fallback, skipping"
+                    );
+                    continue;
+                }
+            }
         }
 
         // Parse filename to determine k8s namespace
@@ -270,6 +327,16 @@ pub fn run_ns_cleanup(state_dir: &str, metrics: &MetricsState) {
         try_unmount(&path);
         if remove_path(&path, "stale ns file") {
             cleaned += 1;
+        }
+
+        // Clean up associated .pid file and kill stale helper
+        if pid_file.exists() {
+            if let Some((pid, _)) = read_pid_file(&pid_file) {
+                if is_pid_alive(pid) {
+                    kill_helper(pid);
+                }
+            }
+            remove_path(&pid_file, "stale ns pid file");
         }
     }
 
@@ -425,18 +492,39 @@ pub async fn run_overlay_gc(
         remove_path(&ns_file, "namespace file");
         remove_path(&base.join(format!("overlay-{}.lock", ns_name)), "lock file");
 
+        // Clean up .pid file and kill stale helper for the namespace
+        let ns_pid_file = base.join("ns").join(format!("{}.pid", ns_name));
+        if ns_pid_file.exists() {
+            if let Some((pid, _)) = read_pid_file(&ns_pid_file) {
+                if is_pid_alive(pid) {
+                    kill_helper(pid);
+                }
+            }
+            remove_path(&ns_pid_file, "namespace pid file");
+        }
+
         // Clean named overlay groups: ns/<ns>--* files and overlay-<ns>--*.lock files
         let ns_prefix = format!("{}--", ns_name);
 
-        // Scan ns/ directory for named group bind-mounts
+        // Scan ns/ directory for named group bind-mounts and .pid files
         let ns_dir = base.join("ns");
         if ns_dir.exists() {
             if let Ok(ns_entries) = fs::read_dir(&ns_dir) {
                 for entry in ns_entries.flatten() {
                     if let Some(name) = entry.file_name().to_str() {
                         if name.starts_with(&ns_prefix) {
-                            try_unmount(&entry.path());
-                            remove_path(&entry.path(), "named group ns file");
+                            if name.ends_with(".pid") {
+                                // Clean up .pid file and kill helper
+                                if let Some((pid, _)) = read_pid_file(&entry.path()) {
+                                    if is_pid_alive(pid) {
+                                        kill_helper(pid);
+                                    }
+                                }
+                                remove_path(&entry.path(), "named group pid file");
+                            } else {
+                                try_unmount(&entry.path());
+                                remove_path(&entry.path(), "named group ns file");
+                            }
                         }
                     }
                 }
