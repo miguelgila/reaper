@@ -212,7 +212,7 @@ cd "$REPO_ROOT"
 
 # Extract version from Cargo.toml so images are tagged with the version under test
 # (matches what the Helm chart defaults to via appVersion).
-REAPER_VERSION=$(sed -n '/^\[package\]/,/^\[/{s/^version = "\(.*\)"/\1/p}' Cargo.toml)
+REAPER_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 info "Reaper version: $REAPER_VERSION" | if_log
 
 # Build reaper-node image (contains shim + runtime + install script)

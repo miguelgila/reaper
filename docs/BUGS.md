@@ -41,3 +41,59 @@ during the integration test suite).
 - The `Combined annotations` test exercises similar annotation logic and
   passes reliably, suggesting the issue is timing-related rather than
   functional.
+
+---
+
+## Overlay Namespace Bind-Mount EINVAL on Kind v1.35.0
+
+**Component:** `reaper-runtime` overlay (`src/bin/reaper-runtime/overlay.rs`)
+**Severity:** High (blocks all Reaper workloads on affected nodes)
+**Status:** Open
+**Discovered:** 2026-03-14
+
+### Symptoms
+
+All Reaper pods fail immediately with exit code 1 and empty logs. The
+runtime log shows:
+
+```
+ERROR reaper_runtime: do_start() - overlay setup failed: failed to create
+shared namespace: bind-mounting namespace: EINVAL: Invalid argument,
+refusing to run without isolation
+```
+
+### Root Cause
+
+The overlay namespace persistence code in `inner_parent_persist()` bind-mounts
+`/proc/<helper_pid>/ns/mnt` to a file under `/run/reaper/ns/`. This `mount(MS_BIND)`
+call returns `EINVAL` inside Kind v1.35.0 nodes (`kindest/node:v1.35.0`).
+
+Kind nodes are Docker containers, and newer kernels or containerd 2.x restrict
+namespace bind-mounts from within nested containers. The `EINVAL` indicates the
+mount is rejected by the kernel's mount namespace security checks.
+
+Containerd also logs a secondary warning:
+```
+failed to load runtime info: exit status 1 (stderr: "io.containerd.reaper.v2: Env(NotPresent)")
+```
+
+### Impact
+
+- All Reaper workloads fail on Kind v1.35.0 (smoke test, integration tests)
+- CI integration tests are blocked
+- Does not affect real (non-Kind) Kubernetes clusters where nodes run
+  directly on the host kernel (not inside Docker containers)
+
+### Workarounds
+
+- Pin Kind to v1.34.x or earlier (last known working version)
+- Test on real Kubernetes clusters (GKE, EKS) where the host kernel
+  allows namespace bind-mounts
+
+### Investigation Notes
+
+- The overlay code has not changed between `main` and the failing branch
+- The bind-mount target file is created successfully; only the `mount()` fails
+- The same code works on older Kind versions with containerd 1.7.x
+- Need to verify: is the issue in the kernel version, containerd 2.x sandbox
+  restrictions, or Docker's seccomp/apparmor profile for Kind containers?
