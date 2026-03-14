@@ -547,23 +547,15 @@ fn open_overlay_root_fd(helper_pid: i32) -> Option<fs::File> {
 ///
 /// Fix: fchdir to the pre-opened overlay root fd (opened via /proc/<pid>/root
 /// before setns), then chroot(".") to adopt it as the process root.
-fn adopt_overlay_root(overlay_root_fd: Option<&fs::File>) {
+fn adopt_overlay_root(overlay_root_fd: Option<&fs::File>) -> Result<()> {
     use std::os::unix::io::AsRawFd;
-    if let Some(fd) = overlay_root_fd {
-        match nix::unistd::fchdir(fd.as_raw_fd()) {
-            Ok(()) => match nix::unistd::chroot(".") {
-                Ok(()) => {
-                    info!("overlay: adopted overlay root via fchdir+chroot");
-                    std::env::set_current_dir("/").ok();
-                    return;
-                }
-                Err(e) => tracing::warn!("overlay: chroot(\".\") failed: {}", e),
-            },
-            Err(e) => tracing::warn!("overlay: fchdir to overlay root fd failed: {}", e),
-        }
-    }
-    // Fallback: just chdir("/") (may not resolve to the overlay root)
-    std::env::set_current_dir("/").ok();
+    let fd = overlay_root_fd
+        .context("no overlay root fd available — cannot adopt overlay root after setns")?;
+    nix::unistd::fchdir(fd.as_raw_fd()).context("fchdir to overlay root fd failed")?;
+    nix::unistd::chroot(".").context("chroot(\".\") to overlay root failed")?;
+    std::env::set_current_dir("/").context("chdir(\"/\") after chroot failed")?;
+    info!("overlay: adopted overlay root via fchdir+chroot");
+    Ok(())
 }
 
 /// Join an existing shared mount namespace via setns().
@@ -589,7 +581,8 @@ fn join_namespace(ns_path: &Path) -> Result<()> {
     // Try bind-mount path first (normal case on real clusters)
     if let Ok(f) = fs::File::open(ns_path) {
         if setns(&f, CloneFlags::CLONE_NEWNS).is_ok() {
-            adopt_overlay_root(overlay_root_fd.as_ref());
+            adopt_overlay_root(overlay_root_fd.as_ref())
+                .context("adopting overlay root after bind-mount setns")?;
             info!("overlay: successfully joined shared namespace via bind-mount");
             return Ok(());
         }
@@ -614,7 +607,8 @@ fn join_namespace(ns_path: &Path) -> Result<()> {
     let f = fs::File::open(&ns_proc_path)
         .with_context(|| format!("opening helper namespace at {}", ns_proc_path))?;
     setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace via PID fallback")?;
-    adopt_overlay_root(overlay_root_fd.as_ref());
+    adopt_overlay_root(overlay_root_fd.as_ref())
+        .context("adopting overlay root after PID fallback setns")?;
     info!(
         "overlay: successfully joined shared namespace via PID fallback (helper pid={})",
         pid
@@ -828,7 +822,8 @@ fn inner_parent_persist(
         let f = fs::File::open(&ns_source)
             .with_context(|| format!("opening namespace at {}", ns_source))?;
         setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace")?;
-        adopt_overlay_root(overlay_root_fd.as_ref());
+        adopt_overlay_root(overlay_root_fd.as_ref())
+            .context("adopting overlay root after direct setns")?;
         info!("overlay: successfully joined shared namespace via direct /proc path");
     }
 
