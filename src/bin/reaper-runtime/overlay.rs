@@ -515,6 +515,31 @@ fn namespace_exists(ns_path: &Path) -> bool {
     false
 }
 
+/// After setns(CLONE_NEWNS), adopt the overlay namespace's root filesystem.
+///
+/// The process root still points to the old (host) namespace's root after setns.
+/// Absolute paths resolve through this stale root, which doesn't see mounts
+/// from the overlay namespace (e.g., /run tmpfs). This causes ENOENT when
+/// creating volume mount destinations like /var/run/secrets/...
+///
+/// Fix: chroot into the helper's root via /proc/<pid>/root. The kernel resolves
+/// this magic symlink to the helper's root dentry (the overlay root after
+/// pivot_root). Then chdir("/") adopts it as CWD.
+fn adopt_overlay_root(helper_pid: Option<i32>) {
+    if let Some(pid) = helper_pid {
+        let helper_root = format!("/proc/{}/root", pid);
+        match nix::unistd::chroot(helper_root.as_str()) {
+            Ok(()) => info!("overlay: chroot to helper root (pid={})", pid),
+            Err(e) => tracing::warn!(
+                "overlay: chroot to {} failed: {} (falling back to chdir only)",
+                helper_root,
+                e
+            ),
+        }
+    }
+    std::env::set_current_dir("/").ok();
+}
+
 /// Join an existing shared mount namespace via setns().
 ///
 /// Tries the bind-mount path first (normal case). If that fails, falls back
@@ -523,24 +548,25 @@ fn namespace_exists(ns_path: &Path) -> bool {
 /// Tested by kind-integration (requires root + Linux namespaces).
 #[cfg(not(tarpaulin_include))]
 fn join_namespace(ns_path: &Path) -> Result<()> {
+    // Read helper PID upfront — we need it for chroot after setns.
+    // Must read BEFORE setns because the PID file lives on the host's /run
+    // tmpfs and may not be accessible through the old process root after
+    // entering the overlay namespace.
+    let pid_path = helper_pid_path(ns_path);
+    let helper_info = read_helper_info(&pid_path);
+
     // Try bind-mount path first (normal case on real clusters)
     if let Ok(f) = fs::File::open(ns_path) {
         if setns(&f, CloneFlags::CLONE_NEWNS).is_ok() {
-            // After setns(CLONE_NEWNS), the process is in the new mount namespace
-            // but its root directory and CWD still reference the old namespace.
-            // chdir("/") adopts the new namespace's root (the pivot_root'd overlay).
-            // See setns(2): "a call to chdir() may be necessary to set the ...
-            // current working directory appropriately".
-            std::env::set_current_dir("/").ok();
+            adopt_overlay_root(helper_info.map(|(pid, _)| pid));
             info!("overlay: successfully joined shared namespace via bind-mount");
             return Ok(());
         }
     }
 
     // Fall back to PID file (nested container environments where bind-mount returned EINVAL)
-    let pid_path = helper_pid_path(ns_path);
     let (pid, expected_inode) =
-        read_helper_info(&pid_path).context("no valid bind-mount or PID file for namespace")?;
+        helper_info.context("no valid bind-mount or PID file for namespace")?;
 
     let actual_inode = get_ns_inode(pid).context("helper process namespace not accessible")?;
 
@@ -557,10 +583,7 @@ fn join_namespace(ns_path: &Path) -> Result<()> {
     let f = fs::File::open(&ns_proc_path)
         .with_context(|| format!("opening helper namespace at {}", ns_proc_path))?;
     setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace via PID fallback")?;
-    // After setns(CLONE_NEWNS), adopt the new namespace's root filesystem.
-    // Without this, the process's root/CWD still reference the old namespace
-    // and path resolution may not traverse the pivot_root'd overlay.
-    std::env::set_current_dir("/").ok();
+    adopt_overlay_root(Some(pid));
     info!(
         "overlay: successfully joined shared namespace via PID fallback (helper pid={})",
         pid
@@ -772,7 +795,7 @@ fn inner_parent_persist(
         let f = fs::File::open(&ns_source)
             .with_context(|| format!("opening namespace at {}", ns_source))?;
         setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace")?;
-        std::env::set_current_dir("/").ok();
+        adopt_overlay_root(Some(helper_pid.as_raw()));
         info!("overlay: successfully joined shared namespace via direct /proc path");
     }
 

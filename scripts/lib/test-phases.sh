@@ -199,7 +199,16 @@ phase_summary() {
   fi
 
   if [[ $TESTS_FAILED -gt 0 ]]; then
+    log_status ""
+    log_status "${CLR_FAIL}Failed tests:${CLR_RESET}"
+    for i in "${!TEST_NAMES[@]}"; do
+      if [[ "${TEST_RESULTS[$i]}" == "FAIL" ]]; then
+        log_status "  ${CLR_FAIL}x${CLR_RESET} ${TEST_NAMES[$i]}  (${TEST_DURATIONS[$i]})"
+      fi
+    done
+    log_status ""
     log_error "Integration tests FAILED ($TESTS_FAILED failure(s))."
+    log_status "Download logs artifact or check failure details above for root cause."
     return 1
   fi
   log_status "${CLR_PASS}All integration tests passed.${CLR_RESET}"
