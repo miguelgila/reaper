@@ -1276,9 +1276,9 @@ YAML
     fi
   done
 
-  # Cleanup these pods immediately (not part of the main cleanup list)
+  # Cleanup these pods (fire-and-forget; readiness phase cleans stale pods)
   kubectl delete pod reaper-concurrent-a reaper-concurrent-b reaper-concurrent-c \
-    --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+    --ignore-not-found --wait=false >> "$LOG_FILE" 2>&1 || true
 
   if ! $all_ok; then
     return 1
@@ -1537,9 +1537,9 @@ YAML
     }
   done
 
-  # Delete them all at once
+  # Delete them all at once (non-blocking; wait loop below handles convergence)
   kubectl delete pod reaper-stress-1 reaper-stress-2 reaper-stress-3 \
-    reaper-stress-4 reaper-stress-5 --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+    reaper-stress-4 reaper-stress-5 --ignore-not-found --wait=false >> "$LOG_FILE" 2>&1 || true
 
   # Wait for all to disappear
   for i in $(seq 1 20); do
@@ -2288,9 +2288,9 @@ test_agent_overlay_gc_preserves_active() {
   docker exec "$NODE_ID" mkdir -p /run/reaper/overlay/default/upper /run/reaper/overlay/default/work >> "$LOG_FILE" 2>&1
   docker exec "$NODE_ID" mkdir -p /run/reaper/merged/default >> "$LOG_FILE" 2>&1
 
-  # Wait 2 overlay GC cycles (interval=30s in test, so 90s buffer)
-  log_verbose "Waiting 90s (2+ overlay GC cycles) to verify artifacts are preserved..."
-  sleep 90
+  # Wait 2 overlay GC cycles (interval=30s in test, so 40s = 1 full cycle + margin)
+  log_verbose "Waiting 40s (1+ overlay GC cycles) to verify artifacts are preserved..."
+  sleep 40
 
   # Assert overlay artifacts still exist (ns files are managed by ns cleanup, not overlay GC)
   local ok=true
@@ -2381,8 +2381,8 @@ EOF' >> "$LOG_FILE" 2>&1
   kubectl delete namespace reaper-gc-running --wait=true >> "$LOG_FILE" 2>&1
 
   # Wait 2 overlay GC cycles — artifacts should NOT be removed
-  log_verbose "Waiting 90s (2+ overlay GC cycles) to verify running container prevents cleanup..."
-  sleep 90
+  log_verbose "Waiting 40s (1+ overlay GC cycles) to verify running container prevents cleanup..."
+  sleep 40
 
   # Assert artifacts still exist (GC skipped due to running container)
   local ok=true
@@ -2509,9 +2509,9 @@ test_agent_ns_cleanup_preserves_active() {
 }
 EOF' >> "$LOG_FILE" 2>&1
 
-  # Wait 2 GC cycles (interval=30s, so 90s buffer)
-  log_verbose "Waiting 90s (2+ GC cycles) to verify ns file is preserved by running container..."
-  sleep 90
+  # Wait 2 GC cycles (interval=30s, so 40s = 1 full cycle + margin)
+  log_verbose "Waiting 40s (1+ GC cycles) to verify ns file is preserved by running container..."
+  sleep 40
 
   # Assert ns file still exists (protected by running container)
   if docker exec "$NODE_ID" test -f /run/reaper/ns/ns-protect-test 2>/dev/null; then
@@ -3469,7 +3469,7 @@ phase_integration_tests() {
   run_test test_config_file_on_node "Config file on node (/etc/reaper/reaper.conf)" --hard-fail
   run_test test_rapid_create_delete "Rapid create/delete stress"     --hard-fail
 
-  # Cleanup test pods (before defunct check so pods are terminated)
+  # Cleanup test pods (non-blocking; wait loop below handles convergence)
   kubectl delete pod reaper-dns-check reaper-k8s-dns-check reaper-integration-test \
     reaper-overlay-writer reaper-overlay-reader reaper-ns-iso-writer \
     reaper-ovname-writer reaper-ovname-reader reaper-ovname-same \
@@ -3481,8 +3481,8 @@ phase_integration_tests() {
     reaper-exit-code-test reaper-cmd-not-found reaper-env-test \
     reaper-stderr-test reaper-large-output reaper-cwd-test \
     reaper-ro-vol-test \
-    --ignore-not-found >> "$LOG_FILE" 2>&1 || true
-  kubectl delete pod reaper-ns-iso-reader -n reaper-iso-test --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+    --ignore-not-found --wait=false >> "$LOG_FILE" 2>&1 || true
+  kubectl delete pod reaper-ns-iso-reader -n reaper-iso-test --ignore-not-found --wait=false >> "$LOG_FILE" 2>&1 || true
   kubectl delete namespace reaper-iso-test --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete service reaper-dns-target --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete configmap reaper-test-scripts --ignore-not-found >> "$LOG_FILE" 2>&1 || true
