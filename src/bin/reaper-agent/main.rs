@@ -5,8 +5,10 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 mod config_sync;
+mod executor;
 mod gc;
 mod health;
+mod jobs;
 mod metrics;
 mod node_condition;
 mod overlay_gc;
@@ -221,10 +223,12 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
+    let job_manager = executor::JobManager::new(true);
     let server_metrics = metrics_state.clone();
     let server_shim = cli.shim_path.clone();
     let server_runtime = cli.runtime_path.clone();
     let server_state_dir = cli.state_dir.clone();
+    let server_job_manager = job_manager.clone();
     let server_handle = tokio::spawn(async move {
         if let Err(e) = metrics::serve(
             cli.listen,
@@ -232,6 +236,7 @@ async fn main() -> anyhow::Result<()> {
             &server_shim,
             &server_runtime,
             &server_state_dir,
+            server_job_manager,
         )
         .await
         {

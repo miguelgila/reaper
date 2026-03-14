@@ -1,10 +1,11 @@
 # Reaper Helm chart values
 
-# Node installer + agent DaemonSet
+# Node installer DaemonSet (init container that copies shim + runtime to host)
 node:
   image:
     repository: ghcr.io/miguelgila/reaper-node
-    tag: latest
+    # tag defaults to Chart.AppVersion when empty
+    tag: ""
     pullPolicy: IfNotPresent
   # Install path for shim and runtime binaries on the host
   installPath: /usr/local/bin
@@ -15,9 +16,26 @@ node:
 controller:
   image:
     repository: ghcr.io/miguelgila/reaper-controller
-    tag: latest
+    # tag defaults to Chart.AppVersion when empty
+    tag: ""
     pullPolicy: IfNotPresent
   replicas: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# Agent DaemonSet (config sync, health monitoring, Prometheus metrics)
+agent:
+  enabled: true
+  image:
+    repository: ghcr.io/miguelgila/reaper-agent
+    # tag defaults to Chart.AppVersion when empty
+    tag: ""
+    pullPolicy: IfNotPresent
   resources:
     requests:
       cpu: 10m

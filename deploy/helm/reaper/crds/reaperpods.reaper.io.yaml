@@ -119,6 +119,13 @@ spec:
                 format: int64
                 nullable: true
                 type: integer
+              supplementalGroups:
+                description: Supplemental group IDs for the process.
+                items:
+                  format: int64
+                  type: integer
+                nullable: true
+                type: array
               tolerations:
                 description: Tolerations passed through to the underlying Pod.
                 items:

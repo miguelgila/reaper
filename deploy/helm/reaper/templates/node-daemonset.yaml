@@ -19,7 +19,7 @@ spec:
         - operator: Exists
       initContainers:
         - name: install
-          image: "{{ .Values.node.image.repository }}:{{ .Values.node.image.tag }}"
+          image: "{{ .Values.node.image.repository }}:{{ .Values.node.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.node.image.pullPolicy }}
           command: ["/install.sh"]
           env:

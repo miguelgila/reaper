@@ -58,6 +58,10 @@ pub struct ReaperPodSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_as_group: Option<i64>,
 
+    /// Supplemental group IDs for the process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supplemental_groups: Option<Vec<i64>>,
+
     /// Volumes with inline mount paths.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub volumes: Vec<ReaperVolume>,
@@ -87,6 +91,7 @@ impl Default for ReaperPodSpec {
             overlay_name: None,
             run_as_user: None,
             run_as_group: None,
+            supplemental_groups: None,
             volumes: Vec::new(),
             restart_policy: default_restart_policy(),
             tolerations: Vec::new(),

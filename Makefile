@@ -80,6 +80,9 @@ ci: fmt clippy check-linux test coverage ## Full CI-equivalent check (format + c
 # Integration tests (requires Docker + kind)
 # ---------------------------------------------------------------------------
 
+test-examples: ## Validate all example manifests (YAML + optional cluster tests)
+	./scripts/test-examples.sh
+
 integration: ## Run full K8s integration tests (kind cluster)
 	./scripts/run-integration-tests.sh
 

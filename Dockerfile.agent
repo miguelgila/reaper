@@ -1,27 +1,22 @@
 # Multi-stage build for reaper-agent
 # Produces a minimal static binary for Kubernetes DaemonSet deployment.
+# Supports multi-arch builds via docker buildx.
 
-# --- Builder stage ---
-FROM messense/rust-musl-cross:x86_64-musl AS builder-amd64
+# --- Builder stages (cross-compile on native platform) ---
+FROM --platform=$BUILDPLATFORM messense/rust-musl-cross:x86_64-musl AS builder-amd64
 WORKDIR /work
 COPY . .
-RUN cargo build --release --features agent --bin reaper-agent --target x86_64-unknown-linux-musl
+RUN cargo build --release --features agent --bin reaper-agent --target x86_64-unknown-linux-musl && \
+    cp target/x86_64-unknown-linux-musl/release/reaper-agent /reaper-agent
 
-FROM messense/rust-musl-cross:aarch64-musl AS builder-arm64
+FROM --platform=$BUILDPLATFORM messense/rust-musl-cross:aarch64-musl AS builder-arm64
 WORKDIR /work
 COPY . .
-RUN cargo build --release --features agent --bin reaper-agent --target aarch64-unknown-linux-musl
+RUN cargo build --release --features agent --bin reaper-agent --target aarch64-unknown-linux-musl && \
+    cp target/aarch64-unknown-linux-musl/release/reaper-agent /reaper-agent
 
 # --- Runtime stage ---
-# Use distroless for a minimal image with ca-certificates (needed for K8s API TLS)
 FROM gcr.io/distroless/static-debian12
-
 ARG TARGETARCH
-COPY --from=builder-amd64 /work/target/x86_64-unknown-linux-musl/release/reaper-agent /reaper-agent-amd64
-COPY --from=builder-arm64 /work/target/aarch64-unknown-linux-musl/release/reaper-agent /reaper-agent-arm64
-
-# Select binary based on target architecture
-# Note: For single-arch builds, use docker buildx with --platform
-COPY --from=builder-${TARGETARCH}64 /work/target/*/release/reaper-agent /reaper-agent
-
+COPY --from=builder-${TARGETARCH} /reaper-agent /reaper-agent
 ENTRYPOINT ["/reaper-agent"]

@@ -429,6 +429,33 @@ YAML
     log_verbose "Reader output (file not found expected): '$reader_output'"
   fi
 
+  # Diagnostic: check helper process and PID file state before same-group reader
+  log_verbose "=== Overlay-name diagnostic: helper state before same-group reader ==="
+  docker exec "${CLUSTER_NAME}-control-plane" sh -c '
+    echo "=== PID files ==="
+    ls -la /run/reaper/ns/*.pid 2>&1 || echo "(no PID files)"
+    echo "=== NS dir ==="
+    ls -la /run/reaper/ns/ 2>&1
+    echo "=== Helper alive? ==="
+    for pf in /run/reaper/ns/*.pid; do
+      [ -f "$pf" ] || continue
+      pid=$(cut -d" " -f1 "$pf" 2>/dev/null)
+      inode=$(cut -d" " -f2 "$pf" 2>/dev/null)
+      name=$(basename "$pf")
+      if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+        echo "  $name: pid=$pid inode=$inode ALIVE (ns/mnt=$(ls -la /proc/$pid/ns/mnt 2>&1))"
+      else
+        echo "  $name: pid=$pid inode=$inode DEAD"
+      fi
+    done
+    echo "=== Overlay upper dirs ==="
+    find /run/reaper/overlay/ -maxdepth 3 -type f 2>/dev/null | head -20 || echo "(empty)"
+    echo "=== Runtime log (last 20 overlay/namespace lines) ==="
+    grep -E "overlay|namespace|helper|setns|EINVAL" /run/reaper/runtime.log 2>/dev/null | tail -20 || echo "(no matching log lines)"
+  ' 2>&1 | while IFS= read -r line; do
+    log_verbose "  diag: $line"
+  done
+
   # Bonus: verify a pod with the SAME overlay-name CAN see the file
   cat <<'YAML' | kubectl apply -f - >> "$LOG_FILE" 2>&1
 apiVersion: v1
@@ -506,44 +533,59 @@ test_shim_cleanup_after_delete() {
   # After all test pods have been deleted, there should be no lingering
   # containerd-shim-reaper-v2 processes for k8s.io containers.
   # Each shim's shutdown() must signal ExitSignal so the process exits.
-  sleep 5
+  #
+  # Under load (many pods created/deleted during the test suite), the
+  # containerd sandbox teardown can exceed 5s, so we retry with backoff.
+  local max_wait=30
+  local interval=3
+  local elapsed=0
 
-  # Count reaper shim processes still running
+  while [[ $elapsed -lt $max_wait ]]; do
+    sleep $interval
+    elapsed=$((elapsed + interval))
+
+    local shim_pids
+    shim_pids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
+      | grep '[c]ontainerd-shim-reaper-v2' \
+      | grep -v 'shim-path=' \
+      | grep -v grep || true)
+
+    local shim_count=0
+    [[ -n "$shim_pids" ]] && shim_count=$(echo "$shim_pids" | wc -l | tr -d ' ')
+
+    # Count how many reaper pods are still actually running
+    local running_pods
+    running_pods=$(kubectl get pods --no-headers 2>/dev/null \
+      | grep -c '^reaper-' || true)
+
+    log_verbose "Shim cleanup check (${elapsed}s/${max_wait}s): $shim_count shims, $running_pods pods"
+
+    # Success: no orphaned shims, or pods still exist (shims are expected)
+    if [[ "$shim_count" -eq 0 || "$running_pods" -gt 0 ]]; then
+      log_verbose "Shim cleanup OK after ${elapsed}s: $shim_count shims, $running_pods pods"
+      return 0
+    fi
+
+    log_verbose "Still $shim_count orphaned shims after ${elapsed}s, retrying..."
+  done
+
+  # Final failure with diagnostics
   local shim_pids
   shim_pids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
     | grep '[c]ontainerd-shim-reaper-v2' \
     | grep -v grep || true)
 
-  local shim_count
-  if [[ -z "$shim_pids" ]]; then
-    shim_count=0
-  else
-    shim_count=$(echo "$shim_pids" | wc -l | tr -d ' ')
-  fi
+  log_error "Found orphaned containerd-shim-reaper-v2 processes after ${max_wait}s:"
+  log_error "$shim_pids"
 
-  # Count how many reaper pods are still actually running
-  local running_pods
-  running_pods=$(kubectl get pods --no-headers 2>/dev/null \
-    | grep -c '^reaper-' || true)
+  # Grab container IDs from the shim command lines for diagnostics
+  local shim_ids
+  shim_ids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
+    | grep '[c]ontainerd-shim-reaper-v2' \
+    | sed -n 's/.*-id \([0-9a-f]\{1,\}\).*/\1/p' || true)
+  log_verbose "Orphaned shim container IDs: $shim_ids"
 
-  log_verbose "Shim processes: $shim_count, Running reaper pods: $running_pods"
-
-  if [[ "$shim_count" -gt 0 && "$running_pods" -eq 0 ]]; then
-    log_error "Found $shim_count orphaned containerd-shim-reaper-v2 processes with no reaper pods running:"
-    log_error "$shim_pids"
-
-    # Grab container IDs from the shim command lines for diagnostics
-    local shim_ids
-    shim_ids=$(docker exec "$NODE_ID" ps aux 2>/dev/null \
-      | grep '[c]ontainerd-shim-reaper-v2' \
-      | grep -oP '(?<=-id )[0-9a-f]+' || true)
-    log_verbose "Orphaned shim container IDs: $shim_ids"
-
-    return 1
-  fi
-
-  log_verbose "Shim cleanup OK: $shim_count shims for $running_pods pods."
-  return 0
+  return 1
 }
 
 test_uid_gid_switching() {
@@ -1985,6 +2027,34 @@ YAML
   log_verbose "Unknown annotations silently ignored, known annotations applied correctly"
 }
 
+# Helper: start port-forward to reaper-agent and return local port + PF PID
+# Usage: start_agent_pf; then use $AGENT_PF_PORT and $AGENT_PF_PID
+start_agent_pf() {
+  local agent_pod
+  agent_pod=$(kubectl get pods -n reaper-system -l app.kubernetes.io/name=reaper-agent \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  AGENT_PF_PORT=$((RANDOM % 1000 + 19000))
+  kubectl port-forward -n reaper-system "$agent_pod" ${AGENT_PF_PORT}:9100 >> "$LOG_FILE" 2>&1 &
+  AGENT_PF_PID=$!
+  # Wait for port-forward to be ready
+  local max_wait=10
+  local elapsed=0
+  while [[ $elapsed -lt $max_wait ]]; do
+    if curl -sf http://localhost:${AGENT_PF_PORT}/healthz > /dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  log_error "Port-forward to agent did not become ready within ${max_wait}s"
+  return 1
+}
+
+stop_agent_pf() {
+  kill "$AGENT_PF_PID" 2>/dev/null || true
+  wait "$AGENT_PF_PID" 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 # reaper-agent integration tests
 # These require the reaper-agent image to be loaded into the Kind cluster.
@@ -1992,8 +2062,18 @@ YAML
 # ---------------------------------------------------------------------------
 
 test_agent_deployment() {
-  # Deploy agent manifests
-  kubectl apply -f deploy/kubernetes/reaper-agent.yaml >> "$LOG_FILE" 2>&1
+  # Agent DaemonSet is deployed by Helm during setup. If it doesn't exist
+  # (e.g., --agent-only without Helm), apply the raw YAML as fallback but
+  # patch the image tag to match what's loaded in Kind (avoids :latest pull).
+  if ! kubectl get daemonset reaper-agent -n reaper-system &>/dev/null; then
+    log_verbose "Agent DaemonSet not found (non-Helm run), deploying from raw YAML..."
+    kubectl apply -f deploy/kubernetes/reaper-agent.yaml >> "$LOG_FILE" 2>&1
+    # Patch image tag to match Cargo.toml version (raw YAML uses :latest)
+    local reaper_version
+    reaper_version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    kubectl set image daemonset/reaper-agent -n reaper-system \
+      "agent=ghcr.io/miguelgila/reaper-agent:${reaper_version}" >> "$LOG_FILE" 2>&1
+  fi
 
   # Patch DaemonSet to use faster overlay GC interval for testing (30s instead of 300s)
   kubectl patch daemonset reaper-agent -n reaper-system --type=json \
@@ -2634,8 +2714,335 @@ test_agent_node_condition_metrics() {
   log_verbose "node condition metrics verified: all expected metrics present"
 }
 
+test_agent_job_submit() {
+  start_agent_pf
+
+  # Submit a simple job — capture both status code and body for diagnostics
+  local response http_code
+  local tmpfile=$(mktemp)
+  http_code=$(curl -s -o "$tmpfile" -w "%{http_code}" -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"echo hello-wren","environment":{}}' 2>/dev/null)
+  response=$(cat "$tmpfile")
+  rm -f "$tmpfile"
+
+  stop_agent_pf
+
+  if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+    log_error "POST /api/v1/jobs returned HTTP $http_code: $response"
+    return 1
+  fi
+
+  # Verify response has job_id and status
+  local job_id
+  job_id=$(echo "$response" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+  if [[ -z "$job_id" ]]; then
+    log_error "Response missing job_id: $response"
+    return 1
+  fi
+
+  local status
+  status=$(echo "$response" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+  if [[ "$status" != "running" ]]; then
+    log_error "Expected status 'running', got '$status'"
+    return 1
+  fi
+
+  log_verbose "Job submitted successfully: job_id=$job_id status=$status"
+}
+
+test_agent_job_status_poll() {
+  start_agent_pf
+
+  # Submit a job that takes a moment
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"echo status-test && sleep 1","environment":{}}' 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  # Poll until succeeded (max 15s)
+  local max_wait=15
+  local elapsed=0
+  local final_status=""
+  while [[ $elapsed -lt $max_wait ]]; do
+    local status_resp
+    status_resp=$(curl -sf http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "FAILED")
+    if [[ "$status_resp" == "FAILED" ]]; then
+      sleep 1
+      elapsed=$((elapsed + 1))
+      continue
+    fi
+
+    final_status=$(echo "$status_resp" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [[ "$final_status" == "succeeded" ]]; then
+      # Verify exit_code is 0
+      local exit_code
+      exit_code=$(echo "$status_resp" | grep -o '"exit_code":[0-9]*' | head -1 | cut -d: -f2)
+      if [[ "$exit_code" != "0" ]]; then
+        stop_agent_pf
+        log_error "Expected exit_code 0, got $exit_code"
+        return 1
+      fi
+      stop_agent_pf
+      log_verbose "Job completed successfully: job_id=$job_id exit_code=0"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  stop_agent_pf
+  log_error "Job did not complete within ${max_wait}s, last status: $final_status"
+  return 1
+}
+
+test_agent_job_failed_exit_code() {
+  start_agent_pf
+
+  # Submit a job that exits with non-zero
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"exit 42","environment":{}}' 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  # Poll until failed
+  local max_wait=10
+  local elapsed=0
+  while [[ $elapsed -lt $max_wait ]]; do
+    local status_resp
+    status_resp=$(curl -sf http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "")
+    local status
+    status=$(echo "$status_resp" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+    if [[ "$status" == "failed" ]]; then
+      local exit_code
+      exit_code=$(echo "$status_resp" | grep -o '"exit_code":[0-9]*' | head -1 | cut -d: -f2)
+      if [[ "$exit_code" != "42" ]]; then
+        stop_agent_pf
+        log_error "Expected exit_code 42, got $exit_code"
+        return 1
+      fi
+      stop_agent_pf
+      log_verbose "Job failed as expected: exit_code=42"
+      return 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  stop_agent_pf
+  log_error "Job did not fail within ${max_wait}s"
+  return 1
+}
+
+test_agent_job_terminate() {
+  start_agent_pf
+
+  # Submit a long-running job
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"sleep 300","environment":{}}' 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  # Wait for it to be running
+  sleep 1
+
+  # Terminate it
+  local delete_status
+  delete_status=$(curl -sf -o /dev/null -w "%{http_code}" -X DELETE \
+    http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "000")
+
+  if [[ "$delete_status" != "200" ]]; then
+    stop_agent_pf
+    log_error "DELETE returned status $delete_status, expected 200"
+    return 1
+  fi
+
+  # Verify it's now failed/terminated
+  sleep 1
+  local status_resp
+  status_resp=$(curl -sf http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "")
+  local status
+  status=$(echo "$status_resp" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  stop_agent_pf
+
+  if [[ "$status" != "failed" ]]; then
+    log_error "Expected terminated job to be 'failed', got '$status'"
+    return 1
+  fi
+
+  log_verbose "Job terminated successfully"
+}
+
+test_agent_job_not_found() {
+  start_agent_pf
+
+  local http_code
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+    http://localhost:${AGENT_PF_PORT}/api/v1/jobs/nonexistent-job-id 2>/dev/null)
+
+  stop_agent_pf
+
+  if [[ "$http_code" != "404" ]]; then
+    log_error "Expected 404 for nonexistent job, got $http_code"
+    return 1
+  fi
+
+  log_verbose "GET nonexistent job correctly returns 404"
+}
+
+test_agent_job_env_vars() {
+  start_agent_pf
+
+  # Submit a job that writes env vars to a file we can check
+  # The job writes to /tmp which is in the overlay
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"env > /tmp/reaper-job-env-test.txt","environment":{"WREN_TEST_VAR":"hello","WREN_MPI_RANK":"0"}}' 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  # Wait for completion
+  sleep 3
+  local status_resp
+  status_resp=$(curl -sf http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "")
+  local status
+  status=$(echo "$status_resp" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  stop_agent_pf
+
+  if [[ "$status" != "succeeded" ]]; then
+    log_error "Job did not succeed, status: $status"
+    return 1
+  fi
+
+  # Check the env file on the node
+  local env_content
+  env_content=$(docker exec "$NODE_ID" cat /tmp/reaper-job-env-test.txt 2>/dev/null || echo "")
+
+  if ! echo "$env_content" | grep -q "WREN_TEST_VAR=hello"; then
+    log_error "WREN_TEST_VAR not found in job environment"
+    log_error "Env content: $env_content"
+    return 1
+  fi
+
+  if ! echo "$env_content" | grep -q "WREN_MPI_RANK=0"; then
+    log_error "WREN_MPI_RANK not found in job environment"
+    return 1
+  fi
+
+  # Cleanup
+  docker exec "$NODE_ID" rm -f /tmp/reaper-job-env-test.txt >> "$LOG_FILE" 2>&1 || true
+
+  log_verbose "Environment variables correctly passed to job"
+}
+
+test_agent_job_hostfile_written() {
+  start_agent_pf
+
+  local hostfile_path="/tmp/reaper-test-hostfile"
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d "{\"script\":\"cat ${hostfile_path}\",\"environment\":{},\"hostfile\":\"node-0 slots=4\nnode-1 slots=4\",\"hostfile_path\":\"${hostfile_path}\"}" 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  # Wait for completion
+  sleep 3
+  local status_resp
+  status_resp=$(curl -sf http://localhost:${AGENT_PF_PORT}/api/v1/jobs/${job_id} 2>/dev/null || echo "")
+  local status
+  status=$(echo "$status_resp" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  stop_agent_pf
+
+  if [[ "$status" != "succeeded" ]]; then
+    log_error "Job did not succeed, status: $status (hostfile may not have been written)"
+    return 1
+  fi
+
+  # Hostfile should have been cleaned up after job completion (or still there if cleanup is lazy)
+  log_verbose "Hostfile written and job executed successfully"
+}
+
+test_agent_job_working_dir() {
+  start_agent_pf
+
+  local submit_resp
+  submit_resp=$(curl -sf -X POST http://localhost:${AGENT_PF_PORT}/api/v1/jobs \
+    -H "Content-Type: application/json" \
+    -d '{"script":"pwd > /tmp/reaper-cwd-test.txt","environment":{},"working_dir":"/tmp"}' 2>/dev/null || echo "FAILED")
+
+  if [[ "$submit_resp" == "FAILED" ]]; then
+    stop_agent_pf
+    log_error "POST /api/v1/jobs failed"
+    return 1
+  fi
+
+  local job_id
+  job_id=$(echo "$submit_resp" | grep -o '"job_id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+  sleep 3
+  stop_agent_pf
+
+  local cwd
+  cwd=$(docker exec "$NODE_ID" cat /tmp/reaper-cwd-test.txt 2>/dev/null | tr -d '[:space:]')
+  docker exec "$NODE_ID" rm -f /tmp/reaper-cwd-test.txt >> "$LOG_FILE" 2>&1 || true
+
+  if [[ "$cwd" != "/tmp" ]]; then
+    log_error "Expected working dir /tmp, got '$cwd'"
+    return 1
+  fi
+
+  log_verbose "Working directory correctly set to /tmp"
+}
+
 cleanup_agent() {
-  kubectl delete -f deploy/kubernetes/reaper-agent.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  # Don't delete the Helm-managed agent DaemonSet — only clean up test artifacts.
+  # The agent is deployed by Helm and needed for subsequent test phases.
   docker exec "$NODE_ID" rm -rf /run/reaper/stale-gc-test >> "$LOG_FILE" 2>&1 || true
   # Cleanup any leftover overlay GC test artifacts
   docker exec "$NODE_ID" rm -rf /run/reaper/overlay/reaper-gc-test /run/reaper/overlay/reaper-gc-named /run/reaper/overlay/reaper-gc-running >> "$LOG_FILE" 2>&1 || true
@@ -2689,6 +3096,16 @@ phase_agent_tests() {
   run_test test_agent_node_condition_reflects_health "Agent node condition reflects health" --hard-fail
   run_test test_agent_node_condition_metrics "Agent node condition metrics" --hard-fail
 
+  # Job execution API tests (Wren integration)
+  run_test test_agent_job_submit          "Agent job API: submit job"             --hard-fail
+  run_test test_agent_job_status_poll     "Agent job API: status polling"         --hard-fail
+  run_test test_agent_job_failed_exit_code "Agent job API: failed exit code"     --hard-fail
+  run_test test_agent_job_terminate       "Agent job API: terminate running job"  --hard-fail
+  run_test test_agent_job_not_found       "Agent job API: 404 for unknown job"   --hard-fail
+  run_test test_agent_job_env_vars        "Agent job API: environment variables"  --hard-fail
+  run_test test_agent_job_hostfile_written "Agent job API: hostfile written to disk" --hard-fail
+  run_test test_agent_job_working_dir     "Agent job API: working directory"      --hard-fail
+
   # Cleanup agent resources
   cleanup_agent
 }
@@ -2727,8 +3144,13 @@ test_controller_deployment() {
   kubectl create namespace reaper-system --dry-run=client -o yaml | kubectl apply -f - >> "$LOG_FILE" 2>&1
 
   # If the controller deployment doesn't exist (e.g., --crd-only without Helm), apply it
+  # and patch the image tag to match what's loaded in Kind (raw YAML uses :latest).
   if ! kubectl get deployment reaper-controller -n reaper-system &>/dev/null; then
     kubectl apply -f deploy/kubernetes/reaper-controller.yaml >> "$LOG_FILE" 2>&1
+    local reaper_version
+    reaper_version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+    kubectl set image deployment/reaper-controller -n reaper-system \
+      "controller=ghcr.io/miguelgila/reaper-controller:${reaper_version}" >> "$LOG_FILE" 2>&1
   fi
 
   # Wait for the controller pod to be ready

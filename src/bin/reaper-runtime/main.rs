@@ -769,7 +769,11 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                         // stdout-EOF path.
                         std::thread::sleep(std::time::Duration::from_secs(2));
                     }
-                    Err(_e) => {
+                    Err(e) => {
+                        tracing::error!(
+                            "do_start() - failed to spawn workload (PTY mode): {:#}",
+                            e
+                        );
                         if let Ok(mut state) = load_state(&container_id) {
                             state.status = "stopped".into();
                             state.exit_code = Some(1);
@@ -971,7 +975,8 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                             }
                         }
                     }
-                    Err(_e) => {
+                    Err(e) => {
+                        tracing::error!("do_start() - failed to spawn workload: {:#}", e);
                         if let Ok(mut state) = load_state(&container_id) {
                             state.status = "stopped".into();
                             state.exit_code = Some(1);
