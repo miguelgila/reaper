@@ -1173,7 +1173,7 @@ fn unmount_stale_ancestors(dest: &Path) {
 
         // Check if this stale mount is an ancestor of our destination
         let mp = Path::new(mount_point);
-        if ancestors.iter().any(|a| *a == mp) && root_field.contains("deleted") {
+        if ancestors.contains(&mp) && root_field.contains("deleted") {
             match umount2(mp, MntFlags::MNT_DETACH) {
                 Ok(()) => info!(
                     "volume: unmounted stale ancestor mount at {} (source was deleted)",
