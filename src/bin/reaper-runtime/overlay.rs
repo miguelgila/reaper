@@ -384,7 +384,11 @@ fn get_default_filters() -> Vec<PathBuf> {
         // System Secrets
         PathBuf::from("/etc/ssl/private"),
         PathBuf::from("/var/lib/docker"),
-        PathBuf::from("/run/secrets"),
+        // NOTE: /run/secrets is intentionally NOT filtered. Kubernetes mounts
+        // the serviceaccount token at /var/run/secrets/kubernetes.io/serviceaccount
+        // (which resolves to /run/secrets/... on systems where /var/run -> /run).
+        // Filtering /run/secrets creates a bind-mount that conflicts with K8s
+        // volume mounts in shared overlay namespaces.
         // Sensitive Configuration
         PathBuf::from("/etc/sudoers"),
         PathBuf::from("/etc/sudoers.d"),
@@ -455,24 +459,164 @@ fn acquire_lock(lock_path: &Path) -> Result<Flock<fs::File>> {
     Ok(locked)
 }
 
-/// Check if the shared namespace bind-mount exists and is a valid namespace.
+/// Derive the `.pid` file path from the namespace bind-mount path.
+/// E.g., `/run/reaper/ns/default` → `/run/reaper/ns/default.pid`
+fn helper_pid_path(ns_path: &Path) -> PathBuf {
+    let mut pid_path = ns_path.as_os_str().to_owned();
+    pid_path.push(".pid");
+    PathBuf::from(pid_path)
+}
+
+/// Read helper PID and namespace inode from a `.pid` file.
+/// Format: `<pid> <inode>` (single line).
+/// Returns `None` on any error (missing file, parse failure, etc.).
+fn read_helper_info(pid_path: &Path) -> Option<(i32, u64)> {
+    let content = fs::read_to_string(pid_path).ok()?;
+    let mut parts = content.split_whitespace();
+    let pid: i32 = parts.next()?.parse().ok()?;
+    let inode: u64 = parts.next()?.parse().ok()?;
+    Some((pid, inode))
+}
+
+/// Write helper PID and namespace inode to a `.pid` file.
+fn write_helper_info(pid_path: &Path, pid: i32, inode: u64) -> Result<()> {
+    if let Some(parent) = pid_path.parent() {
+        fs::create_dir_all(parent).context("creating PID file directory")?;
+    }
+    fs::write(pid_path, format!("{} {}", pid, inode)).context("writing helper PID file")?;
+    Ok(())
+}
+
+/// Get the inode number of a process's mount namespace.
+fn get_ns_inode(pid: i32) -> Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+    let ns_path = format!("/proc/{}/ns/mnt", pid);
+    let meta = fs::metadata(&ns_path).with_context(|| format!("stat {}", ns_path))?;
+    Ok(meta.ino())
+}
+
+/// Check if the shared namespace exists and is joinable.
+///
+/// First checks the bind-mount path (normal case). If that doesn't exist,
+/// falls back to checking the `.pid` file: if the helper process is alive
+/// and its namespace inode matches the recorded value, the namespace is live.
 fn namespace_exists(ns_path: &Path) -> bool {
-    if !ns_path.exists() {
-        return false;
+    // Check bind-mount path
+    if ns_path.exists() && fs::File::open(ns_path).is_ok() {
+        return true;
     }
 
-    // Try opening to verify it's still a valid namespace reference.
-    // We'll handle setns errors gracefully in join_namespace.
-    fs::File::open(ns_path).is_ok()
+    // Check PID file fallback (bind-mount failed with EINVAL in nested containers)
+    let pid_path = helper_pid_path(ns_path);
+    if let Some((pid, expected_inode)) = read_helper_info(&pid_path) {
+        if let Ok(actual_inode) = get_ns_inode(pid) {
+            if actual_inode == expected_inode {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Open the overlay root directory via /proc/<pid>/root BEFORE setns.
+///
+/// Must be called while still in the host mount namespace where /proc is
+/// accessible. After setns, /proc is on a foreign mount and may not be
+/// traversable.
+fn open_overlay_root_fd(helper_pid: i32) -> Option<fs::File> {
+    let helper_root = format!("/proc/{}/root", helper_pid);
+    match fs::File::open(&helper_root) {
+        Ok(f) => {
+            info!(
+                "overlay: opened helper root fd (pid={}, path={})",
+                helper_pid, helper_root
+            );
+            Some(f)
+        }
+        Err(e) => {
+            tracing::warn!("overlay: failed to open {}: {}", helper_root, e);
+            None
+        }
+    }
+}
+
+/// After setns(CLONE_NEWNS), adopt the overlay namespace's root filesystem
+/// using a pre-opened directory fd.
+///
+/// The process root still points to the old (host) namespace's root after setns.
+/// Absolute paths resolve through this stale root, which doesn't see mounts
+/// from the overlay namespace (e.g., /run tmpfs is on a foreign mount). This
+/// causes ENOENT when creating volume mount destinations.
+///
+/// Fix: fchdir to the pre-opened overlay root fd (opened via /proc/<pid>/root
+/// before setns), then chroot(".") to adopt it as the process root.
+fn adopt_overlay_root(overlay_root_fd: Option<&fs::File>) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let fd = overlay_root_fd
+        .context("no overlay root fd available — cannot adopt overlay root after setns")?;
+    nix::unistd::fchdir(fd.as_raw_fd()).context("fchdir to overlay root fd failed")?;
+    nix::unistd::chroot(".").context("chroot(\".\") to overlay root failed")?;
+    std::env::set_current_dir("/").context("chdir(\"/\") after chroot failed")?;
+    info!("overlay: adopted overlay root via fchdir+chroot");
+    Ok(())
 }
 
 /// Join an existing shared mount namespace via setns().
+///
+/// Tries the bind-mount path first (normal case). If that fails, falls back
+/// to reading the `.pid` file and joining via `/proc/<pid>/ns/mnt` directly.
+///
 /// Tested by kind-integration (requires root + Linux namespaces).
 #[cfg(not(tarpaulin_include))]
 fn join_namespace(ns_path: &Path) -> Result<()> {
-    let f = fs::File::open(ns_path).context("opening namespace file")?;
-    setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace")?;
-    info!("overlay: successfully joined shared namespace");
+    // Read helper PID upfront — we need it to open the overlay root fd.
+    // Must read BEFORE setns because the PID file lives on the host's /run
+    // tmpfs and may not be accessible through the old process root after
+    // entering the overlay namespace.
+    let pid_path = helper_pid_path(ns_path);
+    let helper_info = read_helper_info(&pid_path);
+
+    // Open overlay root fd BEFORE setns (while /proc is still accessible)
+    let overlay_root_fd = helper_info
+        .as_ref()
+        .and_then(|(pid, _)| open_overlay_root_fd(*pid));
+
+    // Try bind-mount path first (normal case on real clusters)
+    if let Ok(f) = fs::File::open(ns_path) {
+        if setns(&f, CloneFlags::CLONE_NEWNS).is_ok() {
+            adopt_overlay_root(overlay_root_fd.as_ref())
+                .context("adopting overlay root after bind-mount setns")?;
+            info!("overlay: successfully joined shared namespace via bind-mount");
+            return Ok(());
+        }
+    }
+
+    // Fall back to PID file (nested container environments where bind-mount returned EINVAL)
+    let (pid, expected_inode) =
+        helper_info.context("no valid bind-mount or PID file for namespace")?;
+
+    let actual_inode = get_ns_inode(pid).context("helper process namespace not accessible")?;
+
+    if actual_inode != expected_inode {
+        bail!(
+            "PID reuse detected: expected ns inode {}, got {} (helper pid {})",
+            expected_inode,
+            actual_inode,
+            pid
+        );
+    }
+
+    let ns_proc_path = format!("/proc/{}/ns/mnt", pid);
+    let f = fs::File::open(&ns_proc_path)
+        .with_context(|| format!("opening helper namespace at {}", ns_proc_path))?;
+    setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace via PID fallback")?;
+    adopt_overlay_root(overlay_root_fd.as_ref())
+        .context("adopting overlay root after PID fallback setns")?;
+    info!(
+        "overlay: successfully joined shared namespace via PID fallback (helper pid={})",
+        pid
+    );
     Ok(())
 }
 
@@ -601,6 +745,11 @@ fn inner_child_setup(config: &OverlayConfig, merged_dir: &Path, write_fd: OwnedF
 }
 
 /// Inner parent: persists the namespace via bind-mount, kills helper, joins namespace.
+///
+/// Tries bind-mount first (works on real clusters). If the kernel returns EINVAL
+/// (nested container environments like Kind v1.35.0+), falls back to a PID file
+/// that records the helper PID and namespace inode. Subsequent workloads use
+/// `/proc/<pid>/ns/mnt` directly instead of a bind-mounted path.
 #[cfg(not(tarpaulin_include))]
 fn inner_parent_persist(
     config: &OverlayConfig,
@@ -616,30 +765,50 @@ fn inner_parent_persist(
         bail!("helper child failed to create namespace");
     }
 
-    // 2. Persist namespace via bind-mount from HOST namespace
+    // 2. Record helper PID and namespace inode (used as fallback if bind-mount fails)
     let ns_source = format!("/proc/{}/ns/mnt", helper_pid);
+    let ns_inode =
+        get_ns_inode(helper_pid.as_raw()).context("getting namespace inode from helper")?;
+    let pid_path = helper_pid_path(&config.ns_path);
+    write_helper_info(&pid_path, helper_pid.as_raw(), ns_inode)
+        .context("writing helper PID file")?;
 
-    // Touch target file for bind-mount
+    // 3. Try to persist namespace via bind-mount from HOST namespace
     if let Some(parent) = config.ns_path.parent() {
         fs::create_dir_all(parent).context("creating ns dir")?;
     }
     fs::File::create(&config.ns_path).context("creating ns file")?;
 
-    mount(
+    let bind_mount_ok = match mount(
         Some(ns_source.as_str()),
         &config.ns_path,
         None::<&str>,
         MsFlags::MS_BIND,
         None::<&str>,
-    )
-    .context("bind-mounting namespace")?;
+    ) {
+        Ok(()) => {
+            info!(
+                "overlay: namespace persisted at {}",
+                config.ns_path.display()
+            );
+            true
+        }
+        Err(nix::errno::Errno::EINVAL) => {
+            tracing::warn!(
+                "overlay: bind-mount namespace returned EINVAL (nested container?), \
+                 falling back to PID file at {}",
+                pid_path.display()
+            );
+            // Remove the empty ns file — it's not useful without a bind-mount
+            let _ = fs::remove_file(&config.ns_path);
+            false
+        }
+        Err(e) => {
+            bail!("bind-mounting namespace: {}", e);
+        }
+    };
 
-    info!(
-        "overlay: namespace persisted at {}",
-        config.ns_path.display()
-    );
-
-    // 3. Keep helper alive as a namespace anchor so the mount namespace never
+    // 4. Keep helper alive as a namespace anchor so the mount namespace never
     //    disappears between workloads. The helper is sleeping in the namespace
     //    and keeps the mount tree referenced even if no containers are running.
     info!(
@@ -647,8 +816,20 @@ fn inner_parent_persist(
         helper_pid
     );
 
-    // 4. Join the namespace ourselves
-    join_namespace(&config.ns_path)?;
+    // 5. Join the namespace ourselves
+    if bind_mount_ok {
+        join_namespace(&config.ns_path)?;
+    } else {
+        // Join directly via /proc/<pid>/ns/mnt (EINVAL fallback)
+        // Open overlay root fd BEFORE setns (while /proc is still accessible)
+        let overlay_root_fd = open_overlay_root_fd(helper_pid.as_raw());
+        let f = fs::File::open(&ns_source)
+            .with_context(|| format!("opening namespace at {}", ns_source))?;
+        setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace")?;
+        adopt_overlay_root(overlay_root_fd.as_ref())
+            .context("adopting overlay root after direct setns")?;
+        info!("overlay: successfully joined shared namespace via direct /proc path");
+    }
 
     Ok(())
 }
@@ -958,6 +1139,55 @@ fn cross_namespace_mount(source: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Unmount stale mounts on ancestor path components of `dest`.
+///
+/// In shared overlay namespaces, bind-mounts from previous pods or from
+/// filter_sensitive_paths() can become stale (source dentry deleted). When
+/// `create_dir_all` traverses a stale mount, it returns ENOENT because the
+/// kernel can't create entries in an unlinked directory.
+///
+/// This function reads `/proc/self/mountinfo`, finds mounts whose source
+/// has been deleted (kernel appends `//deleted`), and lazily detaches any
+/// that are ancestors of `dest`.
+#[cfg(not(tarpaulin_include))]
+fn unmount_stale_ancestors(dest: &Path) {
+    let mountinfo = match fs::read_to_string("/proc/self/mountinfo") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    // Collect ancestor paths (e.g., for /a/b/c/d: /a, /a/b, /a/b/c)
+    let ancestors: Vec<&Path> = dest.ancestors().skip(1).collect(); // skip dest itself
+
+    for line in mountinfo.lines() {
+        if !line.contains("deleted") {
+            continue;
+        }
+        // mountinfo format: id parent_id major:minor root mount_point options ...
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let mount_point = fields[4];
+        let root_field = fields[3];
+
+        // Check if this stale mount is an ancestor of our destination
+        let mp = Path::new(mount_point);
+        if ancestors.contains(&mp) && root_field.contains("deleted") {
+            match umount2(mp, MntFlags::MNT_DETACH) {
+                Ok(()) => info!(
+                    "volume: unmounted stale ancestor mount at {} (source was deleted)",
+                    mount_point
+                ),
+                Err(e) => info!(
+                    "volume: umount2({}) for stale ancestor returned {} (continuing)",
+                    mount_point, e
+                ),
+            }
+        }
+    }
+}
+
 /// Apply volume mounts from OCI config inside the current mount namespace.
 ///
 /// For each filtered bind mount:
@@ -1030,11 +1260,19 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
             );
         }
 
-        // Unmount any stale mount at the destination from a previous pod.
+        // Unmount stale mounts at the destination AND its ancestors.
+        //
         // Volume mounts in the shared namespace persist after pod deletion,
         // referencing kubelet directories that no longer exist. Attempting to
         // move_mount on top of a stale mount fails with ENOENT because path
         // lookup traverses into the disconnected mount.
+        //
+        // Also handles stale filter mounts: filter_sensitive_paths() bind-mounts
+        // empty placeholders over paths like /run/secrets. If the placeholder's
+        // source dentry is later deleted (overlay upper layer cleanup, etc.),
+        // create_dir_all inside the stale mount returns ENOENT. We must unmount
+        // stale ancestors before creating subdirectories.
+        unmount_stale_ancestors(dest_path);
         if dest_path.exists() {
             match umount2(dest_path, MntFlags::MNT_DETACH) {
                 Ok(()) => info!("volume: unmounted stale mount at {}", dest),
@@ -1896,5 +2134,124 @@ mod tests {
         assert_eq!(config.mode, super::DnsMode::Host);
 
         std::env::remove_var("REAPER_DNS_MODE");
+    }
+
+    // --- PID file fallback tests ---
+
+    #[test]
+    fn test_helper_pid_path_namespace_mode() {
+        let ns_path = Path::new("/run/reaper/ns/default");
+        assert_eq!(
+            super::helper_pid_path(ns_path),
+            PathBuf::from("/run/reaper/ns/default.pid")
+        );
+    }
+
+    #[test]
+    fn test_helper_pid_path_named_overlay() {
+        let ns_path = Path::new("/run/reaper/ns/production--pippo");
+        assert_eq!(
+            super::helper_pid_path(ns_path),
+            PathBuf::from("/run/reaper/ns/production--pippo.pid")
+        );
+    }
+
+    #[test]
+    fn test_helper_pid_path_node_mode() {
+        let ns_path = Path::new("/run/reaper/shared-mnt-ns");
+        assert_eq!(
+            super::helper_pid_path(ns_path),
+            PathBuf::from("/run/reaper/shared-mnt-ns.pid")
+        );
+    }
+
+    #[test]
+    fn test_read_helper_info_valid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = dir.path().join("default.pid");
+        fs::write(&pid_path, "12345 4026531840").unwrap();
+
+        let result = super::read_helper_info(&pid_path);
+        assert_eq!(result, Some((12345, 4026531840)));
+    }
+
+    #[test]
+    fn test_read_helper_info_invalid_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = dir.path().join("default.pid");
+
+        // Only PID, no inode
+        fs::write(&pid_path, "12345").unwrap();
+        assert_eq!(super::read_helper_info(&pid_path), None);
+
+        // Non-numeric
+        fs::write(&pid_path, "abc def").unwrap();
+        assert_eq!(super::read_helper_info(&pid_path), None);
+
+        // Empty
+        fs::write(&pid_path, "").unwrap();
+        assert_eq!(super::read_helper_info(&pid_path), None);
+    }
+
+    #[test]
+    fn test_read_helper_info_missing_file() {
+        let result = super::read_helper_info(Path::new("/nonexistent/path.pid"));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_write_helper_info_creates_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_path = dir.path().join("subdir").join("default.pid");
+
+        super::write_helper_info(&pid_path, 42, 99999).unwrap();
+
+        let content = fs::read_to_string(&pid_path).unwrap();
+        assert_eq!(content, "42 99999");
+    }
+
+    #[test]
+    fn test_namespace_exists_pid_fallback() {
+        // Use current process PID — /proc/<self>/ns/mnt always exists on Linux
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ns_path = dir.path().join("test-ns");
+        let pid_path = super::helper_pid_path(&ns_path);
+
+        // No ns file and no pid file → false
+        assert!(!super::namespace_exists(&ns_path));
+
+        // Write PID file with current process's PID and correct inode
+        let my_pid = std::process::id() as i32;
+        if let Ok(inode) = super::get_ns_inode(my_pid) {
+            super::write_helper_info(&pid_path, my_pid, inode).unwrap();
+            assert!(super::namespace_exists(&ns_path));
+        }
+        // Skip on macOS where /proc doesn't exist
+    }
+
+    #[test]
+    fn test_namespace_exists_dead_pid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ns_path = dir.path().join("test-ns");
+        let pid_path = super::helper_pid_path(&ns_path);
+
+        // Write PID file with a PID that almost certainly doesn't exist
+        super::write_helper_info(&pid_path, 2_000_000_000, 12345).unwrap();
+        assert!(!super::namespace_exists(&ns_path));
+    }
+
+    #[test]
+    fn test_namespace_exists_inode_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ns_path = dir.path().join("test-ns");
+        let pid_path = super::helper_pid_path(&ns_path);
+
+        // Write PID file with current process but wrong inode
+        let my_pid = std::process::id() as i32;
+        super::write_helper_info(&pid_path, my_pid, 0).unwrap();
+
+        // On Linux, inode won't be 0, so this should return false
+        // On macOS, get_ns_inode fails → also false
+        assert!(!super::namespace_exists(&ns_path));
     }
 }

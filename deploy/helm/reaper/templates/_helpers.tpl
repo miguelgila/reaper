@@ -31,3 +31,12 @@ Controller component labels
 app.kubernetes.io/name: reaper-controller
 app.kubernetes.io/component: controller
 {{- end }}
+
+{{/*
+Agent component labels
+*/}}
+{{- define "reaper.agent.labels" -}}
+{{ include "reaper.labels" . }}
+app.kubernetes.io/name: reaper-agent
+app.kubernetes.io/component: agent
+{{- end }}

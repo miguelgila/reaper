@@ -165,6 +165,9 @@ else
   docker build -t "$IMAGE_NAME" "$TEMP_CONTEXT" 2>&1 | tee -a "$LOG_FILE"
 fi
 
+docker image inspect "$IMAGE_NAME" > /dev/null 2>&1 || {
+  fail "Image not found after build: $IMAGE_NAME"
+}
 ok "Image built: $IMAGE_NAME" | if_log
 
 # Load into Kind
@@ -176,4 +179,8 @@ else
   kind load docker-image "$IMAGE_NAME" --name "$CLUSTER_NAME" 2>&1 | tee -a "$LOG_FILE"
 fi
 
+# Verify image is accessible inside the Kind node
+docker exec "${CLUSTER_NAME}-control-plane" crictl images 2>/dev/null | grep -q "reaper-node" || {
+  info "Image may not be loaded into Kind node (crictl check failed). Continuing..." | if_log
+}
 ok "Image loaded into Kind." | if_log

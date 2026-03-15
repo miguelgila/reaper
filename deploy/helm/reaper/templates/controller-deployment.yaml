@@ -18,7 +18,7 @@ spec:
       serviceAccountName: reaper-controller
       containers:
         - name: controller
-          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
           securityContext:
             runAsNonRoot: true

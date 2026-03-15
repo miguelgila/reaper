@@ -30,12 +30,14 @@ prometheus-client = { version = "0.23", optional = true }
 axum = { version = "0.8", optional = true }
 futures = { version = "0.3", optional = true }
 chrono = { version = "0.4", optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+libc = { version = "0.2", optional = true }
 
 # reaper-controller dependencies
 schemars = { version = "0.8", optional = true }
 
 [features]
-agent = ["kube", "k8s-openapi", "prometheus-client", "axum", "futures", "chrono"]
+agent = ["kube", "k8s-openapi", "prometheus-client", "axum", "futures", "chrono", "uuid", "libc"]
 controller = ["kube", "k8s-openapi", "schemars", "futures", "chrono"]
 
 [dev-dependencies]

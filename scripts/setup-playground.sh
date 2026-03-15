@@ -210,6 +210,11 @@ info "Using KUBECONFIG=$KUBECONFIG_FILE" | if_log
 # ---------------------------------------------------------------------------
 cd "$REPO_ROOT"
 
+# Extract version from Cargo.toml so images are tagged with the version under test
+# (matches what the Helm chart defaults to via appVersion).
+REAPER_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+info "Reaper version: $REAPER_VERSION" | if_log
+
 # Build reaper-node image (contains shim + runtime + install script)
 info "Building reaper-node image" | if_log
 local_build_args=(--cluster-name "$CLUSTER_NAME")
@@ -219,37 +224,92 @@ fi
 if $QUIET; then
   local_build_args+=(--quiet)
 fi
-"$SCRIPT_DIR/build-node-image.sh" "${local_build_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
+"$SCRIPT_DIR/build-node-image.sh" "${local_build_args[@]}" \
+  --image "ghcr.io/miguelgila/reaper-node:${REAPER_VERSION}" \
+  2>&1 | tee -a "$LOG_FILE" || {
   fail "reaper-node image build failed. See $LOG_FILE"
 }
 ok "reaper-node image loaded into Kind." | if_log
 
 # Build reaper-controller image
 info "Building reaper-controller image" | if_log
-"$SCRIPT_DIR/build-controller-image.sh" "${local_build_args[@]}" 2>&1 | tee -a "$LOG_FILE" || {
+"$SCRIPT_DIR/build-controller-image.sh" "${local_build_args[@]}" \
+  --image "ghcr.io/miguelgila/reaper-controller:${REAPER_VERSION}" \
+  2>&1 | tee -a "$LOG_FILE" || {
   fail "reaper-controller image build failed. See $LOG_FILE"
 }
 ok "reaper-controller image loaded into Kind." | if_log
 
+# Build reaper-agent image
+info "Building reaper-agent image" | if_log
+"$SCRIPT_DIR/build-agent-image.sh" "${local_build_args[@]}" \
+  --image "ghcr.io/miguelgila/reaper-agent:${REAPER_VERSION}" \
+  2>&1 | tee -a "$LOG_FILE" || {
+  fail "reaper-agent image build failed. See $LOG_FILE"
+}
+ok "reaper-agent image loaded into Kind." | if_log
+
+# ---------------------------------------------------------------------------
+# Verify image availability before Helm install
+# ---------------------------------------------------------------------------
+info "Verifying images are loaded in Kind nodes" | if_log
+
+# Check Chart.yaml appVersion matches Cargo.toml version
+CHART_APP_VERSION=$(grep 'appVersion:' deploy/helm/reaper/Chart.yaml | sed 's/.*"\(.*\)"/\1/')
+if [[ "$CHART_APP_VERSION" != "$REAPER_VERSION" ]]; then
+  warn "Chart.yaml appVersion ($CHART_APP_VERSION) != Cargo.toml version ($REAPER_VERSION)" | if_log
+  warn "This may cause ImagePullBackOff if Helm resolves a different tag than loaded images" | if_log
+fi
+
+# Log images available in Kind node for debugging
+log_images() {
+  docker exec "${CLUSTER_NAME}-control-plane" crictl images 2>/dev/null \
+    | grep -E "reaper-(node|controller|agent)" || echo "  (no reaper images found)"
+}
+info "Images in Kind node:" | if_log
+log_images 2>&1 | tee -a "$LOG_FILE" | if_log
+
 # ---------------------------------------------------------------------------
 # Install Reaper via Helm
 # ---------------------------------------------------------------------------
-info "Installing Reaper via Helm" | if_log
+info "Installing Reaper via Helm (image tag: $REAPER_VERSION)" | if_log
 
-if $QUIET; then
-  helm upgrade --install reaper deploy/helm/reaper/ \
-    --namespace reaper-system --create-namespace \
-    --set node.image.pullPolicy=IfNotPresent \
-    --set controller.image.pullPolicy=IfNotPresent \
-    --wait --timeout 120s \
-    >> "$LOG_FILE" 2>&1 || fail "Helm install failed. See $LOG_FILE"
-else
-  helm upgrade --install reaper deploy/helm/reaper/ \
-    --namespace reaper-system --create-namespace \
-    --set node.image.pullPolicy=IfNotPresent \
-    --set controller.image.pullPolicy=IfNotPresent \
-    --wait --timeout 120s \
-    2>&1 | tee -a "$LOG_FILE" || fail "Helm install failed. See $LOG_FILE"
+# Retry Helm install up to 3 times. On freshly-created Kind clusters the API
+# server may not be fully stabilized when we reach this point, causing the
+# first attempt to fail (CRD establishment race, transient API errors, etc.).
+HELM_INSTALLED=false
+for attempt in 1 2 3; do
+  if $QUIET; then
+    if helm upgrade --install reaper deploy/helm/reaper/ \
+      --namespace reaper-system --create-namespace \
+      --set node.image.pullPolicy=IfNotPresent \
+      --set controller.image.pullPolicy=IfNotPresent \
+      --set agent.image.pullPolicy=IfNotPresent \
+      --wait --timeout 120s \
+      >> "$LOG_FILE" 2>&1; then
+      HELM_INSTALLED=true
+      break
+    fi
+  else
+    if helm upgrade --install reaper deploy/helm/reaper/ \
+      --namespace reaper-system --create-namespace \
+      --set node.image.pullPolicy=IfNotPresent \
+      --set controller.image.pullPolicy=IfNotPresent \
+      --set agent.image.pullPolicy=IfNotPresent \
+      --wait --timeout 120s \
+      2>&1 | tee -a "$LOG_FILE"; then
+      HELM_INSTALLED=true
+      break
+    fi
+  fi
+  warn "Helm install attempt $attempt failed, retrying in 5s..." | if_log
+  sleep 5
+done
+
+if ! $HELM_INSTALLED; then
+  echo "--- Last 30 lines of $LOG_FILE ---" >&2
+  tail -30 "$LOG_FILE" >&2
+  fail "Helm install failed after 3 attempts. See $LOG_FILE"
 fi
 
 ok "Reaper installed via Helm." | if_log
@@ -278,6 +338,17 @@ done
 
 kubectl get runtimeclass reaper-v2 &>/dev/null || fail "RuntimeClass reaper-v2 not found"
 
+# Wait for reaper-node DaemonSet to be fully rolled out (init container copies
+# shim + runtime binaries to host).  Helm --wait considers a DaemonSet ready
+# when pods are Running, but containerd may not have picked up the new shim yet.
+info "Waiting for reaper-node DaemonSet rollout" | if_log
+
+kubectl rollout status daemonset/reaper-node -n reaper-system --timeout=120s >> "$LOG_FILE" 2>&1 || {
+  fail "reaper-node DaemonSet did not become ready. Binaries may not be installed. See $LOG_FILE"
+}
+
+ok "reaper-node DaemonSet rolled out." | if_log
+
 # ---------------------------------------------------------------------------
 # Smoke test
 # ---------------------------------------------------------------------------
@@ -304,9 +375,29 @@ for i in $(seq 1 30); do
     break
   elif [[ "$phase" == "Failed" ]]; then
     warn "Smoke test pod failed" | if_log
-    kubectl logs reaper-smoke-test 2>/dev/null | if_log
+    echo "--- pod describe ---" >&2
+    kubectl describe pod reaper-smoke-test >&2 2>/dev/null || true
+    echo "--- pod logs ---" >&2
+    kubectl logs reaper-smoke-test >&2 2>/dev/null || true
+    echo "--- reaper-node daemonset pods ---" >&2
+    kubectl get pods -n reaper-system -l app.kubernetes.io/component=node -o wide >&2 2>/dev/null || true
+    # Dump node-level Reaper runtime diagnostics
+    SMOKE_NODE=$(kubectl get pod reaper-smoke-test -o jsonpath='{.spec.nodeName}' 2>/dev/null || true)
+    if [[ -n "$SMOKE_NODE" ]]; then
+      NODE_CTR=$(docker ps --filter "name=${SMOKE_NODE}" --format '{{.ID}}' 2>/dev/null | head -1)
+      if [[ -n "$NODE_CTR" ]]; then
+        echo "--- reaper runtime log (last 50 lines) ---" >&2
+        docker exec "$NODE_CTR" tail -50 /run/reaper/runtime.log 2>&1 >&2 || echo "(no runtime log)" >&2
+        echo "--- reaper state files ---" >&2
+        docker exec "$NODE_CTR" find /run/reaper -name 'state.json' -exec echo '{}:' \; -exec cat {} \; 2>&1 >&2 || true
+        echo "--- installed binaries ---" >&2
+        docker exec "$NODE_CTR" ls -la /usr/local/bin/containerd-shim-reaper-v2 /usr/local/bin/reaper-runtime 2>&1 >&2 || true
+        echo "--- containerd shim logs ---" >&2
+        docker exec "$NODE_CTR" journalctl -u containerd --no-pager -n 30 2>&1 >&2 || true
+      fi
+    fi
     kubectl delete pod reaper-smoke-test --ignore-not-found >> "$LOG_FILE" 2>&1
-    fail "Smoke test failed. Check $LOG_FILE"
+    fail "Smoke test failed. Check output above for details."
   fi
   sleep 1
 done

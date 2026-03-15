@@ -1,0 +1,544 @@
+use crate::jobs::{JobRequest, JobState, JobStatusResponse};
+use std::collections::HashMap;
+use std::process::Stdio;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tracing::{debug, error, info};
+
+/// Platform-specific wrapper for setgroups syscall.
+/// Linux uses size_t (usize), macOS/BSD uses c_int (i32).
+#[cfg(unix)]
+unsafe fn safe_setgroups(gids: &[libc::gid_t]) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let ret = libc::setgroups(gids.len(), gids.as_ptr());
+    #[cfg(not(target_os = "linux"))]
+    let ret = libc::setgroups(gids.len() as libc::c_int, gids.as_ptr());
+    if ret != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Clear all supplementary groups.
+#[cfg(unix)]
+unsafe fn safe_setgroups_empty() -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let ret = libc::setgroups(0, std::ptr::null());
+    #[cfg(not(target_os = "linux"))]
+    let ret = libc::setgroups(0 as libc::c_int, std::ptr::null());
+    if ret != 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Tracks a running or completed job.
+struct JobEntry {
+    state: JobState,
+    /// Child process handle (while running).
+    child: Option<tokio::process::Child>,
+    exit_code: Option<i32>,
+    message: Option<String>,
+    /// Path to MPI hostfile to clean up when job completes.
+    hostfile_path: Option<String>,
+}
+
+/// Manages bare-metal job execution on a single node.
+#[derive(Clone)]
+pub struct JobManager {
+    jobs: Arc<Mutex<HashMap<String, JobEntry>>>,
+    /// When true, enter PID 1's mount namespace before exec so that
+    /// `/bin/sh` resolves to the host's shell (required when running
+    /// inside a distroless container with hostPID: true).
+    host_exec: bool,
+}
+
+impl JobManager {
+    pub fn new(host_exec: bool) -> Self {
+        Self {
+            jobs: Arc::new(Mutex::new(HashMap::new())),
+            host_exec,
+        }
+    }
+
+    /// Submit a new job for execution.
+    pub async fn submit(&self, request: JobRequest) -> Result<String, String> {
+        let job_id = uuid::Uuid::new_v4().to_string();
+
+        let mut cmd = tokio::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg(&request.script);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        // Set environment
+        cmd.env_clear();
+        // Inherit essential vars
+        if let Ok(path) = std::env::var("PATH") {
+            cmd.env("PATH", &path);
+        }
+        for (key, value) in &request.environment {
+            cmd.env(key, value);
+        }
+
+        // When host_exec is true, working_dir must be set AFTER nsenter
+        // (inside pre_exec), not via cmd.current_dir() which runs in the
+        // container's mount namespace.
+        #[cfg(unix)]
+        let working_dir_in_preexec = self.host_exec && request.working_dir.is_some();
+        #[cfg(not(unix))]
+        let working_dir_in_preexec = false;
+
+        if !working_dir_in_preexec {
+            if let Some(ref dir) = request.working_dir {
+                cmd.current_dir(dir);
+            }
+        }
+
+        // pre_exec: host namespace entry + chdir + privilege dropping (Unix only)
+        #[cfg(unix)]
+        {
+            let uid = request.uid;
+            let gid = request.gid;
+            let supplemental_groups = request.supplemental_groups.clone();
+            let host_exec = self.host_exec;
+            // Used inside #[cfg(target_os = "linux")] block in pre_exec
+            #[allow(unused_variables)]
+            let working_dir = if working_dir_in_preexec {
+                request.working_dir.clone()
+            } else {
+                None
+            };
+
+            if host_exec || uid.is_some() || gid.is_some() {
+                unsafe {
+                    cmd.pre_exec(move || {
+                        // Enter host mount namespace so /bin/sh resolves to the
+                        // host's shell (required when agent runs in a container
+                        // with hostPID: true).
+                        #[cfg(target_os = "linux")]
+                        if host_exec {
+                            let fd = libc::open(
+                                b"/proc/1/ns/mnt\0".as_ptr() as *const libc::c_char,
+                                libc::O_RDONLY,
+                            );
+                            if fd < 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                            // setns(fd, CLONE_NEWNS=0x00020000)
+                            let ret = libc::syscall(libc::SYS_setns, fd, 0x0002_0000i32);
+                            libc::close(fd);
+                            if ret != 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+
+                            // chdir after nsenter so path resolves in host namespace
+                            if let Some(ref dir) = working_dir {
+                                let c_dir = std::ffi::CString::new(dir.as_str()).map_err(|_| {
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::InvalidInput,
+                                        "invalid working_dir path",
+                                    )
+                                })?;
+                                if libc::chdir(c_dir.as_ptr()) != 0 {
+                                    return Err(std::io::Error::last_os_error());
+                                }
+                            }
+                        }
+
+                        // Order matters: setgroups → setgid → setuid (uid last, irreversible)
+                        if let Some(ref groups) = supplemental_groups {
+                            let gids: Vec<libc::gid_t> =
+                                groups.iter().map(|&g| g as libc::gid_t).collect();
+                            safe_setgroups(&gids)?;
+                        } else if gid.is_some() {
+                            // Clear supplementary groups when setting gid without explicit groups
+                            safe_setgroups_empty()?;
+                        }
+
+                        if let Some(g) = gid {
+                            let ret = libc::setgid(g as libc::gid_t);
+                            if ret != 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                        }
+
+                        if let Some(u) = uid {
+                            let ret = libc::setuid(u as libc::uid_t);
+                            if ret != 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                        }
+
+                        Ok(())
+                    });
+                }
+            }
+        }
+
+        // Write MPI hostfile to disk if provided.
+        // When host_exec is true, write through /proc/1/root so the file
+        // lands in the host filesystem (the job runs in the host mount
+        // namespace after nsenter).
+        if let (Some(ref content), Some(ref path)) = (&request.hostfile, &request.hostfile_path) {
+            let write_path = if self.host_exec {
+                format!("/proc/1/root{path}")
+            } else {
+                path.clone()
+            };
+            if let Some(parent) = std::path::Path::new(&write_path).parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            tokio::fs::write(&write_path, content)
+                .await
+                .map_err(|e| format!("failed to write hostfile to {path}: {e}"))?;
+            debug!(path = %path, write_path = %write_path, "wrote MPI hostfile");
+        }
+
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("failed to spawn job: {e}"))?;
+
+        info!(job_id = %job_id, "job submitted and running");
+
+        let entry = JobEntry {
+            state: JobState::Running,
+            child: Some(child),
+            exit_code: None,
+            message: None,
+            hostfile_path: if self.host_exec {
+                request
+                    .hostfile_path
+                    .as_ref()
+                    .map(|p| format!("/proc/1/root{p}"))
+            } else {
+                request.hostfile_path.clone()
+            },
+        };
+
+        let mut jobs = self.jobs.lock().await;
+        jobs.insert(job_id.clone(), entry);
+
+        Ok(job_id)
+    }
+
+    /// Get the status of a job, reaping the child if it has exited.
+    pub async fn status(&self, job_id: &str) -> Option<JobStatusResponse> {
+        let mut jobs = self.jobs.lock().await;
+        let entry = jobs.get_mut(job_id)?;
+
+        // If still running, check if the child has exited
+        if entry.state == JobState::Running {
+            if let Some(ref mut child) = entry.child {
+                match child.try_wait() {
+                    Ok(Some(exit_status)) => {
+                        let code = exit_status.code().unwrap_or(-1);
+                        entry.exit_code = Some(code);
+                        entry.state = if code == 0 {
+                            JobState::Succeeded
+                        } else {
+                            JobState::Failed
+                        };
+                        if code != 0 {
+                            entry.message = Some(format!("exited with code {code}"));
+                        }
+                        entry.child = None;
+                        // Clean up hostfile now that the job is done
+                        if let Some(ref hf_path) = entry.hostfile_path {
+                            let _ = std::fs::remove_file(hf_path);
+                            entry.hostfile_path = None;
+                        }
+                        debug!(job_id = %job_id, code = code, "job completed");
+                    }
+                    Ok(None) => {
+                        // Still running
+                    }
+                    Err(e) => {
+                        error!(job_id = %job_id, error = %e, "failed to check job status");
+                        entry.state = JobState::Failed;
+                        entry.message = Some(format!("failed to check status: {e}"));
+                        entry.child = None;
+                        if let Some(ref hf_path) = entry.hostfile_path {
+                            let _ = std::fs::remove_file(hf_path);
+                            entry.hostfile_path = None;
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(JobStatusResponse {
+            job_id: job_id.to_string(),
+            status: entry.state,
+            exit_code: entry.exit_code,
+            message: entry.message.clone(),
+        })
+    }
+
+    /// Terminate a running job by sending SIGTERM, then SIGKILL after 5s.
+    pub async fn terminate(&self, job_id: &str) -> bool {
+        let mut jobs = self.jobs.lock().await;
+        let entry = match jobs.get_mut(job_id) {
+            Some(e) => e,
+            None => return false,
+        };
+
+        if entry.state != JobState::Running {
+            return true; // Already done
+        }
+
+        if let Some(ref mut child) = entry.child {
+            // Try SIGTERM first
+            #[cfg(unix)]
+            {
+                if let Some(pid) = child.id() {
+                    unsafe {
+                        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                    }
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = child.kill().await;
+            }
+
+            // Give it 5 seconds to exit gracefully
+            let timeout =
+                tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+
+            match timeout {
+                Ok(Ok(status)) => {
+                    let code = status.code().unwrap_or(-1);
+                    entry.exit_code = Some(code);
+                    entry.state = JobState::Failed;
+                    entry.message = Some("terminated by request".to_string());
+                }
+                _ => {
+                    // Force kill
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    entry.exit_code = Some(-1);
+                    entry.state = JobState::Failed;
+                    entry.message = Some("killed after timeout".to_string());
+                }
+            }
+            entry.child = None;
+            // Clean up hostfile on termination
+            if let Some(ref hf_path) = entry.hostfile_path {
+                let _ = std::fs::remove_file(hf_path);
+                entry.hostfile_path = None;
+            }
+            info!(job_id = %job_id, "job terminated");
+        }
+
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_request(script: &str) -> JobRequest {
+        JobRequest {
+            script: script.to_string(),
+            environment: HashMap::new(),
+            working_dir: None,
+            uid: None,
+            gid: None,
+            username: None,
+            home_dir: None,
+            supplemental_groups: None,
+            hostfile: None,
+            hostfile_path: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_and_status_success() {
+        let manager = JobManager::new(false);
+        let req = make_request("exit 0");
+        let job_id = manager.submit(req).await.expect("submit should succeed");
+
+        // Poll until completed (up to 2s)
+        let mut final_status = None;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let s = manager.status(&job_id).await.unwrap();
+            if s.status != JobState::Running {
+                final_status = Some(s);
+                break;
+            }
+        }
+
+        let s = final_status.expect("job should have completed");
+        assert_eq!(s.status, JobState::Succeeded);
+        assert_eq!(s.exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn submit_and_status_failure() {
+        let manager = JobManager::new(false);
+        let req = make_request("exit 1");
+        let job_id = manager.submit(req).await.expect("submit should succeed");
+
+        let mut final_status = None;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let s = manager.status(&job_id).await.unwrap();
+            if s.status != JobState::Running {
+                final_status = Some(s);
+                break;
+            }
+        }
+
+        let s = final_status.expect("job should have completed");
+        assert_eq!(s.status, JobState::Failed);
+        assert_eq!(s.exit_code, Some(1));
+    }
+
+    #[tokio::test]
+    async fn status_unknown_job_returns_none() {
+        let manager = JobManager::new(false);
+        let result = manager.status("nonexistent-job-id").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn terminate_unknown_job_returns_false() {
+        let manager = JobManager::new(false);
+        assert!(!manager.terminate("no-such-job").await);
+    }
+
+    #[tokio::test]
+    async fn terminate_running_job() {
+        let manager = JobManager::new(false);
+        // Long-running job
+        let req = make_request("sleep 60");
+        let job_id = manager.submit(req).await.expect("submit should succeed");
+
+        // Give it a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let terminated = manager.terminate(&job_id).await;
+        assert!(terminated);
+
+        let s = manager.status(&job_id).await.unwrap();
+        assert_eq!(s.status, JobState::Failed);
+    }
+
+    #[tokio::test]
+    async fn environment_variables_passed_to_job() {
+        let manager = JobManager::new(false);
+        let mut env = HashMap::new();
+        env.insert("TEST_VAR".to_string(), "hello_world".to_string());
+        let req = JobRequest {
+            script: r#"test "$TEST_VAR" = "hello_world""#.to_string(),
+            environment: env,
+            working_dir: None,
+            uid: None,
+            gid: None,
+            username: None,
+            home_dir: None,
+            supplemental_groups: None,
+            hostfile: None,
+            hostfile_path: None,
+        };
+        let job_id = manager.submit(req).await.expect("submit should succeed");
+
+        let mut final_status = None;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let s = manager.status(&job_id).await.unwrap();
+            if s.status != JobState::Running {
+                final_status = Some(s);
+                break;
+            }
+        }
+
+        let s = final_status.expect("job should have completed");
+        assert_eq!(
+            s.status,
+            JobState::Succeeded,
+            "env var was not passed correctly"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_submit_writes_hostfile() {
+        let manager = JobManager::new(false);
+        let hostfile_path = format!("/tmp/reaper-test-hostfile-{}", uuid::Uuid::new_v4());
+        let request = JobRequest {
+            script: "true".to_string(),
+            environment: HashMap::new(),
+            working_dir: None,
+            uid: None,
+            gid: None,
+            username: None,
+            home_dir: None,
+            supplemental_groups: None,
+            hostfile: Some("node-0 slots=1\nnode-1 slots=1".to_string()),
+            hostfile_path: Some(hostfile_path.clone()),
+        };
+
+        let job_id = manager.submit(request).await.unwrap();
+
+        // Hostfile should have been written
+        let content = tokio::fs::read_to_string(&hostfile_path).await.unwrap();
+        assert_eq!(content, "node-0 slots=1\nnode-1 slots=1");
+
+        // Wait for job to complete
+        let mut final_status = None;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let s = manager.status(&job_id).await.unwrap();
+            if s.status != JobState::Running {
+                final_status = Some(s);
+                break;
+            }
+        }
+        let s = final_status.expect("job should have completed");
+        assert_eq!(s.status, JobState::Succeeded);
+
+        // Hostfile should be cleaned up after job completes
+        assert!(
+            !std::path::Path::new(&hostfile_path).exists(),
+            "hostfile should be cleaned up"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_submit_without_hostfile() {
+        let manager = JobManager::new(false);
+        let request = JobRequest {
+            script: "echo hello".to_string(),
+            environment: HashMap::new(),
+            working_dir: None,
+            uid: None,
+            gid: None,
+            username: None,
+            home_dir: None,
+            supplemental_groups: None,
+            hostfile: None,
+            hostfile_path: None,
+        };
+
+        let job_id = manager.submit(request).await.unwrap();
+        assert!(!job_id.is_empty());
+
+        // Should succeed without hostfile
+        let mut final_status = None;
+        for _ in 0..20 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let s = manager.status(&job_id).await.unwrap();
+            if s.status != JobState::Running {
+                final_status = Some(s);
+                break;
+            }
+        }
+        let s = final_status.expect("job should have completed");
+        assert_eq!(s.status, JobState::Succeeded);
+    }
+}

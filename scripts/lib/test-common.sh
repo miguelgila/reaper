@@ -103,13 +103,16 @@ wait_for_pod_phase() {
   local pod_name="$1"
   local target_phase="$2"
   local timeout="${3:-60}"
-  local interval="${4:-2}"
+  local interval="${4:-1}"
   local elapsed=0
   local phase
 
   while [[ $elapsed -lt $timeout ]]; do
     phase=$(kubectl get pod "$pod_name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-    log_verbose "Pod $pod_name phase=$phase (${elapsed}s/${timeout}s)"
+    # Only log every 5s to reduce noise (or always if verbose)
+    if (( elapsed % 5 == 0 )) || $VERBOSE; then
+      log_verbose "Pod $pod_name phase=$phase (${elapsed}s/${timeout}s)"
+    fi
     if [[ "$phase" == "$target_phase" ]]; then
       return 0
     fi
@@ -224,13 +227,21 @@ run_test() {
   local name="$2"
   local fail_mode="${3:---hard-fail}"  # --hard-fail (default) or --soft-fail
 
+  # Apply test filter if set (matches against function name)
+  if [[ -n "${TEST_FILTER:-}" && "$func" != *"$TEST_FILTER"* ]]; then
+    return 0
+  fi
+
   ci_group_start "Test: $name"
 
   local start_time
   start_time=$(date +%s%N 2>/dev/null || date +%s)
 
+  # Capture stderr from test function so we can replay it on failure
+  local stderr_file
+  stderr_file=$(mktemp /tmp/reaper-test-stderr-XXXXXX)
   local result=0
-  "$func" || result=$?
+  "$func" 2> >(tee "$stderr_file" >&2) || result=$?
 
   local end_time
   end_time=$(date +%s%N 2>/dev/null || date +%s)
@@ -243,6 +254,10 @@ run_test() {
   else
     duration="$(( end_time - start_time ))s"
   fi
+
+  # Close CI group BEFORE printing result — ensures [FAIL] and diagnostics
+  # are visible in GitHub Actions (not collapsed inside the group).
+  ci_group_end
 
   TEST_NAMES+=("$name")
   TEST_DURATIONS+=("$duration")
@@ -260,18 +275,39 @@ run_test() {
     ci_error "Test failed: $name"
     TEST_RESULTS+=("FAIL")
     TESTS_FAILED=$((TESTS_FAILED + 1))
-    # Dump node-level runtime logs on hard failures for context
+
+    # Print concise failure summary (visible in CI, not collapsed)
+    log_status ""
+    log_status "  ${CLR_FAIL}--- Failure details: $name ---${CLR_RESET}"
+
+    # Show captured error messages from the test function
+    if [[ -s "$stderr_file" ]]; then
+      log_status "  ${CLR_FAIL}Error output:${CLR_RESET}"
+      head -20 "$stderr_file" | while IFS= read -r line; do
+        log_status "    $line"
+      done
+    fi
+
+    # Show reaper runtime log errors (the actual root cause is usually here)
     if [[ -n "$NODE_ID" ]]; then
-      log_status "  Containerd logs (last 50 lines):"
-      docker exec "$NODE_ID" journalctl -u containerd -n 50 --no-pager 2>/dev/null \
-        | while IFS= read -r line; do log_status "    $line"; done || true
-      log_status "  Kubelet logs (last 30 lines):"
-      docker exec "$NODE_ID" journalctl -u kubelet -n 30 --no-pager 2>/dev/null \
+      log_status "  ${CLR_FAIL}Reaper runtime errors (last 15 lines):${CLR_RESET}"
+      docker exec "$NODE_ID" grep -iE "error|fail|panic" /run/reaper/runtime.log 2>/dev/null \
+        | tail -15 | while IFS= read -r line; do
+          log_status "    $line"
+        done || true
+
+      # Show containerd errors only (not full journal)
+      log_status "  ${CLR_FAIL}Containerd errors (last 10):${CLR_RESET}"
+      docker exec "$NODE_ID" journalctl -u containerd -n 100 --no-pager 2>/dev/null \
+        | grep -iE "error|fail" | tail -10 \
         | while IFS= read -r line; do log_status "    $line"; done || true
     fi
-    log_status "  Full diagnostic log: $LOG_FILE"
+
+    log_status "  Full log: $LOG_FILE"
+    log_status "  ${CLR_FAIL}--- End failure details ---${CLR_RESET}"
+    log_status ""
   fi
 
-  ci_group_end
+  rm -f "$stderr_file"
   return 0  # never abort mid-suite; summary handles exit code
 }

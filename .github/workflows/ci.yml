@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "fix/**"]
     paths-ignore:
       - "**/*.md"
       - "docs/**"
@@ -144,11 +144,8 @@ jobs:
           version: "v3.14.0"
 
       - name: Run integration tests
-        uses: nick-fields/retry@v3
-        with:
-          timeout_minutes: 30
-          max_attempts: 2
-          command: ./scripts/run-integration-tests.sh --skip-cargo
+        timeout-minutes: 30
+        run: ./scripts/run-integration-tests.sh --skip-cargo
 
       - name: Upload integration test logs
         if: always()
@@ -156,7 +153,39 @@ jobs:
         continue-on-error: true
         with:
           name: integration-test-logs
-          path: /tmp/reaper-integration-logs/
+          path: |
+            /tmp/reaper-integration-logs/
+            /tmp/reaper-playground-setup.log
+          retention-days: 7
+
+  example-validation:
+    name: Example Validation
+    needs: cargo-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kind
+        run: |
+          [ -x "$(command -v kind)" ] && exit 0
+          curl -Lo ./kind "https://kind.sigs.k8s.io/dl/v0.23.0/kind-linux-amd64"
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: "v1.30.0"
+
+      - name: Run example validation
+        run: ./scripts/test-examples.sh --skip-cluster
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: example-validation-logs
+          path: /tmp/reaper-examples-test-kubeconfig
           retention-days: 7
 
   # playground-release job removed: setup-playground.sh now uses Helm

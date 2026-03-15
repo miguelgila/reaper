@@ -374,6 +374,44 @@ cargo clippy --target x86_64-unknown-linux-gnu --all-targets
 ### ⏳ Future Work
 See [docs/TODO.md](docs/TODO.md) for planned enhancements:
 - Real Kubernetes cluster testing (GKE, EKS)
+- ReaperDaemonJob CRD (see below)
+
+## ReaperDaemonJob CRD (Planned)
+
+A new CRD to replace Nomad exec jobs for node configuration tasks (vServices). Fills a
+gap Kubernetes lacks natively — a "DaemonJob" that runs to completion on every matching
+node and re-triggers on node events (join, reboot).
+
+**Use case:** Ansible playbooks that configure compute nodes (mount filesystems, install
+packages, start system daemons). Currently deployed via Nomad exec at CSCS.
+
+**Design:**
+- Controller watches `Node` events (Ready condition changes, new node joining)
+- For each matching node, creates a `ReaperPod` (reusing existing CRD) via `nodeName`
+- Tracks per-node completion in `ReaperDaemonJob.status.nodeStatuses`
+- Supports dependency ordering between jobs (`after: [job-name]`)
+- On spec change, re-triggers on all matching nodes
+
+**Key spec fields:**
+- `command` / `args` — the Ansible playbook invocation
+- `overlayName` — shared overlay so composable vServices see each other's mounts and
+  installed packages (uses existing named overlay support)
+- `nodeSelector` — target specific node groups
+- `triggerOn` — NodeReady, NodeReboot, Manual, Schedule
+- `after` — dependency ordering within the shared overlay
+- `retryPolicy` — per-node retry on failure
+- `concurrencyPolicy` — skip if already running on that node
+
+**Why shared overlay matters:** vServices compose — one mounts a filesystem, another
+installs packages on it. Reaper's named overlays (`overlayName`) let multiple jobs share
+an overlay upper layer and mount namespace via `setns()`. See `examples/06-ansible-jobs/`.
+
+**Why tmpfs overlay is a feature:** Overlays live on `/run` (tmpfs) and vanish on reboot.
+When a node reboots and rejoins K8s, the controller re-triggers all jobs in dependency
+order, rebuilding node state from scratch. No configuration drift.
+
+**Controller layering:** `ReaperDaemonJob → ReaperPod → Pod`. No changes to existing
+runtime or reaper-controller — only a new controller/reconciler for the new CRD.
 
 ## Documentation Map
 
@@ -388,6 +426,17 @@ See [docs/TODO.md](docs/TODO.md) for planned enhancements:
 - **[docs/CURRENT_STATE.md](docs/CURRENT_STATE.md)** - ⚠️ **OUTDATED** - refer to SHIMV2_DESIGN.md instead
 - **[docs/TODO.md](docs/TODO.md)** - Future work and enhancements
 
+## Release Pipeline: Container Image Publication (March 2026)
+
+Priority list for completing the release pipeline:
+
+- [x] **1. Add container image build/push job to `release.yml`** — `container-images` job builds and pushes all 3 images to GHCR with semver + latest tags, using docker buildx for multi-arch (linux/amd64 + linux/arm64)
+- [x] **2. Port reaper-agent DaemonSet to Helm chart** — added `agent-daemonset.yaml`, `agent-rbac.yaml` templates with `agent.enabled` toggle, Prometheus metrics annotations, full RBAC
+- [x] **3. Wire `Chart.yaml` appVersion into auto-release and manual-release** — both workflows now update `Chart.yaml` appVersion alongside `Cargo.toml` and include it in the release commit
+- [x] **4. Switch default image tags from `:latest` to appVersion** — all 3 Helm templates use `{{ .Values.*.image.tag | default .Chart.AppVersion }}`, values.yaml defaults to `tag: ""`
+- [x] **5. Add `cosign sign` for container images** — keyless cosign signing via GitHub OIDC after each image push in the `container-images` job
+- [x] **6. Normalize Dockerfiles to buildx-friendly pattern** — all 3 Dockerfiles use `--platform=$BUILDPLATFORM` builder stages (cross-compile natively) with `TARGETARCH` selection in runtime stage
+
 ## Important Notes
 
 - **CURRENT_STATE.md is outdated** - Use SHIMV2_DESIGN.md for current implementation status
@@ -395,3 +444,4 @@ See [docs/TODO.md](docs/TODO.md) for planned enhancements:
 - **Overlay is mandatory** - No fail-open to host-direct execution on Linux
 - **Fork-first is critical** - Do not change fork order; see MEMORY.md for why
 - **500ms timing delay** - Required for fast processes; see SHIM_ARCHITECTURE.md for details
+- **Bug tracking** - All bugs are tracked as GitHub issues (no local BUGS.md file)
