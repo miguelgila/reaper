@@ -282,11 +282,29 @@ reaper/
 
 ## CI Integration
 
-The GitHub Actions workflow automatically runs:
+The CI pipeline (`.github/workflows/ci.yml`) runs automatically on:
 
-```bash
-./scripts/run-integration-tests.sh
-```
+- **Push** to `main` or `fix/**` branches
+- **Pull requests** targeting `main`
+
+Changes to documentation (`*.md`, `docs/**`), `LICENSE*`, and `.gitignore` are excluded from triggering runs.
+
+### Jobs
+
+The pipeline runs these jobs:
+
+| Job | Description |
+|-----|-------------|
+| **Format** | `cargo fmt -- --check` |
+| **Clippy** | `cargo clippy --workspace --all-targets -- -D warnings` |
+| **Security Audit** | `cargo audit` |
+| **Tests** | `cargo test --verbose` |
+| **Coverage** | `cargo tarpaulin` → Codecov upload |
+| **Build and Cache** | Cross-compile static musl binaries (all 4 binaries) |
+| **kind-integration** | Full integration test suite (`run-integration-tests.sh --skip-cargo`) |
+| **Example Validation** | `test-examples.sh --skip-cluster` |
+
+### Results
 
 Results are posted to the GitHub Actions job summary. If any test fails, the workflow reports the failure with diagnostics.
 

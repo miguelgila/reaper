@@ -444,3 +444,4 @@ Priority list for completing the release pipeline:
 - **Overlay is mandatory** - No fail-open to host-direct execution on Linux
 - **Fork-first is critical** - Do not change fork order; see MEMORY.md for why
 - **500ms timing delay** - Required for fast processes; see SHIM_ARCHITECTURE.md for details
+- **Bug tracking** - All bugs are tracked as GitHub issues (no local BUGS.md file)
