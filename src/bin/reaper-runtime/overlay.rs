@@ -384,7 +384,11 @@ fn get_default_filters() -> Vec<PathBuf> {
         // System Secrets
         PathBuf::from("/etc/ssl/private"),
         PathBuf::from("/var/lib/docker"),
-        PathBuf::from("/run/secrets"),
+        // NOTE: /run/secrets is intentionally NOT filtered. Kubernetes mounts
+        // the serviceaccount token at /var/run/secrets/kubernetes.io/serviceaccount
+        // (which resolves to /run/secrets/... on systems where /var/run -> /run).
+        // Filtering /run/secrets creates a bind-mount that conflicts with K8s
+        // volume mounts in shared overlay namespaces.
         // Sensitive Configuration
         PathBuf::from("/etc/sudoers"),
         PathBuf::from("/etc/sudoers.d"),
@@ -515,6 +519,49 @@ fn namespace_exists(ns_path: &Path) -> bool {
     false
 }
 
+/// Open the overlay root directory via /proc/<pid>/root BEFORE setns.
+///
+/// Must be called while still in the host mount namespace where /proc is
+/// accessible. After setns, /proc is on a foreign mount and may not be
+/// traversable.
+fn open_overlay_root_fd(helper_pid: i32) -> Option<fs::File> {
+    let helper_root = format!("/proc/{}/root", helper_pid);
+    match fs::File::open(&helper_root) {
+        Ok(f) => {
+            info!(
+                "overlay: opened helper root fd (pid={}, path={})",
+                helper_pid, helper_root
+            );
+            Some(f)
+        }
+        Err(e) => {
+            tracing::warn!("overlay: failed to open {}: {}", helper_root, e);
+            None
+        }
+    }
+}
+
+/// After setns(CLONE_NEWNS), adopt the overlay namespace's root filesystem
+/// using a pre-opened directory fd.
+///
+/// The process root still points to the old (host) namespace's root after setns.
+/// Absolute paths resolve through this stale root, which doesn't see mounts
+/// from the overlay namespace (e.g., /run tmpfs is on a foreign mount). This
+/// causes ENOENT when creating volume mount destinations.
+///
+/// Fix: fchdir to the pre-opened overlay root fd (opened via /proc/<pid>/root
+/// before setns), then chroot(".") to adopt it as the process root.
+fn adopt_overlay_root(overlay_root_fd: Option<&fs::File>) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+    let fd = overlay_root_fd
+        .context("no overlay root fd available — cannot adopt overlay root after setns")?;
+    nix::unistd::fchdir(fd.as_raw_fd()).context("fchdir to overlay root fd failed")?;
+    nix::unistd::chroot(".").context("chroot(\".\") to overlay root failed")?;
+    std::env::set_current_dir("/").context("chdir(\"/\") after chroot failed")?;
+    info!("overlay: adopted overlay root via fchdir+chroot");
+    Ok(())
+}
+
 /// Join an existing shared mount namespace via setns().
 ///
 /// Tries the bind-mount path first (normal case). If that fails, falls back
@@ -523,24 +570,31 @@ fn namespace_exists(ns_path: &Path) -> bool {
 /// Tested by kind-integration (requires root + Linux namespaces).
 #[cfg(not(tarpaulin_include))]
 fn join_namespace(ns_path: &Path) -> Result<()> {
+    // Read helper PID upfront — we need it to open the overlay root fd.
+    // Must read BEFORE setns because the PID file lives on the host's /run
+    // tmpfs and may not be accessible through the old process root after
+    // entering the overlay namespace.
+    let pid_path = helper_pid_path(ns_path);
+    let helper_info = read_helper_info(&pid_path);
+
+    // Open overlay root fd BEFORE setns (while /proc is still accessible)
+    let overlay_root_fd = helper_info
+        .as_ref()
+        .and_then(|(pid, _)| open_overlay_root_fd(*pid));
+
     // Try bind-mount path first (normal case on real clusters)
     if let Ok(f) = fs::File::open(ns_path) {
         if setns(&f, CloneFlags::CLONE_NEWNS).is_ok() {
-            // After setns(CLONE_NEWNS), the process is in the new mount namespace
-            // but its root directory and CWD still reference the old namespace.
-            // chdir("/") adopts the new namespace's root (the pivot_root'd overlay).
-            // See setns(2): "a call to chdir() may be necessary to set the ...
-            // current working directory appropriately".
-            std::env::set_current_dir("/").ok();
+            adopt_overlay_root(overlay_root_fd.as_ref())
+                .context("adopting overlay root after bind-mount setns")?;
             info!("overlay: successfully joined shared namespace via bind-mount");
             return Ok(());
         }
     }
 
     // Fall back to PID file (nested container environments where bind-mount returned EINVAL)
-    let pid_path = helper_pid_path(ns_path);
     let (pid, expected_inode) =
-        read_helper_info(&pid_path).context("no valid bind-mount or PID file for namespace")?;
+        helper_info.context("no valid bind-mount or PID file for namespace")?;
 
     let actual_inode = get_ns_inode(pid).context("helper process namespace not accessible")?;
 
@@ -557,10 +611,8 @@ fn join_namespace(ns_path: &Path) -> Result<()> {
     let f = fs::File::open(&ns_proc_path)
         .with_context(|| format!("opening helper namespace at {}", ns_proc_path))?;
     setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace via PID fallback")?;
-    // After setns(CLONE_NEWNS), adopt the new namespace's root filesystem.
-    // Without this, the process's root/CWD still reference the old namespace
-    // and path resolution may not traverse the pivot_root'd overlay.
-    std::env::set_current_dir("/").ok();
+    adopt_overlay_root(overlay_root_fd.as_ref())
+        .context("adopting overlay root after PID fallback setns")?;
     info!(
         "overlay: successfully joined shared namespace via PID fallback (helper pid={})",
         pid
@@ -769,10 +821,13 @@ fn inner_parent_persist(
         join_namespace(&config.ns_path)?;
     } else {
         // Join directly via /proc/<pid>/ns/mnt (EINVAL fallback)
+        // Open overlay root fd BEFORE setns (while /proc is still accessible)
+        let overlay_root_fd = open_overlay_root_fd(helper_pid.as_raw());
         let f = fs::File::open(&ns_source)
             .with_context(|| format!("opening namespace at {}", ns_source))?;
         setns(&f, CloneFlags::CLONE_NEWNS).context("setns into shared namespace")?;
-        std::env::set_current_dir("/").ok();
+        adopt_overlay_root(overlay_root_fd.as_ref())
+            .context("adopting overlay root after direct setns")?;
         info!("overlay: successfully joined shared namespace via direct /proc path");
     }
 
@@ -1084,6 +1139,55 @@ fn cross_namespace_mount(source: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Unmount stale mounts on ancestor path components of `dest`.
+///
+/// In shared overlay namespaces, bind-mounts from previous pods or from
+/// filter_sensitive_paths() can become stale (source dentry deleted). When
+/// `create_dir_all` traverses a stale mount, it returns ENOENT because the
+/// kernel can't create entries in an unlinked directory.
+///
+/// This function reads `/proc/self/mountinfo`, finds mounts whose source
+/// has been deleted (kernel appends `//deleted`), and lazily detaches any
+/// that are ancestors of `dest`.
+#[cfg(not(tarpaulin_include))]
+fn unmount_stale_ancestors(dest: &Path) {
+    let mountinfo = match fs::read_to_string("/proc/self/mountinfo") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    // Collect ancestor paths (e.g., for /a/b/c/d: /a, /a/b, /a/b/c)
+    let ancestors: Vec<&Path> = dest.ancestors().skip(1).collect(); // skip dest itself
+
+    for line in mountinfo.lines() {
+        if !line.contains("deleted") {
+            continue;
+        }
+        // mountinfo format: id parent_id major:minor root mount_point options ...
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let mount_point = fields[4];
+        let root_field = fields[3];
+
+        // Check if this stale mount is an ancestor of our destination
+        let mp = Path::new(mount_point);
+        if ancestors.contains(&mp) && root_field.contains("deleted") {
+            match umount2(mp, MntFlags::MNT_DETACH) {
+                Ok(()) => info!(
+                    "volume: unmounted stale ancestor mount at {} (source was deleted)",
+                    mount_point
+                ),
+                Err(e) => info!(
+                    "volume: umount2({}) for stale ancestor returned {} (continuing)",
+                    mount_point, e
+                ),
+            }
+        }
+    }
+}
+
 /// Apply volume mounts from OCI config inside the current mount namespace.
 ///
 /// For each filtered bind mount:
@@ -1156,11 +1260,19 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
             );
         }
 
-        // Unmount any stale mount at the destination from a previous pod.
+        // Unmount stale mounts at the destination AND its ancestors.
+        //
         // Volume mounts in the shared namespace persist after pod deletion,
         // referencing kubelet directories that no longer exist. Attempting to
         // move_mount on top of a stale mount fails with ENOENT because path
         // lookup traverses into the disconnected mount.
+        //
+        // Also handles stale filter mounts: filter_sensitive_paths() bind-mounts
+        // empty placeholders over paths like /run/secrets. If the placeholder's
+        // source dentry is later deleted (overlay upper layer cleanup, etc.),
+        // create_dir_all inside the stale mount returns ENOENT. We must unmount
+        // stale ancestors before creating subdirectories.
+        unmount_stale_ancestors(dest_path);
         if dest_path.exists() {
             match umount2(dest_path, MntFlags::MNT_DETACH) {
                 Ok(()) => info!("volume: unmounted stale mount at {}", dest),

@@ -36,6 +36,7 @@ NO_CLEANUP=false
 VERBOSE=false
 AGENT_ONLY=false
 CRD_ONLY=false
+TEST_FILTER=""
 
 # ---------------------------------------------------------------------------
 # Argument parsing
@@ -47,22 +48,37 @@ while [[ $# -gt 0 ]]; do
     --verbose)     VERBOSE=true; shift ;;
     --agent-only)  AGENT_ONLY=true; SKIP_CARGO=true; shift ;;
     --crd-only)    CRD_ONLY=true; SKIP_CARGO=true; shift ;;
+    --test)
+      TEST_FILTER="${2:-}"
+      [[ -z "$TEST_FILTER" ]] && { echo "--test requires a pattern" >&2; exit 1; }
+      SKIP_CARGO=true
+      shift 2
+      ;;
     -h|--help)
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--agent-only] [--crd-only]"
-      echo "  --skip-cargo  Skip Rust cargo tests (for quick K8s-only reruns)"
-      echo "  --no-cleanup  Keep kind cluster after run"
-      echo "  --verbose     Also print verbose output to stdout"
-      echo "  --agent-only  Only run agent tests (skip cargo + integration tests)"
-      echo "  --crd-only    Only run CRD controller tests (skip cargo + other tests)"
+      echo "Usage: $0 [OPTIONS]"
+      echo ""
+      echo "Options:"
+      echo "  --skip-cargo       Skip Rust cargo tests (for quick K8s-only reruns)"
+      echo "  --no-cleanup       Keep kind cluster after run"
+      echo "  --verbose          Also print verbose output to stdout"
+      echo "  --agent-only       Only run agent tests (skip cargo + integration tests)"
+      echo "  --crd-only         Only run CRD controller tests (skip cargo + other tests)"
+      echo "  --test <pattern>   Run only tests matching pattern (implies --skip-cargo)"
+      echo "                     Pattern matches against function name, e.g.:"
+      echo "                       --test overlay_name    # test_overlay_name_isolation"
+      echo "                       --test dns             # test_dns_resolution + test_kubernetes_dns_resolution"
+      echo "                       --test agent_job       # all agent job API tests"
       exit 0
       ;;
     *)
       echo "Unknown option: $1" >&2
-      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--agent-only] [--crd-only]" >&2
+      echo "Usage: $0 [--skip-cargo] [--no-cleanup] [--verbose] [--test <pattern>]" >&2
       exit 1
       ;;
   esac
 done
+
+export TEST_FILTER
 
 # ---------------------------------------------------------------------------
 # Resolve script directory and source libraries
