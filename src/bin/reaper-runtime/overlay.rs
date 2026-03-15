@@ -384,7 +384,11 @@ fn get_default_filters() -> Vec<PathBuf> {
         // System Secrets
         PathBuf::from("/etc/ssl/private"),
         PathBuf::from("/var/lib/docker"),
-        PathBuf::from("/run/secrets"),
+        // NOTE: /run/secrets is intentionally NOT filtered. Kubernetes mounts
+        // the serviceaccount token at /var/run/secrets/kubernetes.io/serviceaccount
+        // (which resolves to /run/secrets/... on systems where /var/run -> /run).
+        // Filtering /run/secrets creates a bind-mount that conflicts with K8s
+        // volume mounts in shared overlay namespaces.
         // Sensitive Configuration
         PathBuf::from("/etc/sudoers"),
         PathBuf::from("/etc/sudoers.d"),
@@ -1135,6 +1139,55 @@ fn cross_namespace_mount(source: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Unmount stale mounts on ancestor path components of `dest`.
+///
+/// In shared overlay namespaces, bind-mounts from previous pods or from
+/// filter_sensitive_paths() can become stale (source dentry deleted). When
+/// `create_dir_all` traverses a stale mount, it returns ENOENT because the
+/// kernel can't create entries in an unlinked directory.
+///
+/// This function reads `/proc/self/mountinfo`, finds mounts whose source
+/// has been deleted (kernel appends `//deleted`), and lazily detaches any
+/// that are ancestors of `dest`.
+#[cfg(not(tarpaulin_include))]
+fn unmount_stale_ancestors(dest: &Path) {
+    let mountinfo = match fs::read_to_string("/proc/self/mountinfo") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+
+    // Collect ancestor paths (e.g., for /a/b/c/d: /a, /a/b, /a/b/c)
+    let ancestors: Vec<&Path> = dest.ancestors().skip(1).collect(); // skip dest itself
+
+    for line in mountinfo.lines() {
+        if !line.contains("deleted") {
+            continue;
+        }
+        // mountinfo format: id parent_id major:minor root mount_point options ...
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 5 {
+            continue;
+        }
+        let mount_point = fields[4];
+        let root_field = fields[3];
+
+        // Check if this stale mount is an ancestor of our destination
+        let mp = Path::new(mount_point);
+        if ancestors.iter().any(|a| *a == mp) && root_field.contains("deleted") {
+            match umount2(mp, MntFlags::MNT_DETACH) {
+                Ok(()) => info!(
+                    "volume: unmounted stale ancestor mount at {} (source was deleted)",
+                    mount_point
+                ),
+                Err(e) => info!(
+                    "volume: umount2({}) for stale ancestor returned {} (continuing)",
+                    mount_point, e
+                ),
+            }
+        }
+    }
+}
+
 /// Apply volume mounts from OCI config inside the current mount namespace.
 ///
 /// For each filtered bind mount:
@@ -1156,47 +1209,6 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
     }
 
     info!("volume: applying {} volume mount(s)", volume_mounts.len());
-
-    // Diagnostic: log filesystem state visible after enter_overlay + adopt_overlay_root.
-    // Logged at ERROR so it appears in CI logs (which filter to error|fail|panic).
-    // TODO: remove once the CI ENOENT on /var/run/secrets is resolved.
-    {
-        use std::os::unix::fs::MetadataExt;
-        let root_info = fs::metadata("/")
-            .ok()
-            .map(|m| format!("dev={} ino={}", m.dev(), m.ino()));
-        let run_exists = Path::new("/run").exists();
-        let run_is_dir = Path::new("/run").is_dir();
-        let var_run_exists = Path::new("/var/run").exists();
-        let var_run_is_symlink = Path::new("/var/run").is_symlink();
-        let var_run_target = fs::read_link("/var/run").ok();
-        let run_contents = fs::read_dir("/run").ok().map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .take(20)
-                .collect::<Vec<_>>()
-                .join(", ")
-        });
-        let mounts_with_run = fs::read_to_string("/proc/self/mountinfo")
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.contains("/run"))
-            .map(String::from)
-            .collect::<Vec<_>>();
-        tracing::error!(
-            "volume: DIAG root={:?} /run exists={} is_dir={} contents=[{:?}] \
-             /var/run exists={} is_symlink={} target={:?} \
-             mountinfo_with_run={:?}",
-            root_info,
-            run_exists,
-            run_is_dir,
-            run_contents,
-            var_run_exists,
-            var_run_is_symlink,
-            var_run_target,
-            mounts_with_run,
-        );
-    }
 
     for m in &volume_mounts {
         let source = m.source.as_deref().unwrap_or("");
@@ -1248,11 +1260,19 @@ pub fn apply_volume_mounts(mounts: &[super::OciMount]) -> Result<()> {
             );
         }
 
-        // Unmount any stale mount at the destination from a previous pod.
+        // Unmount stale mounts at the destination AND its ancestors.
+        //
         // Volume mounts in the shared namespace persist after pod deletion,
         // referencing kubelet directories that no longer exist. Attempting to
         // move_mount on top of a stale mount fails with ENOENT because path
         // lookup traverses into the disconnected mount.
+        //
+        // Also handles stale filter mounts: filter_sensitive_paths() bind-mounts
+        // empty placeholders over paths like /run/secrets. If the placeholder's
+        // source dentry is later deleted (overlay upper layer cleanup, etc.),
+        // create_dir_all inside the stale mount returns ENOENT. We must unmount
+        // stale ancestors before creating subdirectories.
+        unmount_stale_ancestors(dest_path);
         if dest_path.exists() {
             match umount2(dest_path, MntFlags::MNT_DETACH) {
                 Ok(()) => info!("volume: unmounted stale mount at {}", dest),
