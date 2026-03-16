@@ -8,8 +8,10 @@
 #   worker-2         role=compute    ← slurmd via Reaper
 #
 # Usage:
-#   ./examples/10-slurm-hpc/setup.sh              # Create cluster
-#   ./examples/10-slurm-hpc/setup.sh --cleanup    # Delete cluster
+#   ./examples/10-slurm-hpc/setup.sh                       # Build from source
+#   ./examples/10-slurm-hpc/setup.sh --release              # Use latest release
+#   ./examples/10-slurm-hpc/setup.sh --release v0.2.14      # Use specific release
+#   ./examples/10-slurm-hpc/setup.sh --cleanup              # Delete cluster
 #
 # Prerequisites:
 #   - Docker running
@@ -42,22 +44,39 @@ fail()  { echo " ${Y}ERR${R} $*" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 # Help / Cleanup
 # ---------------------------------------------------------------------------
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  echo "Usage: $0 [--cleanup]"
-  echo ""
-  echo "Create a 4-node Kind cluster for the Slurm HPC mixed-runtime demo."
-  echo ""
-  echo "Options:"
-  echo "  --cleanup    Delete the Kind cluster"
-  echo "  -h, --help   Show this help"
-  exit 0
-fi
+RELEASE_ARGS=()
 
-if [[ "${1:-}" == "--cleanup" ]]; then
-  info "Deleting Kind cluster '$CLUSTER_NAME'..."
-  kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null && ok "Cluster deleted." || warn "Cluster not found."
-  exit 0
-fi
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --help|-h)
+      echo "Usage: $0 [OPTIONS]"
+      echo ""
+      echo "Create a 4-node Kind cluster for the Slurm HPC mixed-runtime demo."
+      echo ""
+      echo "Options:"
+      echo "  --release [VERSION]  Use pre-built images from GHCR (default: latest)"
+      echo "  --cleanup            Delete the Kind cluster"
+      echo "  -h, --help           Show this help"
+      exit 0
+      ;;
+    --cleanup)
+      info "Deleting Kind cluster '$CLUSTER_NAME'..."
+      kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null && ok "Cluster deleted." || warn "Cluster not found."
+      exit 0
+      ;;
+    --release)
+      RELEASE_ARGS=(--release)
+      if [[ -n "${2:-}" && "${2:-}" == v* ]]; then
+        RELEASE_ARGS=(--release "$2")
+        shift
+      fi
+      shift
+      ;;
+    *)
+      fail "Unknown option: $1 (use -h for help)"
+      ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # Preflight
@@ -98,6 +117,7 @@ info "Setting up cluster via setup-playground.sh"
 "$REPO_ROOT/scripts/setup-playground.sh" \
   --cluster-name "$CLUSTER_NAME" \
   --kind-config "$KIND_CONFIG" \
+  "${RELEASE_ARGS[@]}" \
   2>&1 | tee "$LOG_FILE"
 
 rm -f "$KIND_CONFIG"
