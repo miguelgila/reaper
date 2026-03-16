@@ -200,10 +200,17 @@ jobs:
       - name: Install Helm
         uses: azure/setup-helm@v4
 
-      - name: Login to GHCR OCI registry
+      - name: Login to GHCR OCI registry (Helm)
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | \
             helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Login to GHCR (cosign/Docker credentials)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract version
         id: version
@@ -215,9 +222,13 @@ jobs:
         run: helm package deploy/helm/reaper --destination .
 
       - name: Push to OCI registry
+        id: helm-push
         run: |
-          helm push "reaper-${{ steps.version.outputs.version }}.tgz" \
-            oci://ghcr.io/${{ github.repository_owner }}/charts
+          OUTPUT=$(helm push "reaper-${{ steps.version.outputs.version }}.tgz" \
+            oci://ghcr.io/${{ github.repository_owner }}/charts 2>&1)
+          echo "$OUTPUT"
+          DIGEST=$(echo "$OUTPUT" | grep -oP 'Digest: \K\S+')
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
@@ -225,7 +236,7 @@ jobs:
       - name: Sign chart with cosign (keyless)
         run: |
           cosign sign --yes \
-            ghcr.io/${{ github.repository_owner }}/charts/reaper:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/charts/reaper@${{ steps.helm-push.outputs.digest }}
 
   release:
     name: Create Release
