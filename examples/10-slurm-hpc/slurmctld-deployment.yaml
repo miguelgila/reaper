@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slurmctld
+  labels:
+    app: slurmctld
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: slurmctld
+  template:
+    metadata:
+      labels:
+        app: slurmctld
+    spec:
+      # Standard container runtime — slurmctld doesn't need host access
+      nodeSelector:
+        role: slurmctld
+      hostname: slurmctld
+      containers:
+        - name: slurmctld
+          image: ubuntu:22.04
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "=== Installing Slurm controller ==="
+              apt-get update -qq
+              apt-get install -y -qq munge slurm-wlm > /dev/null 2>&1
+
+              # Set up munge authentication
+              cp /etc/munge-key/munge.key /etc/munge/munge.key
+              chown munge:munge /etc/munge/munge.key
+              chmod 400 /etc/munge/munge.key
+
+              # Copy Slurm config
+              cp /etc/slurm-config/slurm.conf /etc/slurm/slurm.conf
+
+              # Create required directories
+              mkdir -p /var/spool/slurmctld /var/log
+              chown slurm:slurm /var/spool/slurmctld
+
+              # Start munge daemon
+              munged --force
+              echo "=== Munge started ==="
+
+              # Start slurmctld in foreground
+              echo "=== Starting slurmctld ==="
+              exec slurmctld -D -vv
+          ports:
+            - containerPort: 6817
+              name: slurmctld
+          volumeMounts:
+            - name: slurm-config
+              mountPath: /etc/slurm-config
+              readOnly: true
+            - name: munge-key
+              mountPath: /etc/munge-key
+              readOnly: true
+      volumes:
+        - name: slurm-config
+          configMap:
+            name: slurm-config
+        - name: munge-key
+          secret:
+            secretName: munge-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slurmctld
+spec:
+  selector:
+    app: slurmctld
+  ports:
+    - port: 6817
+      targetPort: 6817
+      name: slurmctld
+  clusterIP: None  # Headless — slurmd resolves by hostname

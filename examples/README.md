@@ -8,7 +8,9 @@ All examples require:
 - Docker
 - [kind](https://kind.sigs.k8s.io/)
 - kubectl
-- Ansible (`pip install ansible`)
+- [Helm](https://helm.sh/) (for examples using `setup-playground.sh`)
+
+> **Note:** Examples 01–08 use the legacy Ansible-based installer. Newer examples (09+) use the Helm-based `setup-playground.sh` pattern.
 
 Run all scripts from the **repository root**.
 
@@ -158,21 +160,32 @@ kubectl label node <name> workload-type=compute
 kubectl apply -f examples/09-reaperpod/with-node-selector.yaml
 ```
 
-### [10-wren-job-api/](10-wren-job-api/) — Wren Job Execution API *(DEPRECATED)*
+### [10-slurm-hpc/](10-slurm-hpc/) — Slurm HPC (Mixed Runtimes)
 
-> **DEPRECATED:** Use the ReaperPod CRD ([example 09](09-reaperpod/)) instead.
+Demonstrates a **Slurm HPC cluster** using mixed Kubernetes runtimes: `slurmctld` (scheduler) runs as a standard container, while `slurmd` (worker daemons) run on compute nodes via Reaper with direct host access for CPU pinning and device management.
 
-Demonstrates the reaper-agent's HTTP job execution API used by the Wren controller to run jobs on bare-metal nodes. Shows all API operations: submit, status polling, termination, environment variables, working directory, and MPI hostfile.
-
-- POST/GET/DELETE `/api/v1/jobs` endpoints
-- User identity privilege dropping (uid/gid)
-- Hostfile write-to-disk for MPI jobs
-- Working directory support
+- **4-node cluster** (1 control-plane + 1 slurmctld + 2 compute)
+- slurmctld Deployment (default runtime) with munge authentication
+- slurmd DaemonSet (Reaper) on compute nodes with shared overlay
 
 ```bash
-./examples/10-wren-job-api/setup.sh
+./examples/10-slurm-hpc/setup.sh
+kubectl apply -f examples/10-slurm-hpc/
+kubectl rollout status daemonset/slurmd --timeout=300s
+```
 
-# Manual testing with port-forward (see README for curl examples)
+### [11-node-monitoring/](11-node-monitoring/) — Node Monitoring (Prometheus + Reaper)
+
+Demonstrates **host-level node monitoring**: Prometheus `node_exporter` runs as a Reaper DaemonSet for accurate host metrics, while a containerized Prometheus server (default runtime) scrapes them.
+
+- **3-node cluster** (1 control-plane + 2 workers)
+- node_exporter DaemonSet (Reaper) — downloads and runs on host
+- Prometheus Deployment (default runtime) with Kubernetes service discovery
+
+```bash
+./examples/11-node-monitoring/setup.sh
+kubectl apply -f examples/11-node-monitoring/
+kubectl port-forward svc/prometheus 9090:9090
 ```
 
 ## Cleanup
@@ -188,5 +201,4 @@ Each example can be cleaned up independently:
 ./examples/06-ansible-jobs/setup.sh --cleanup
 ./examples/07-ansible-complex/setup.sh --cleanup
 ./examples/08-mix-container-runtime-engines/setup.sh --cleanup
-./examples/10-wren-job-api/setup.sh --cleanup
 ```

@@ -26,6 +26,8 @@ set -euo pipefail
 CLUSTER_NAME="reaper-playground"
 KIND_CONFIG=""          # empty = generate default 3-node config
 SKIP_BUILD=false
+RELEASE_MODE=false
+RELEASE_VERSION=""      # empty = resolve latest
 QUIET=false
 CLEANUP=false
 
@@ -93,6 +95,14 @@ while [[ $# -gt 0 ]]; do
       SKIP_BUILD=true
       shift
       ;;
+    --release)
+      RELEASE_MODE=true
+      if [[ -n "${2:-}" && "${2:-}" == v* ]]; then
+        RELEASE_VERSION="$2"
+        shift
+      fi
+      shift
+      ;;
     --quiet)
       QUIET=true
       shift
@@ -106,6 +116,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --cleanup               Delete the playground cluster"
       echo "  --cluster-name <name>   Cluster name (default: reaper-playground)"
       echo "  --kind-config <path>    Custom Kind config file (default: 3-node cluster)"
+      echo "  --release [VERSION]     Use pre-built images from GHCR (e.g., --release v0.2.14)"
       echo "  --skip-build            Skip binary cross-compilation (use existing images)"
       echo "  --quiet                 Suppress output (for scripted use)"
       echo "  -h, --help              Show this help"
@@ -118,6 +129,13 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ---------------------------------------------------------------------------
+# Validate flags
+# ---------------------------------------------------------------------------
+if $RELEASE_MODE && $SKIP_BUILD; then
+  fail "--release and --skip-build are mutually exclusive"
+fi
 
 # ---------------------------------------------------------------------------
 # Cleanup mode
@@ -138,6 +156,10 @@ docker info >/dev/null 2>&1               || fail "Docker daemon not running."
 command -v kind >/dev/null 2>&1           || fail "kind not found. Install from https://kind.sigs.k8s.io/"
 command -v kubectl >/dev/null 2>&1        || fail "kubectl not found. Install from https://kubernetes.io/docs/tasks/tools/"
 command -v helm >/dev/null 2>&1            || fail "helm not found. Install from https://helm.sh/docs/intro/install/"
+
+if $RELEASE_MODE; then
+  command -v curl >/dev/null 2>&1          || fail "curl not found (required for --release mode)"
+fi
 
 if [[ ! -f "$REPO_ROOT/deploy/helm/reaper/Chart.yaml" ]]; then
   fail "Run this script from the repository root: ./scripts/setup-playground.sh"
@@ -210,44 +232,79 @@ info "Using KUBECONFIG=$KUBECONFIG_FILE" | if_log
 # ---------------------------------------------------------------------------
 cd "$REPO_ROOT"
 
-# Extract version from Cargo.toml so images are tagged with the version under test
-# (matches what the Helm chart defaults to via appVersion).
-REAPER_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
-info "Reaper version: $REAPER_VERSION" | if_log
+if $RELEASE_MODE; then
+  # -------------------------------------------------------------------------
+  # Release mode: pull pre-built images from GHCR
+  # -------------------------------------------------------------------------
 
-# Build reaper-node image (contains shim + runtime + install script)
-info "Building reaper-node image" | if_log
-local_build_args=(--cluster-name "$CLUSTER_NAME")
-if $SKIP_BUILD; then
-  local_build_args+=(--skip-build)
+  # shellcheck source=lib/release-utils.sh
+  source "$SCRIPT_DIR/lib/release-utils.sh"
+
+  if [[ -z "$RELEASE_VERSION" ]]; then
+    info "Resolving latest release..." | if_log
+    RELEASE_VERSION=$(resolve_latest_release) || \
+      fail "Could not determine latest release. Specify a version: --release v0.2.14"
+    ok "Latest release: $RELEASE_VERSION" | if_log
+  fi
+
+  IMAGE_TAG="${RELEASE_VERSION#v}"
+  REAPER_VERSION="$IMAGE_TAG"
+  info "Pulling release images (tag: $IMAGE_TAG)" | if_log
+
+  for img in reaper-node reaper-controller reaper-agent; do
+    info "Pulling ghcr.io/miguelgila/${img}:${IMAGE_TAG}" | if_log
+    docker pull "ghcr.io/miguelgila/${img}:${IMAGE_TAG}" >> "$LOG_FILE" 2>&1 || {
+      fail "Failed to pull ghcr.io/miguelgila/${img}:${IMAGE_TAG}. Is the package public?"
+    }
+    kind load docker-image "ghcr.io/miguelgila/${img}:${IMAGE_TAG}" --name "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1 || {
+      fail "Failed to load ${img} image into Kind cluster."
+    }
+    ok "${img}:${IMAGE_TAG} loaded into Kind." | if_log
+  done
+else
+  # -------------------------------------------------------------------------
+  # Build mode: compile locally and build images
+  # -------------------------------------------------------------------------
+
+  # Extract version from Cargo.toml so images are tagged with the version under test
+  # (matches what the Helm chart defaults to via appVersion).
+  REAPER_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+  info "Reaper version: $REAPER_VERSION" | if_log
+
+  # Build reaper-node image (contains shim + runtime + install script)
+  info "Building reaper-node image" | if_log
+  local_build_args=(--cluster-name "$CLUSTER_NAME")
+  if $SKIP_BUILD; then
+    local_build_args+=(--skip-build)
+  fi
+  if $QUIET; then
+    local_build_args+=(--quiet)
+  fi
+  "$SCRIPT_DIR/build-node-image.sh" "${local_build_args[@]}" \
+    --image "ghcr.io/miguelgila/reaper-node:${REAPER_VERSION}" \
+    2>&1 | tee -a "$LOG_FILE" || {
+    fail "reaper-node image build failed. See $LOG_FILE"
+  }
+  ok "reaper-node image loaded into Kind." | if_log
+
+  # Build reaper-controller image
+  info "Building reaper-controller image" | if_log
+  "$SCRIPT_DIR/build-controller-image.sh" "${local_build_args[@]}" \
+    --image "ghcr.io/miguelgila/reaper-controller:${REAPER_VERSION}" \
+    2>&1 | tee -a "$LOG_FILE" || {
+    fail "reaper-controller image build failed. See $LOG_FILE"
+  }
+  ok "reaper-controller image loaded into Kind." | if_log
+
+  # Build reaper-agent image
+  info "Building reaper-agent image" | if_log
+  "$SCRIPT_DIR/build-agent-image.sh" "${local_build_args[@]}" \
+    --image "ghcr.io/miguelgila/reaper-agent:${REAPER_VERSION}" \
+    2>&1 | tee -a "$LOG_FILE" || {
+    fail "reaper-agent image build failed. See $LOG_FILE"
+  }
+  ok "reaper-agent image loaded into Kind." | if_log
 fi
-if $QUIET; then
-  local_build_args+=(--quiet)
-fi
-"$SCRIPT_DIR/build-node-image.sh" "${local_build_args[@]}" \
-  --image "ghcr.io/miguelgila/reaper-node:${REAPER_VERSION}" \
-  2>&1 | tee -a "$LOG_FILE" || {
-  fail "reaper-node image build failed. See $LOG_FILE"
-}
-ok "reaper-node image loaded into Kind." | if_log
-
-# Build reaper-controller image
-info "Building reaper-controller image" | if_log
-"$SCRIPT_DIR/build-controller-image.sh" "${local_build_args[@]}" \
-  --image "ghcr.io/miguelgila/reaper-controller:${REAPER_VERSION}" \
-  2>&1 | tee -a "$LOG_FILE" || {
-  fail "reaper-controller image build failed. See $LOG_FILE"
-}
-ok "reaper-controller image loaded into Kind." | if_log
-
-# Build reaper-agent image
-info "Building reaper-agent image" | if_log
-"$SCRIPT_DIR/build-agent-image.sh" "${local_build_args[@]}" \
-  --image "ghcr.io/miguelgila/reaper-agent:${REAPER_VERSION}" \
-  2>&1 | tee -a "$LOG_FILE" || {
-  fail "reaper-agent image build failed. See $LOG_FILE"
-}
-ok "reaper-agent image loaded into Kind." | if_log
 
 # ---------------------------------------------------------------------------
 # Verify image availability before Helm install
@@ -274,6 +331,21 @@ log_images 2>&1 | tee -a "$LOG_FILE" | if_log
 # ---------------------------------------------------------------------------
 info "Installing Reaper via Helm (image tag: $REAPER_VERSION)" | if_log
 
+# Build Helm --set args. In release mode, override image tags so the chart
+# doesn't fall back to its baked-in appVersion.
+HELM_SET_ARGS=(
+  --set node.image.pullPolicy=IfNotPresent
+  --set controller.image.pullPolicy=IfNotPresent
+  --set agent.image.pullPolicy=IfNotPresent
+)
+if $RELEASE_MODE; then
+  HELM_SET_ARGS+=(
+    --set node.image.tag="$REAPER_VERSION"
+    --set controller.image.tag="$REAPER_VERSION"
+    --set agent.image.tag="$REAPER_VERSION"
+  )
+fi
+
 # Retry Helm install up to 3 times. On freshly-created Kind clusters the API
 # server may not be fully stabilized when we reach this point, causing the
 # first attempt to fail (CRD establishment race, transient API errors, etc.).
@@ -282,9 +354,7 @@ for attempt in 1 2 3; do
   if $QUIET; then
     if helm upgrade --install reaper deploy/helm/reaper/ \
       --namespace reaper-system --create-namespace \
-      --set node.image.pullPolicy=IfNotPresent \
-      --set controller.image.pullPolicy=IfNotPresent \
-      --set agent.image.pullPolicy=IfNotPresent \
+      "${HELM_SET_ARGS[@]}" \
       --wait --timeout 120s \
       >> "$LOG_FILE" 2>&1; then
       HELM_INSTALLED=true
@@ -293,9 +363,7 @@ for attempt in 1 2 3; do
   else
     if helm upgrade --install reaper deploy/helm/reaper/ \
       --namespace reaper-system --create-namespace \
-      --set node.image.pullPolicy=IfNotPresent \
-      --set controller.image.pullPolicy=IfNotPresent \
-      --set agent.image.pullPolicy=IfNotPresent \
+      "${HELM_SET_ARGS[@]}" \
       --wait --timeout 120s \
       2>&1 | tee -a "$LOG_FILE"; then
       HELM_INSTALLED=true

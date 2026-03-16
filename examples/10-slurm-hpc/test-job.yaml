@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-slurm-job
+spec:
+  # Run on the slurmctld node (has srun client)
+  nodeSelector:
+    role: slurmctld
+  restartPolicy: Never
+  containers:
+    - name: submit
+      image: ubuntu:22.04
+      command: ["/bin/bash", "-c"]
+      args:
+        - |
+          set -e
+          echo "=== Installing Slurm client ==="
+          apt-get update -qq
+          apt-get install -y -qq munge slurm-client > /dev/null 2>&1
+
+          # Set up munge (same key as controller and workers)
+          cp /etc/munge-key/munge.key /etc/munge/munge.key
+          chown munge:munge /etc/munge/munge.key
+          chmod 400 /etc/munge/munge.key
+          munged --force
+
+          # Copy Slurm config
+          cp /etc/slurm-config/slurm.conf /etc/slurm/slurm.conf
+
+          echo ""
+          echo "=== Slurm cluster info ==="
+          sinfo || echo "(sinfo not available yet — controller may still be starting)"
+
+          echo ""
+          echo "=== Submitting test job: hostname ==="
+          srun --partition=batch hostname || echo "(srun failed — cluster may still be initializing)"
+
+          echo ""
+          echo "=== Test complete ==="
+      volumeMounts:
+        - name: slurm-config
+          mountPath: /etc/slurm-config
+          readOnly: true
+        - name: munge-key
+          mountPath: /etc/munge-key
+          readOnly: true
+  volumes:
+    - name: slurm-config
+      configMap:
+        name: slurm-config
+    - name: munge-key
+      secret:
+        secretName: munge-key

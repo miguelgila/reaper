@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    scrape_configs:
+      # Scrape node_exporter on each worker node via host IP
+      - job_name: "node-exporter"
+        # In Kind, node IPs are Docker container IPs.
+        # The setup script patches this with actual node IPs.
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          # Use the node's internal IP for scraping
+          - source_labels: [__address__]
+            regex: (.+):(.+)
+            target_label: __address__
+            replacement: ${1}:9100
+          # Add node name as a label
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+
+      # Prometheus self-monitoring
+      - job_name: "prometheus"
+        static_configs:
+          - targets: ["localhost:9090"]

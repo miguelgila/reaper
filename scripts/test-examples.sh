@@ -140,16 +140,9 @@ except Exception as e:
   return 0
 }
 
-# Iterate all example directories, skip deprecated 10-wren-job-api
 EXAMPLES_DIR="$REPO_ROOT/examples"
 for dir in "$EXAMPLES_DIR"/*/; do
   dir_name="$(basename "$dir")"
-
-  # Skip deprecated example
-  if [[ "$dir_name" == "10-wren-job-api" ]]; then
-    skip "Skipping deprecated example: $dir_name"
-    continue
-  fi
 
   # Find all YAML files in this directory (non-recursive, examples are flat)
   while IFS= read -r -d '' yaml_file; do

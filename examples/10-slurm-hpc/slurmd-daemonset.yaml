@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: slurmd
+  labels:
+    app: slurmd
+spec:
+  selector:
+    matchLabels:
+      app: slurmd
+  template:
+    metadata:
+      labels:
+        app: slurmd
+      annotations:
+        reaper.runtime/dns-mode: "kubernetes"
+        reaper.runtime/overlay-name: "slurm"
+    spec:
+      runtimeClassName: reaper-v2
+      nodeSelector:
+        role: compute
+      volumes:
+        - name: slurm-config
+          configMap:
+            name: slurm-config
+        - name: munge-key
+          secret:
+            secretName: munge-key
+      containers:
+        - name: slurmd
+          image: busybox
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "=== Installing Slurm worker daemon ==="
+
+              # Install Slurm and munge (persists in shared overlay)
+              apt-get update -qq
+              apt-get install -y -qq munge slurm-wlm > /dev/null 2>&1
+
+              # Set up munge authentication
+              cp /etc/munge-key/munge.key /etc/munge/munge.key
+              chown munge:munge /etc/munge/munge.key
+              chmod 400 /etc/munge/munge.key
+
+              # Copy Slurm config
+              cp /etc/slurm-config/slurm.conf /etc/slurm/slurm.conf
+
+              # Create required directories
+              mkdir -p /var/spool/slurmd /var/log
+              chown slurm:slurm /var/spool/slurmd
+
+              # Start munge daemon
+              munged --force
+              echo "=== Munge started ==="
+
+              # Start slurmd in foreground — runs directly on the host
+              # This gives slurmd real access to CPUs, memory, devices
+              echo "=== Starting slurmd on $(hostname) ==="
+              exec slurmd -D -vv
+          volumeMounts:
+            - name: slurm-config
+              mountPath: /etc/slurm-config
+              readOnly: true
+            - name: munge-key
+              mountPath: /etc/munge-key
+              readOnly: true
