@@ -15,8 +15,11 @@ COPY . .
 RUN cargo build --release --features agent --bin reaper-agent --target aarch64-unknown-linux-musl && \
     cp target/aarch64-unknown-linux-musl/release/reaper-agent /reaper-agent
 
+# --- Arch selector (FROM supports global ARG expansion, COPY --from does not) ---
+ARG TARGETARCH
+FROM builder-${TARGETARCH} AS builder
+
 # --- Runtime stage ---
 FROM gcr.io/distroless/static-debian12
-ARG TARGETARCH
-COPY --from=builder-${TARGETARCH} /reaper-agent /reaper-agent
+COPY --from=builder /reaper-agent /reaper-agent
 ENTRYPOINT ["/reaper-agent"]
