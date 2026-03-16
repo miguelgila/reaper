@@ -21,13 +21,13 @@ jobs:
     steps:
       - name: Generate GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
         with:
           token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 0
@@ -92,7 +92,7 @@ jobs:
 
       - name: Install git-cliff
         if: steps.loop-guard.outputs.skip != 'true'
-        uses: kenji-miyake/setup-git-cliff@v2
+        run: cargo install git-cliff
 
       - name: Generate changelog
         if: steps.loop-guard.outputs.skip != 'true'

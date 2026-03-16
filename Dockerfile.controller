@@ -15,9 +15,12 @@ COPY . .
 RUN cargo build --release --features controller --bin reaper-controller --target aarch64-unknown-linux-musl && \
     cp target/aarch64-unknown-linux-musl/release/reaper-controller /reaper-controller
 
+# --- Arch selector (FROM supports global ARG expansion, COPY --from does not) ---
+ARG TARGETARCH
+FROM builder-${TARGETARCH} AS builder
+
 # --- Runtime stage ---
 FROM gcr.io/distroless/static-debian12:nonroot
-ARG TARGETARCH
-COPY --from=builder-${TARGETARCH} /reaper-controller /usr/local/bin/reaper-controller
+COPY --from=builder /reaper-controller /usr/local/bin/reaper-controller
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/reaper-controller"]

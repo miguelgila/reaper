@@ -27,10 +27,14 @@ RUN cargo build --release \
     cp target/aarch64-unknown-linux-musl/release/containerd-shim-reaper-v2 /out/ && \
     cp target/aarch64-unknown-linux-musl/release/reaper-runtime /out/
 
+# --- Arch selector (FROM supports global ARG expansion, COPY --from does not) ---
+ARG TARGETARCH
+FROM builder-${TARGETARCH} AS builder
+
 # --- Runtime stage ---
 FROM alpine:3.19
 ARG TARGETARCH
-COPY --from=builder-${TARGETARCH} /out/ /binaries/${TARGETARCH}/
+COPY --from=builder /out/ /binaries/${TARGETARCH}/
 COPY scripts/install-node.sh /install.sh
 RUN chmod +x /install.sh
 ENTRYPOINT ["/install.sh"]
