@@ -48,9 +48,16 @@ Spin up a 3-node Kind cluster with Reaper pre-installed:
 Once ready:
 
 ```bash
-kubectl run hello --rm -it --image=busybox --restart=Never \
-  --overrides='{"spec":{"runtimeClassName":"reaper-v2"}}' \
-  -- /bin/sh -c "echo Hello from $(hostname) && uname -a"
+kubectl apply -f - <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
+metadata:
+  name: hello
+spec:
+  command: ["/bin/sh", "-c", "echo Hello from $(hostname) && uname -a"]
+YAML
+
+kubectl logs hello
 ```
 
 To tear down: `./scripts/setup-playground.sh --cleanup`
@@ -77,42 +84,52 @@ For cross-compilation to Linux (from macOS), see [docs/DEVELOPMENT.md](docs/DEVE
 ### Run a Command on the Host
 
 ```yaml
-apiVersion: v1
-kind: Pod
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
 metadata:
   name: my-task
 spec:
-  runtimeClassName: reaper-v2
-  restartPolicy: Never
-  containers:
-    - name: task
-      image: busybox
-      command: ["/bin/sh", "-c", "echo Hello from host && uname -a"]
+  command: ["/bin/sh", "-c", "echo Hello from host && uname -a"]
 ```
-
-### Interactive Sessions
 
 ```bash
-kubectl run -it debug --rm --image=busybox --restart=Never \
-  --overrides='{"spec":{"runtimeClassName":"reaper-v2"}}' -- /bin/bash
+kubectl apply -f my-task.yaml
+kubectl logs my-task
+kubectl get reaperpods
 ```
 
-### Volumes
-
-ConfigMaps, Secrets, hostPath, emptyDir, and projected volumes all work as expected. See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for the full pod field compatibility reference.
-
-### ReaperPod CRD
-
-A simplified, Reaper-native way to run workloads without container boilerplate:
+### With Volumes
 
 ```yaml
 apiVersion: reaper.io/v1alpha1
 kind: ReaperPod
 metadata:
-  name: hello
+  name: config-reader
 spec:
-  command: ["/bin/sh", "-c", "echo Hello from $(hostname)"]
+  command: ["/bin/sh", "-c", "cat /config/settings.yaml"]
+  volumes:
+    - name: config
+      mountPath: /config
+      configMap: "my-config"
+      readOnly: true
 ```
+
+### With Node Selector
+
+```yaml
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
+metadata:
+  name: compute-task
+spec:
+  command: ["/bin/sh", "-c", "echo Running on $(hostname)"]
+  nodeSelector:
+    workload-type: compute
+```
+
+### Using Raw Pods
+
+You can also use standard Kubernetes Pods with `runtimeClassName: reaper-v2` directly. This gives access to the full Pod API (interactive sessions, DaemonSets, Deployments, etc.). See the [Quick Start guide](docs/book/src/getting-started/quick-start.md) for details and [Pod Compatibility](docs/COMPATIBILITY.md) for supported fields.
 
 ## Architecture
 
