@@ -20,32 +20,30 @@ spec:
       hostname: slurmctld
       containers:
         - name: slurmctld
-          image: ubuntu:22.04
+          image: debian:12
           command: ["/bin/bash", "-c"]
           args:
             - |
               set -e
               echo "=== Installing Slurm controller ==="
               apt-get update -qq
-              apt-get install -y -qq munge slurm-wlm > /dev/null 2>&1
-
-              # Set up munge authentication
-              cp /etc/munge-key/munge.key /etc/munge/munge.key
-              chown munge:munge /etc/munge/munge.key
-              chmod 400 /etc/munge/munge.key
-
-              # Copy Slurm config
-              cp /etc/slurm-config/slurm.conf /etc/slurm/slurm.conf
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                munge slurmctld slurm-client 2>&1 | tail -5
 
               # Create required directories
-              mkdir -p /var/spool/slurmctld /var/log
-              chown slurm:slurm /var/spool/slurmctld
+              mkdir -p /run/munge /var/log/munge /var/spool/slurmctld /var/log /etc/slurm
 
-              # Start munge daemon
+              # Set up munge authentication (run as root with --force)
+              cp /etc/munge-key/munge.key /etc/munge/munge.key
+              chmod 400 /etc/munge/munge.key
               munged --force
               echo "=== Munge started ==="
 
-              # Start slurmctld in foreground
+              # Copy Slurm config
+              cp /etc/slurm-config/slurm.conf /etc/slurm/slurm.conf
+              cp /etc/slurm-config/cgroup.conf /etc/slurm/cgroup.conf 2>/dev/null || true
+
+              # Start slurmctld in foreground (as root per slurm.conf)
               echo "=== Starting slurmctld ==="
               exec slurmctld -D -vv
           ports:

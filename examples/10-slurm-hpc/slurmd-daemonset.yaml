@@ -35,30 +35,39 @@ spec:
               set -e
               echo "=== Installing Slurm worker daemon ==="
 
-              # Install Slurm and munge (persists in shared overlay)
-              apt-get update -qq
-              apt-get install -y -qq munge slurm-wlm > /dev/null 2>&1
-
-              # Set up munge authentication
-              cp /etc/munge-key/munge.key /etc/munge/munge.key
-              chown munge:munge /etc/munge/munge.key
-              chmod 400 /etc/munge/munge.key
-
-              # Copy Slurm config
-              cp /etc/slurm-config/slurm.conf /etc/slurm/slurm.conf
+              # Install slurmd and munge (persists in shared overlay)
+              # Note: runs as root — Reaper overlay filters /etc/gshadow which
+              # prevents user creation (see github.com/miguelgila/reaper/issues/41)
+              if ! command -v slurmd >/dev/null 2>&1; then
+                apt-get update -qq
+                # Fix any broken dpkg state from prior runs
+                DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --fix-broken 2>/dev/null || true
+                DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                  munge slurmd slurm-client 2>&1 | tail -5
+              else
+                echo "slurmd already installed (shared overlay)"
+              fi
 
               # Create required directories
-              mkdir -p /var/spool/slurmd /var/log
-              chown slurm:slurm /var/spool/slurmd
+              mkdir -p /run/munge /var/log/munge /var/spool/slurmd /var/log /etc/slurm
 
-              # Start munge daemon
+              # Set up munge authentication (run as root with --force)
+              cp /etc/munge-key/munge.key /etc/munge/munge.key
+              chmod 400 /etc/munge/munge.key
               munged --force
               echo "=== Munge started ==="
 
+              # Copy Slurm config
+              mkdir -p /etc/slurm
+              cp /etc/slurm-config/slurm.conf /etc/slurm/slurm.conf
+              cp /etc/slurm-config/cgroup.conf /etc/slurm/cgroup.conf 2>/dev/null || true
+
               # Start slurmd in foreground — runs directly on the host
               # This gives slurmd real access to CPUs, memory, devices
+              # -N $(hostname) tells slurmd its own node name (must match slurm.conf)
               echo "=== Starting slurmd on $(hostname) ==="
-              exec slurmd -D -vv
+              exec slurmd -D -vv -N "$(hostname)"
           volumeMounts:
             - name: slurm-config
               mountPath: /etc/slurm-config

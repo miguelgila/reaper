@@ -140,10 +140,63 @@ fi
 kubectl label node "${WORKERS[0]}" role=slurmctld --overwrite >> "$LOG_FILE" 2>&1
 ok "${WORKERS[0]} labeled role=slurmctld"
 
+COMPUTE_NODES=()
 for i in 1 2; do
   kubectl label node "${WORKERS[$i]}" role=compute --overwrite >> "$LOG_FILE" 2>&1
   ok "${WORKERS[$i]} labeled role=compute"
+  COMPUTE_NODES+=("${WORKERS[$i]}")
 done
+
+# ---------------------------------------------------------------------------
+# Generate Slurm config with actual node names
+# ---------------------------------------------------------------------------
+info "Generating slurm-config ConfigMap with actual node names"
+
+NODE_LIST=$(IFS=,; echo "${COMPUTE_NODES[*]}")
+
+# Detect CPU count from a worker node
+NODE_CPUS=$(docker exec "${COMPUTE_NODES[0]}" nproc 2>/dev/null || echo "2")
+
+kubectl delete configmap slurm-config --ignore-not-found >> "$LOG_FILE" 2>&1
+kubectl create configmap slurm-config \
+  --from-literal=slurm.conf="$(cat <<SLURMEOF
+# Auto-generated Slurm configuration for Kind demo
+ClusterName=reaper-demo
+SlurmctldHost=slurmctld
+
+# Run as root (Kind demo — overlay filters /etc/gshadow, see issue #41)
+SlurmUser=root
+SlurmdUser=root
+
+# Scheduling
+SchedulerType=sched/backfill
+SelectType=select/cons_tres
+
+# Logging
+SlurmctldLogFile=/var/log/slurmctld.log
+SlurmdLogFile=/var/log/slurmd.log
+
+# Process tracking (no cgroup — Kind nodes lack dbus/systemd)
+ProctrackType=proctrack/linuxproc
+TaskPlugin=task/none
+
+# Timeouts
+SlurmctldTimeout=60
+SlurmdTimeout=60
+WaitTime=30
+
+# Authentication
+AuthType=auth/munge
+
+# Compute nodes (auto-populated by setup.sh)
+NodeName=${NODE_LIST} CPUs=${NODE_CPUS} RealMemory=1024 State=UNKNOWN
+PartitionName=batch Nodes=ALL Default=YES MaxTime=INFINITE State=UP
+SLURMEOF
+)" \
+  --from-literal=cgroup.conf="CgroupPlugin=cgroup/v1" \
+  >> "$LOG_FILE" 2>&1
+
+ok "slurm-config created with nodes: $NODE_LIST"
 
 # ---------------------------------------------------------------------------
 # Summary

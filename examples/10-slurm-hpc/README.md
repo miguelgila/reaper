@@ -49,12 +49,11 @@ Standard containers would isolate slurmd from the resources it needs to manage.
 ## Usage
 
 ```bash
-# Create the cluster
+# Create the cluster (generates slurm-config with actual node names)
 ./examples/10-slurm-hpc/setup.sh
 
 # Deploy Slurm components
 kubectl apply -f examples/10-slurm-hpc/munge-secret.yaml
-kubectl apply -f examples/10-slurm-hpc/slurm-config.yaml
 kubectl apply -f examples/10-slurm-hpc/slurmctld-deployment.yaml
 kubectl apply -f examples/10-slurm-hpc/slurmd-daemonset.yaml
 

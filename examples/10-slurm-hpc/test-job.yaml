@@ -3,37 +3,51 @@ kind: Pod
 metadata:
   name: test-slurm-job
 spec:
-  # Run on the slurmctld node (has srun client)
+  # Run on the slurmctld node (has Slurm client tools)
   nodeSelector:
     role: slurmctld
   restartPolicy: Never
   containers:
     - name: submit
-      image: ubuntu:22.04
+      image: debian:12
       command: ["/bin/bash", "-c"]
       args:
         - |
           set -e
           echo "=== Installing Slurm client ==="
           apt-get update -qq
-          apt-get install -y -qq munge slurm-client > /dev/null 2>&1
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            munge slurm-client 2>&1 | tail -5
 
-          # Set up munge (same key as controller and workers)
+          # Create required directories
+          mkdir -p /run/munge /var/log/munge /etc/slurm
+
+          # Set up munge (same key as controller and workers, run as root)
           cp /etc/munge-key/munge.key /etc/munge/munge.key
-          chown munge:munge /etc/munge/munge.key
           chmod 400 /etc/munge/munge.key
           munged --force
 
           # Copy Slurm config
           cp /etc/slurm-config/slurm.conf /etc/slurm/slurm.conf
+          cp /etc/slurm-config/cgroup.conf /etc/slurm/cgroup.conf 2>/dev/null || true
 
           echo ""
           echo "=== Slurm cluster info ==="
-          sinfo || echo "(sinfo not available yet — controller may still be starting)"
+          sinfo
 
           echo ""
-          echo "=== Submitting test job: hostname ==="
-          srun --partition=batch hostname || echo "(srun failed — cluster may still be initializing)"
+          echo "=== Submitting batch job: hostname ==="
+          sbatch --output=/tmp/slurm-test-%j.out --wrap="hostname && echo SUCCESS"
+          echo "Waiting for job to complete..."
+          sleep 10
+
+          echo ""
+          echo "=== Job queue ==="
+          squeue --all
+
+          echo ""
+          echo "=== Completed jobs ==="
+          sacct --brief 2>/dev/null || echo "(sacct not available — check slurmd logs for job execution)"
 
           echo ""
           echo "=== Test complete ==="
