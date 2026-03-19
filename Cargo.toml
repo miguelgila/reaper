@@ -35,10 +35,11 @@ libc = { version = "0.2", optional = true }
 
 # reaper-controller dependencies
 schemars = { version = "0.8", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
 
 [features]
 agent = ["kube", "k8s-openapi", "prometheus-client", "axum", "futures", "chrono", "uuid", "libc"]
-controller = ["kube", "k8s-openapi", "schemars", "futures", "chrono"]
+controller = ["kube", "k8s-openapi", "schemars", "futures", "chrono", "reqwest"]
 
 [dev-dependencies]
 tempfile = "3"

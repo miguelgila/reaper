@@ -25,6 +25,13 @@ rules:
   - apiGroups: ["reaper.io"]
     resources: ["reaperpods/status"]
     verbs: ["get", "patch", "update"]
+  # ReaperOverlay CRD access
+  - apiGroups: ["reaper.io"]
+    resources: ["reaperoverlays"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["reaper.io"]
+    resources: ["reaperoverlays/status"]
+    verbs: ["get", "patch", "update"]
   # Pod management (create pods from ReaperPod specs)
   - apiGroups: [""]
     resources: ["pods"]

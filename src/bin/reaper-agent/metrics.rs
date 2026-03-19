@@ -11,6 +11,7 @@ use tracing::info;
 use crate::executor::JobManager;
 use crate::health;
 use crate::jobs::{JobRequest, JobResponse, JobState};
+use crate::overlay_api;
 
 /// Shared metrics state used across all agent tasks.
 #[derive(Clone)]
@@ -293,6 +294,32 @@ async fn terminate_job_handler(
     }
 }
 
+async fn list_overlays_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let overlays = overlay_api::list_overlays(&state.state_dir);
+    (StatusCode::OK, axum::Json(overlays))
+}
+
+async fn get_overlay_handler(
+    State(state): State<AppState>,
+    axum::extract::Path((namespace, name)): axum::extract::Path<(String, String)>,
+) -> impl IntoResponse {
+    match overlay_api::get_overlay(&state.state_dir, &namespace, &name) {
+        Some(detail) => (StatusCode::OK, axum::Json(detail)).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn delete_overlay_handler(
+    State(state): State<AppState>,
+    axum::extract::Path((namespace, name)): axum::extract::Path<(String, String)>,
+) -> impl IntoResponse {
+    match overlay_api::delete_overlay(&state.state_dir, &namespace, &name) {
+        Ok(true) => (StatusCode::OK, "overlay deleted\n").into_response(),
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(msg) => (StatusCode::CONFLICT, msg).into_response(),
+    }
+}
+
 /// Start the HTTP server for health, metrics, and job execution endpoints.
 pub async fn serve(
     addr: SocketAddr,
@@ -318,6 +345,11 @@ pub async fn serve(
         .route(
             "/api/v1/jobs/{id}",
             get(job_status_handler).delete(terminate_job_handler),
+        )
+        .route("/api/v1/overlays", get(list_overlays_handler))
+        .route(
+            "/api/v1/overlays/{namespace}/{name}",
+            get(get_overlay_handler).delete(delete_overlay_handler),
         )
         .with_state(state);
 
