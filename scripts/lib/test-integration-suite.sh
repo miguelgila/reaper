@@ -3428,6 +3428,283 @@ phase_controller_tests() {
 }
 
 # ---------------------------------------------------------------------------
+# Phase 4c: ReaperOverlay CRD tests
+# ---------------------------------------------------------------------------
+
+test_overlay_crd_install() {
+  # CRD is installed by Helm during setup. Apply idempotently in case of reruns.
+  kubectl apply -f deploy/kubernetes/crds/reaperoverlays.reaper.io.yaml >> "$LOG_FILE" 2>&1
+
+  # Verify CRD is established
+  local established=""
+  for i in $(seq 1 15); do
+    established=$(kubectl get crd reaperoverlays.reaper.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)
+    if [[ "$established" == "True" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ "$established" == "True" ]] || {
+    log_error "CRD reaperoverlays.reaper.io not established after 15s"
+    return 1
+  }
+
+  # Verify we can list reaperoverlays
+  kubectl get reaperoverlays --all-namespaces --no-headers >> "$LOG_FILE" 2>&1 || {
+    log_error "Cannot list ReaperOverlays"
+    return 1
+  }
+}
+
+test_overlay_create_and_status() {
+  # Create a ReaperOverlay with default spec
+  kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperOverlay
+metadata:
+  name: test-overlay
+spec: {}
+YAML
+
+  # Verify it gets created
+  local created=""
+  for i in $(seq 1 15); do
+    created=$(kubectl get reaperoverlays test-overlay --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    if [[ "$created" -ge 1 ]]; then
+      break
+    fi
+    sleep 1
+  done
+
+  # Re-check with correct resource name
+  kubectl get reaperoverlays test-overlay >> "$LOG_FILE" 2>&1 || {
+    log_error "ReaperOverlay test-overlay not found after creation"
+    return 1
+  }
+
+  # Wait for status.phase to become Ready
+  local phase=""
+  for i in $(seq 1 30); do
+    phase=$(kubectl get reaperoverlays test-overlay -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$phase" == "Ready" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$phase" == "Ready" ]] || {
+    log_error "Expected ReaperOverlay phase=Ready, got '$phase'"
+    kubectl describe reaperoverlays test-overlay >> "$LOG_FILE" 2>&1 || true
+    return 1
+  }
+}
+
+test_overlay_kubectl_get_columns() {
+  # Verify kubectl get reaperoverlays shows the expected columns
+  local output
+  output=$(kubectl get reaperoverlays 2>&1 || true)
+
+  echo "$output" | grep -q "PHASE" || {
+    log_error "Missing PHASE column in kubectl get reaperoverlays output"
+    return 1
+  }
+  echo "$output" | grep -q "RESET GEN" || {
+    log_error "Missing RESET GEN column in kubectl get reaperoverlays output"
+    return 1
+  }
+  echo "$output" | grep -q "OBSERVED" || {
+    log_error "Missing OBSERVED column in kubectl get reaperoverlays output"
+    return 1
+  }
+  echo "$output" | grep -q "AGE" || {
+    log_error "Missing AGE column in kubectl get reaperoverlays output"
+    return 1
+  }
+}
+
+test_overlay_pvc_blocking() {
+  # Create a ReaperPod referencing a nonexistent overlay
+  kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
+metadata:
+  name: test-overlay-pending
+spec:
+  command: ["/bin/sh", "-c", "echo overlay-ready"]
+  overlayName: "nonexistent-overlay"
+YAML
+
+  # Verify the ReaperPod stays in Pending phase with message about waiting for overlay
+  local phase=""
+  local message=""
+  for i in $(seq 1 15); do
+    phase=$(kubectl get reaperpod test-overlay-pending -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    message=$(kubectl get reaperpod test-overlay-pending -o jsonpath='{.status.message}' 2>/dev/null || true)
+    if [[ "$phase" == "Pending" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ "$phase" == "Pending" ]] || {
+    log_error "Expected ReaperPod phase=Pending while overlay missing, got '$phase'"
+    return 1
+  }
+  echo "$message" | grep -qi "waiting.*reaperoverlays\|reaperoverlays\|overlay\|Waiting" || {
+    log_error "Expected message about waiting for ReaperOverlay, got '$message'"
+    return 1
+  }
+
+  # Now create the matching ReaperOverlay
+  kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperOverlay
+metadata:
+  name: nonexistent-overlay
+spec: {}
+YAML
+
+  # Wait for the ReaperOverlay to become Ready
+  local overlay_phase=""
+  for i in $(seq 1 30); do
+    overlay_phase=$(kubectl get reaperoverlays nonexistent-overlay -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$overlay_phase" == "Ready" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$overlay_phase" == "Ready" ]] || {
+    log_error "ReaperOverlay nonexistent-overlay did not become Ready (got '$overlay_phase')"
+    return 1
+  }
+
+  # Verify the ReaperPod eventually progresses (phase changes from Pending — Pod gets created)
+  local pod_created=""
+  for i in $(seq 1 30); do
+    pod_created=$(kubectl get pods -l "reaper.io/owner=test-overlay-pending" \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -n "$pod_created" ]]; then
+      break
+    fi
+    # Also accept phase transition away from Pending as success
+    local new_phase
+    new_phase=$(kubectl get reaperpod test-overlay-pending -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ -n "$new_phase" && "$new_phase" != "Pending" ]]; then
+      pod_created="phase-progressed"
+      break
+    fi
+    sleep 2
+  done
+  [[ -n "$pod_created" ]] || {
+    log_error "ReaperPod test-overlay-pending did not progress after ReaperOverlay was created"
+    kubectl describe reaperpod test-overlay-pending >> "$LOG_FILE" 2>&1 || true
+    return 1
+  }
+}
+
+test_overlay_reset_generation() {
+  # Create a fresh ReaperOverlay for reset testing
+  kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperOverlay
+metadata:
+  name: test-reset
+spec: {}
+YAML
+
+  # Wait for it to become Ready
+  local phase=""
+  for i in $(seq 1 30); do
+    phase=$(kubectl get reaperoverlays test-reset -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$phase" == "Ready" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$phase" == "Ready" ]] || {
+    log_error "ReaperOverlay test-reset did not become Ready (got '$phase')"
+    return 1
+  }
+
+  # Patch resetGeneration to 1
+  kubectl patch reaperoverlays test-reset --type=merge -p '{"spec":{"resetGeneration":1}}' >> "$LOG_FILE" 2>&1 || {
+    log_error "Failed to patch test-reset resetGeneration"
+    return 1
+  }
+
+  # Wait for status.observedResetGeneration to reach 1 and phase to return to Ready
+  local observed=""
+  local final_phase=""
+  for i in $(seq 1 30); do
+    observed=$(kubectl get reaperoverlays test-reset -o jsonpath='{.status.observedResetGeneration}' 2>/dev/null || true)
+    final_phase=$(kubectl get reaperoverlays test-reset -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$observed" == "1" && "$final_phase" == "Ready" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$observed" == "1" ]] || {
+    log_error "Expected observedResetGeneration=1, got '$observed'"
+    return 1
+  }
+  [[ "$final_phase" == "Ready" ]] || {
+    log_error "Expected phase=Ready after reset, got '$final_phase'"
+    return 1
+  }
+}
+
+test_overlay_delete_cleanup() {
+  # Delete the test overlays and verify they are removed (finalizer cleanup completes)
+  kubectl delete reaperoverlays test-overlay test-reset nonexistent-overlay \
+    --ignore-not-found >> "$LOG_FILE" 2>&1
+
+  # Wait for all test overlays to be gone
+  local remaining=""
+  for i in $(seq 1 30); do
+    remaining=$(kubectl get reaperoverlays test-overlay test-reset nonexistent-overlay \
+      --no-headers 2>/dev/null | grep -v "not found" | wc -l | tr -d ' ' || echo "0")
+    if [[ "$remaining" -eq 0 ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ "$remaining" -eq 0 ]] || {
+    log_error "ReaperOverlays still present after deletion ($remaining remaining)"
+    kubectl get reaperoverlays >> "$LOG_FILE" 2>&1 || true
+    return 1
+  }
+}
+
+cleanup_overlay() {
+  kubectl delete reaperoverlays --all --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete reaperpod test-overlay-pending --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  # Wait for overlay-related pods to terminate
+  for i in $(seq 1 15); do
+    local remaining
+    remaining=$(kubectl get pods -l "reaper.io/owner=test-overlay-pending" \
+      --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    if [[ "$remaining" -eq 0 ]]; then
+      break
+    fi
+    sleep 1
+  done
+}
+
+phase_overlay_tests() {
+  log_status ""
+  log_status "${CLR_PHASE}Phase 4c: ReaperOverlay CRD tests${CLR_RESET}"
+  log_status "========================================"
+
+  run_test test_overlay_crd_install          "ReaperOverlay CRD installation"           --hard-fail
+  run_test test_overlay_create_and_status    "ReaperOverlay create and Ready status"     --hard-fail
+  run_test test_overlay_kubectl_get_columns  "kubectl get reaperoverlays columns"        --hard-fail
+  run_test test_overlay_pvc_blocking         "ReaperPod blocks until ReaperOverlay ready" --hard-fail
+  run_test test_overlay_reset_generation     "ReaperOverlay reset generation"            --hard-fail
+  run_test test_overlay_delete_cleanup       "ReaperOverlay delete and finalizer cleanup" --hard-fail
+
+  # Cleanup overlay resources
+  cleanup_overlay
+}
+
+# ---------------------------------------------------------------------------
 # Phase 4: Integration test orchestrator
 # ---------------------------------------------------------------------------
 phase_integration_tests() {

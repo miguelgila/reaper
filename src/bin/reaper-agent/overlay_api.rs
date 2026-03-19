@@ -157,6 +157,115 @@ pub fn delete_overlay(state_dir: &str, namespace: &str, name: &str) -> Result<bo
     Ok(true)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn setup_state_dir() -> TempDir {
+        TempDir::new().expect("create temp state dir")
+    }
+
+    fn create_ns_file(state_dir: &TempDir, ns_key: &str) {
+        let ns_dir = state_dir.path().join("ns");
+        fs::create_dir_all(&ns_dir).expect("create ns dir");
+        fs::write(ns_dir.join(ns_key), b"").expect("create ns file");
+    }
+
+    // --- list_overlays ---
+
+    #[test]
+    fn test_list_overlays_empty_when_no_ns_dir() {
+        let state_dir = setup_state_dir();
+        let result = list_overlays(state_dir.path().to_str().unwrap());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_list_overlays_empty_ns_dir() {
+        let state_dir = setup_state_dir();
+        fs::create_dir_all(state_dir.path().join("ns")).unwrap();
+        let result = list_overlays(state_dir.path().to_str().unwrap());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_list_overlays_returns_named_overlays() {
+        let state_dir = setup_state_dir();
+        create_ns_file(&state_dir, "production--pippo");
+        create_ns_file(&state_dir, "default--mygroup");
+
+        let mut result = list_overlays(state_dir.path().to_str().unwrap());
+        result.sort_by(|a, b| a.name.cmp(&b.name));
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].namespace, "default");
+        assert_eq!(result[0].name, "mygroup");
+        assert!(result[0].ready);
+        assert_eq!(result[1].namespace, "production");
+        assert_eq!(result[1].name, "pippo");
+        assert!(result[1].ready);
+    }
+
+    #[test]
+    fn test_list_overlays_skips_non_named_entries() {
+        let state_dir = setup_state_dir();
+        // Plain namespace bind-mount file (no "--") — should be skipped
+        create_ns_file(&state_dir, "default");
+        // Named overlay — should be included
+        create_ns_file(&state_dir, "default--tools");
+        // .pid file — should be skipped
+        create_ns_file(&state_dir, "default--tools.pid");
+
+        let result = list_overlays(state_dir.path().to_str().unwrap());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "tools");
+    }
+
+    // --- get_overlay ---
+
+    #[test]
+    fn test_get_overlay_returns_none_when_not_found() {
+        let state_dir = setup_state_dir();
+        let result = get_overlay(state_dir.path().to_str().unwrap(), "default", "missing");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_overlay_found_via_ns_file() {
+        let state_dir = setup_state_dir();
+        create_ns_file(&state_dir, "staging--myoverlay");
+
+        let result = get_overlay(state_dir.path().to_str().unwrap(), "staging", "myoverlay");
+        assert!(result.is_some());
+        let detail = result.unwrap();
+        assert_eq!(detail.namespace, "staging");
+        assert_eq!(detail.name, "myoverlay");
+        assert!(detail.ready);
+        assert!(detail.helper_pid.is_none());
+    }
+
+    #[test]
+    fn test_get_overlay_found_via_overlay_dir_when_ns_file_missing() {
+        let state_dir = setup_state_dir();
+        // Create overlay dir but NOT the ns file
+        let overlay_dir = state_dir
+            .path()
+            .join("overlay")
+            .join("default")
+            .join("orphan");
+        fs::create_dir_all(&overlay_dir).unwrap();
+
+        let result = get_overlay(state_dir.path().to_str().unwrap(), "default", "orphan");
+        assert!(result.is_some());
+        let detail = result.unwrap();
+        assert_eq!(detail.name, "orphan");
+        // ns file is absent so ready is false
+        assert!(!detail.ready);
+    }
+}
+
 /// Remove a file or directory, logging on failure.
 fn remove_path(path: &Path, description: &str) {
     if !path.exists() {
