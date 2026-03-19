@@ -884,7 +884,12 @@ fn filter_sensitive_paths(config: &FilterConfig) -> Result<()> {
     Ok(())
 }
 
-/// Filter a single path by bind-mounting an empty placeholder over it.
+/// Filter a single path by bind-mounting a placeholder over it.
+///
+/// For shadow-format files (`/etc/shadow`, `/etc/gshadow`), the placeholder is a
+/// sanitized copy with password hashes replaced by `!` so that tools like `useradd`,
+/// `groupadd`, and package post-install scripts can still write to these files.
+/// For all other paths, the placeholder is an empty file or directory.
 ///
 /// Tested by kind-integration tests (requires root + Linux namespaces).
 #[cfg(not(tarpaulin_include))]
@@ -902,6 +907,13 @@ fn filter_single_path(path: &Path, filter_dir: &Path) -> Result<()> {
     if path.is_dir() {
         fs::create_dir_all(&placeholder)
             .with_context(|| format!("creating placeholder dir for {}", path.display()))?;
+    } else if is_shadow_format_file(path) {
+        // Shadow-format files get sanitized copies (writable, hashes stripped)
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("reading {} for sanitization", path.display()))?;
+        let sanitized_content = sanitize_shadow_content(&content);
+        fs::write(&placeholder, sanitized_content)
+            .with_context(|| format!("writing sanitized copy of {}", path.display()))?;
     } else {
         fs::write(&placeholder, b"")
             .with_context(|| format!("creating placeholder file for {}", path.display()))?;
@@ -918,6 +930,39 @@ fn filter_single_path(path: &Path, filter_dir: &Path) -> Result<()> {
     .with_context(|| format!("bind-mounting filter over {}", path.display()))?;
 
     Ok(())
+}
+
+/// Returns true if the path is a shadow-format file that should be sanitized
+/// rather than replaced with an empty placeholder.
+fn is_shadow_format_file(path: &Path) -> bool {
+    matches!(path.to_str(), Some("/etc/shadow") | Some("/etc/gshadow"))
+}
+
+/// Sanitize shadow-format file content by replacing password hash fields with `!`.
+///
+/// Shadow format: `name:hash:field3:field4:...`
+/// gshadow format: `name:hash:admins:members`
+///
+/// The second colon-delimited field contains the password hash. We replace it
+/// with `!` (locked account) to prevent leaking real hashes while keeping the
+/// file structure intact for tools like `useradd` and `groupadd`.
+fn sanitize_shadow_content(content: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    for line in content.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+        let mut fields: Vec<&str> = line.split(':').collect();
+        if fields.len() >= 2 {
+            // Replace password hash (field index 1) with `!`
+            fields[1] = "!";
+        }
+        result.push_str(&fields.join(":"));
+        result.push('\n');
+    }
+    result
 }
 
 // Copy a subset of /etc into the overlay namespace so workloads can edit resolver configuration.
@@ -1797,6 +1842,60 @@ mod tests {
         assert!(filters.contains(&PathBuf::from("/etc/shadow")));
         assert!(filters.contains(&PathBuf::from("/root/.ssh")));
         assert!(filters.contains(&PathBuf::from("/etc/ssh/ssh_host_rsa_key")));
+    }
+
+    // --- Shadow file sanitization tests ---
+
+    #[test]
+    fn test_is_shadow_format_file() {
+        assert!(super::is_shadow_format_file(Path::new("/etc/shadow")));
+        assert!(super::is_shadow_format_file(Path::new("/etc/gshadow")));
+        assert!(!super::is_shadow_format_file(Path::new("/etc/passwd")));
+        assert!(!super::is_shadow_format_file(Path::new("/etc/sudoers")));
+        assert!(!super::is_shadow_format_file(Path::new("/root/.ssh")));
+    }
+
+    #[test]
+    fn test_sanitize_shadow_content_basic() {
+        let input = "root:$6$xyz$longhash:19000:0:99999:7:::\n\
+                     daemon:*:19000:0:99999:7:::\n\
+                     nobody:!:19000:0:99999:7:::\n";
+        let result = super::sanitize_shadow_content(input);
+        assert_eq!(
+            result,
+            "root:!:19000:0:99999:7:::\n\
+             daemon:!:19000:0:99999:7:::\n\
+             nobody:!:19000:0:99999:7:::\n"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_shadow_content_gshadow() {
+        let input = "root:$6$hash:root:\n\
+                     adm:!::syslog\n\
+                     shadow:*::\n";
+        let result = super::sanitize_shadow_content(input);
+        assert_eq!(
+            result,
+            "root:!:root:\n\
+             adm:!::syslog\n\
+             shadow:!::\n"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_shadow_content_empty_and_comments() {
+        let input = "# comment line\n\nroot:hash:rest\n";
+        let result = super::sanitize_shadow_content(input);
+        assert_eq!(result, "# comment line\n\nroot:!:rest\n");
+    }
+
+    #[test]
+    fn test_sanitize_shadow_content_no_colon() {
+        // Malformed line with no colon — left as-is
+        let input = "malformed-line\n";
+        let result = super::sanitize_shadow_content(input);
+        assert_eq!(result, "malformed-line\n");
     }
 
     // --- Volume mount filtering tests ---
