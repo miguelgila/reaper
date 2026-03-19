@@ -1,0 +1,13 @@
+[book]
+title = "Reaper Documentation"
+description = "A lightweight Kubernetes container-less runtime for direct host execution"
+authors = ["Miguel Gil Álvarez"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/miguelgila/reaper"
+edit-url-template = "https://github.com/miguelgila/reaper/edit/main/docs/book/{path}"

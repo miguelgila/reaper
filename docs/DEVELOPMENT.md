@@ -214,24 +214,18 @@ Configure rust-analyzer to run clippy on save and enable CodeLens for inline run
 
 GitHub Actions workflows run on pushes and pull requests to `main`:
 
-### Tests Workflow (`test.yml`)
+### CI Workflow (`ci.yml`)
 
-- Builds and caches dependencies
-- Runs `cargo test` with coverage via `cargo-tarpaulin`
-- Uploads coverage to Codecov
-- Runs `cargo clippy -- -D warnings`
-- Checks formatting with `cargo fmt --all -- --check`
+A single unified pipeline that runs:
 
-### Build and Audit Workflow (`build.yml`)
-
-- Runs `cargo audit` to scan dependencies for known vulnerabilities
-
-### Integration Workflow (`integration.yml`)
-
-- Builds static musl binaries (architecture-aware)
-- Creates a Kind cluster
-- Deploys Reaper via Ansible
-- Runs the full Kubernetes integration test suite
+- `cargo fmt -- --check` (formatting)
+- `cargo clippy --workspace --all-targets -- -D warnings` (linting)
+- `cargo audit` (dependency vulnerability scan)
+- `cargo test --verbose` (unit tests)
+- `cargo tarpaulin` → Codecov upload (coverage)
+- Cross-compile static musl binaries (all binaries)
+- Kind integration tests (`run-integration-tests.sh --skip-cargo`)
+- Example validation (`test-examples.sh --skip-cluster`)
 
 ## Coverage
 

@@ -7,7 +7,7 @@ LINUX_TARGET := x86_64-unknown-linux-gnu
 DOCKER_IMAGE := reaper-dev
 COVERAGE_VOL := reaper-cargo-cache
 
-.PHONY: help build test fmt clippy check-linux coverage ci clean
+.PHONY: help build test fmt clippy check-linux coverage ci clean docs docs-serve
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -90,12 +90,37 @@ integration-quick: ## Run K8s integration tests, skip cargo tests
 	./scripts/run-integration-tests.sh --skip-cargo
 
 # ---------------------------------------------------------------------------
+# Documentation (Docker — no local mdbook install needed)
+# ---------------------------------------------------------------------------
+
+MDBOOK_IMAGE := peaceiris/mdbook:latest
+
+docs: ## Build mdBook documentation site (via Docker)
+	docker run --rm \
+		-v "$$(pwd)":/book \
+		-w /book/docs/book \
+		$(MDBOOK_IMAGE) \
+		build
+	@echo "==> Documentation built: docs/book/book/"
+
+docs-serve: ## Serve mdBook locally with live-reload (via Docker)
+	@echo "==> Serving docs at http://localhost:3000"
+	docker run --rm \
+		-v "$$(pwd)":/book \
+		-w /book/docs/book \
+		-p 3000:3000 \
+		-p 3001:3001 \
+		$(MDBOOK_IMAGE) \
+		serve -n 0.0.0.0
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 
 clean: ## Remove build artifacts and coverage files
 	cargo clean
 	rm -f cobertura.xml
+	rm -rf docs/book/book
 
 clean-all: clean ## Remove everything including Docker cache volumes
 	docker volume rm $(COVERAGE_VOL) 2>/dev/null || true

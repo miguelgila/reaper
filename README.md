@@ -1,7 +1,6 @@
 # Reaper
 
-[![Tests](https://github.com/miguelgila/reaper/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/miguelgila/reaper/actions/workflows/test.yml)
-[![Build](https://github.com/miguelgila/reaper/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/miguelgila/reaper/actions/workflows/build.yml)
+[![CI](https://github.com/miguelgila/reaper/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/miguelgila/reaper/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/miguelgila/reaper/branch/main/graph/badge.svg)](https://codecov.io/gh/miguelgila/reaper)
 
 **Reaper is a lightweight Kubernetes container-less runtime that executes commands directly on cluster nodes without traditional container isolation.** Think of it as a way to run host-native processes through Kubernetes' orchestration layer.
@@ -14,188 +13,125 @@ Reaper is an experimental, personal project built to explore what's possible wit
 
 Reaper is a containerd shim that runs processes directly on the host system while integrating with Kubernetes' workload management. Unlike traditional container runtimes that provide isolation through namespaces and cgroups, Reaper intentionally runs processes with full host access.
 
-**Use cases:**
-- Running privileged system utilities that need direct hardware access
-- Cluster maintenance tasks that operate across the host filesystem
-- Legacy applications that require host-level access
-- Development and debugging workflows
-
 **What Reaper provides:**
-- ✅ Standard Kubernetes API (Pods, kubectl logs, kubectl exec)
-- ✅ Process lifecycle management (start, stop, restart)
-- ✅ Shared overlay filesystem for workload isolation from host changes
-- ✅ Kubernetes volumes (ConfigMap, Secret, hostPath, emptyDir)
-- ✅ Filters sensitive host files (SSH keys, passwords, SSL keys)
-- ✅ Direct command execution on cluster nodes
-- ✅ Integration with kubectl (logs, exec, describe)
+- Standard Kubernetes API (Pods, kubectl logs, kubectl exec)
+- Process lifecycle management (start, stop, restart)
+- Shared overlay filesystem for workload isolation from host changes
+- Kubernetes volumes (ConfigMap, Secret, hostPath, emptyDir)
+- Sensitive host file filtering (SSH keys, passwords, SSL keys)
+- Interactive sessions (PTY support for `kubectl run -it` and `kubectl exec -it`)
+- UID/GID switching with `securityContext`
+- Per-pod configuration via Kubernetes annotations
 
 **What Reaper does NOT provide:**
-- ❌ Container isolation (namespaces, cgroups)
-- ❌ Resource limits (CPU, memory)
-- ❌ Network isolation (uses host networking)
-- ❌ Container image pulling
+- Container isolation (namespaces, cgroups)
+- Resource limits (CPU, memory)
+- Network isolation (uses host networking)
+- Container image pulling
+
+**Use cases:** privileged system utilities, cluster maintenance, legacy host-level applications, HPC workloads, development and debugging workflows.
 
 ## Quick Start
 
 ### Playground (try it locally)
 
-Spin up a 3-node Kind cluster with Reaper pre-installed. Compiles inside Docker — no local Rust toolchain needed.
+Spin up a 3-node Kind cluster with Reaper pre-installed:
 
 ```bash
-# Prerequisites: Docker, kind, kubectl, helm
+# Build from source (compiles inside Docker — no local Rust toolchain needed)
 ./scripts/setup-playground.sh
+
+# Or use pre-built images from the latest release (no build)
+./scripts/setup-playground.sh --release
 ```
 
-This creates a Kind cluster with 1 control-plane + 2 worker nodes, installs
-Reaper via Helm (node DaemonSet + controller + CRDs + RuntimeClass), and runs a smoke test. Once ready, try:
+Once ready:
 
 ```bash
-kubectl run hello --rm -it --image=busybox --restart=Never \
-  --overrides='{"spec":{"runtimeClassName":"reaper-v2"}}' \
-  -- /bin/sh -c "echo Hello from $(hostname) && uname -a"
+kubectl apply -f - <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
+metadata:
+  name: hello
+spec:
+  command: ["/bin/sh", "-c", "echo Hello from $(hostname) && uname -a"]
+YAML
+
+kubectl logs hello
 ```
 
 To tear down: `./scripts/setup-playground.sh --cleanup`
 
-### 0. Build
+### Install on a Kubernetes Cluster
 
-Reaper requires Rust. The toolchain version is pinned in `rust-toolchain.toml` and installed automatically.
-
-```bash
-git clone https://github.com/miguelgila/reaper
-cd reaper
-cargo build --release
-```
-
-Binaries are output to `target/release/`. Since Reaper runs on Linux Kubernetes nodes, you may need to cross-compile static musl binaries if building from macOS:
-
-```bash
-# For x86_64 nodes
-docker run --rm -v "$(pwd)":/work -w /work \
-  messense/rust-musl-cross:x86_64-musl \
-  cargo build --release --target x86_64-unknown-linux-musl
-
-# For aarch64 nodes
-docker run --rm -v "$(pwd)":/work -w /work \
-  messense/rust-musl-cross:aarch64-musl \
-  cargo build --release --target aarch64-unknown-linux-musl
-```
-
-### 1. Install Reaper on a Kubernetes Cluster
-
-**Via Helm (recommended):**
 ```bash
 helm upgrade --install reaper deploy/helm/reaper/ \
   --namespace reaper-system --create-namespace \
   --wait --timeout 120s
 ```
 
-This installs the node DaemonSet (binary installer), CRD, controller, RuntimeClass, and RBAC — everything needed to run Reaper workloads.
+### Build from Source
 
-See [deploy/helm/reaper/](deploy/helm/reaper/) for chart values and configuration.
+```bash
+git clone https://github.com/miguelgila/reaper && cd reaper
+cargo build --release
+```
 
-### 2. Run a Command on the Host
+For cross-compilation to Linux (from macOS), see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
-Create a Pod with `runtimeClassName: reaper-v2`:
+## Usage
+
+### Run a Command on the Host
 
 ```yaml
-apiVersion: v1
-kind: Pod
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
 metadata:
   name: my-task
 spec:
-  runtimeClassName: reaper-v2  # Use Reaper runtime
-  restartPolicy: Never
-  containers:
-    - name: task
-      image: busybox  # Pulled by kubelet but ignored by Reaper
-      command: ["/bin/sh", "-c"]
-      args: ["echo Hello from host && uname -a"]
-      env:
-        - name: MY_VAR
-          value: "example"
+  command: ["/bin/sh", "-c", "echo Hello from host && uname -a"]
 ```
-
-Apply and check results:
 
 ```bash
 kubectl apply -f my-task.yaml
 kubectl logs my-task
-kubectl get pod my-task  # Status: Completed
+kubectl get reaperpods
 ```
 
-### 3. Interactive Sessions
-
-Reaper supports interactive containers:
-
-```bash
-# Run interactive shell
-kubectl run -it debug --rm --image=busybox --restart=Never \
-  --overrides='{"spec":{"runtimeClassName":"reaper-v2"}}' \
-  -- /bin/bash
-
-# Exec into running containers
-kubectl exec -it my-pod -- /bin/sh
-```
-
-### 4. Using Volumes
-
-Reaper supports Kubernetes volumes — ConfigMaps, Secrets, hostPath, emptyDir, and projected volumes all work as expected:
+### With Volumes
 
 ```yaml
-apiVersion: v1
-kind: Pod
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
 metadata:
-  name: my-task
+  name: config-reader
 spec:
-  runtimeClassName: reaper-v2
-  restartPolicy: Never
+  command: ["/bin/sh", "-c", "cat /config/settings.yaml"]
   volumes:
     - name: config
-      configMap:
-        name: my-config
-    - name: data
-      hostPath:
-        path: /opt/data
-        type: Directory
-  containers:
-    - name: task
-      image: busybox
-      command: ["/bin/sh", "-c", "cat /config/settings.yaml && ls /data"]
-      volumeMounts:
-        - name: config
-          mountPath: /config
-          readOnly: true
-        - name: data
-          mountPath: /data
+      mountPath: /config
+      configMap: "my-config"
+      readOnly: true
 ```
 
-Kubelet prepares volume content on the host and Reaper bind-mounts it into the shared overlay namespace. Read-only mounts are enforced. Since all Reaper workloads share the same mount namespace, volume mounts from one pod are visible to others.
+### With Node Selector
 
-## Important: Pod Field Compatibility
+```yaml
+apiVersion: reaper.io/v1alpha1
+kind: ReaperPod
+metadata:
+  name: compute-task
+spec:
+  command: ["/bin/sh", "-c", "echo Running on $(hostname)"]
+  nodeSelector:
+    workload-type: compute
+```
 
-Reaper implements the Kubernetes Pod API but **ignores or doesn't support certain container-specific fields**:
+### Using Raw Pods
 
-| Pod Field                                        | Behavior                                                                                                                                                               |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spec.containers[].image`                        | **Ignored by Reaper** — Kubelet pulls the image before the runtime runs, so a valid image is required. Use a lightweight image like `busybox`. Reaper does not use it. |
-| `spec.containers[].resources.limits`             | **Ignored** — No cgroup enforcement; processes use host resources.                                                                                                     |
-| `spec.containers[].resources.requests`           | **Ignored** — Scheduling hints not used.                                                                                                                               |
-| `spec.containers[].volumeMounts`                 | ✅ **Supported** — Bind mounts for ConfigMap, Secret, hostPath, emptyDir.                                                                                               |
-| `spec.containers[].securityContext.capabilities` | **Ignored** — Processes run with host-level capabilities.                                                                                                              |
-| `spec.containers[].livenessProbe`                | **Ignored** — No health checking.                                                                                                                                      |
-| `spec.containers[].readinessProbe`               | **Ignored** — No readiness checks.                                                                                                                                     |
-| `spec.containers[].command`                      | ✅ **Supported** — Program path on host (must exist).                                                                                                                   |
-| `spec.containers[].args`                         | ✅ **Supported** — Arguments to the command.                                                                                                                            |
-| `spec.containers[].env`                          | ✅ **Supported** — Environment variables.                                                                                                                               |
-| `spec.containers[].workingDir`                   | ✅ **Supported** — Working directory for the process.                                                                                                                   |
-| `spec.runtimeClassName`                          | ✅ **Required** — Must be set to `reaper-v2`.                                                                                                                           |
+You can also use standard Kubernetes Pods with `runtimeClassName: reaper-v2` directly. This gives access to the full Pod API (interactive sessions, DaemonSets, Deployments, etc.). See the [Quick Start guide](docs/book/src/getting-started/quick-start.md) for details and [Pod Compatibility](docs/COMPATIBILITY.md) for supported fields.
 
-**Best practice:** Use a small, valid image like `busybox`. Kubelet pulls the image before handing off to the runtime, so the image must exist in a registry. Reaper itself ignores the image entirely — it runs the `command` directly on the host.
-
-## Architecture Overview
-
-Reaper consists of three components:
+## Architecture
 
 ```
 Kubernetes/containerd
@@ -207,165 +143,79 @@ reaper-runtime  (OCI runtime binary)
 monitoring daemon → workload process
 ```
 
-**Key features:**
 - **Fork-first architecture**: Daemon monitors workload, captures real exit codes
-- **Shared overlay filesystem**: All Reaper workloads share a writable overlay layer (host root is read-only)
-- **PTY support**: Interactive containers work with `kubectl run -it` and `kubectl exec -it`
-- **State persistence**: Process lifecycle state stored in `/run/reaper/<container-id>/`
+- **Shared overlay filesystem**: Writable layer per K8s namespace (host root is read-only)
+- **PTY support**: Interactive containers with `kubectl run -it` and `kubectl exec -it`
 
 For architecture details, see [docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md) and [docs/OVERLAY_DESIGN.md](docs/OVERLAY_DESIGN.md).
 
-## Features
+## Configuration
 
-- ✅ **Full OCI runtime implementation** (create, start, state, kill, delete)
-- ✅ **Containerd shim v2 protocol** (Task trait with all lifecycle methods)
-- ✅ **Kubernetes integration** via RuntimeClass
-- ✅ **Overlay filesystem namespace** (protects host from modifications)
-- ✅ **Volume mount support** (ConfigMap, Secret, hostPath, emptyDir via OCI bind mounts)
-- ✅ **Container I/O capture** (stdout/stderr via FIFOs for `kubectl logs`)
-- ✅ **Interactive sessions** (PTY support for `kubectl run -it` and `kubectl exec -it`)
-- ✅ **UID/GID switching** (privilege dropping with `securityContext`)
-- ✅ **Sensitive file filtering** (hides SSH keys, passwords, SSL keys in overlay)
-- ✅ **Pod annotations** (per-pod configuration overrides via Kubernetes annotations)
-- ✅ **Process monitoring** (fork-based with real exit code capture)
-- ✅ **Zombie process reaping** (proper process cleanup)
-- ✅ **End-to-end testing** (validated with kind cluster integration tests)
+Reaper reads configuration from `/etc/reaper/reaper.conf` on each node. Per-pod overrides are available via Kubernetes annotations:
+
+```yaml
+annotations:
+  reaper.runtime/dns-mode: "kubernetes"
+  reaper.runtime/overlay-name: "my-group"
+```
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference.
 
 ## Examples
 
 The [examples/](examples/) directory contains runnable demos, each with a `setup.sh` that creates a Kind cluster with Reaper pre-installed:
 
-| Example                                                                                | Description                                                                       |
-| -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| **[01-scheduling/](examples/01-scheduling/)**                                          | DaemonSets on all nodes vs. a labeled subset                                      |
-| **[02-client-server/](examples/02-client-server/)**                                    | TCP server + clients communicating across nodes via host networking                |
-| **[03-client-server-runas/](examples/03-client-server-runas/)**                        | Same as above, but running as a shared non-root user (LDAP-style UID/GID)         |
-| **[04-volumes/](examples/04-volumes/)**                                                | Kubernetes volume mounts (ConfigMap, Secret, hostPath, emptyDir) with overlay      |
-| **[05-kubemix/](examples/05-kubemix/)**                                                | Jobs, DaemonSets, and Deployments on a 10-node cluster                            |
-| **[06-ansible-jobs/](examples/06-ansible-jobs/)**                                      | Sequential Jobs: install Ansible, then run a playbook                             |
-| **[07-ansible-complex/](examples/07-ansible-complex/)**                                | DaemonSet bootstrap + role-based Ansible playbooks                                |
-| **[08-mix-container-runtime-engines/](examples/08-mix-container-runtime-engines/)**     | Mixed runtimes: OpenLDAP (default containerd) + SSSD (Reaper)                     |
+| Example | Description |
+|---------|-------------|
+| **[01-scheduling](examples/01-scheduling/)** | DaemonSets on all nodes vs. a labeled subset |
+| **[02-client-server](examples/02-client-server/)** | TCP server + clients across nodes via host networking |
+| **[03-client-server-runas](examples/03-client-server-runas/)** | Client-server running as a shared non-root user |
+| **[04-volumes](examples/04-volumes/)** | Kubernetes volume mounts (ConfigMap, Secret, hostPath, emptyDir) |
+| **[05-kubemix](examples/05-kubemix/)** | Jobs, DaemonSets, and Deployments on a 10-node cluster |
+| **[06-ansible-jobs](examples/06-ansible-jobs/)** | Sequential Jobs: install Ansible, then run a playbook |
+| **[07-ansible-complex](examples/07-ansible-complex/)** | DaemonSet bootstrap + role-based Ansible playbooks |
+| **[08-mix-container-runtime-engines](examples/08-mix-container-runtime-engines/)** | Mixed runtimes: OpenLDAP (default) + SSSD (Reaper) |
+| **[09-reaperpod](examples/09-reaperpod/)** | ReaperPod CRD: simplified Reaper-native workloads |
+| **[10-slurm-hpc](examples/10-slurm-hpc/)** | Slurm HPC: containerized scheduler + Reaper worker daemons |
+| **[11-node-monitoring](examples/11-node-monitoring/)** | Prometheus node_exporter (Reaper) + Prometheus server |
 
 ## Documentation
 
-- **[examples/README.md](examples/README.md)** - Runnable examples with Kind clusters
-- **[deploy/kubernetes/README.md](deploy/kubernetes/README.md)** - Installation and Kubernetes integration
-- **[docs/TESTING.md](docs/TESTING.md)** - Testing guide (unit tests, integration tests, coverage)
-- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** - Development setup, tooling, and contributing
-- **[docs/SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md)** - Shim v2 protocol implementation details
-- **[docs/SHIM_ARCHITECTURE.md](docs/SHIM_ARCHITECTURE.md)** - Architecture deep-dive
-- **[docs/OVERLAY_DESIGN.md](docs/OVERLAY_DESIGN.md)** - Overlay filesystem design and architecture
+| Document | Description |
+|----------|-------------|
+| [CONFIGURATION.md](docs/CONFIGURATION.md) | Node config, environment variables, pod annotations |
+| [COMPATIBILITY.md](docs/COMPATIBILITY.md) | Pod field compatibility reference |
+| [SHIMV2_DESIGN.md](docs/SHIMV2_DESIGN.md) | Shim v2 protocol implementation |
+| [OVERLAY_DESIGN.md](docs/OVERLAY_DESIGN.md) | Overlay filesystem design |
+| [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Development setup, tooling, contributing |
+| [TESTING.md](docs/TESTING.md) | Testing guide (unit, integration, coverage) |
+| [CONTRIBUTING.md](docs/CONTRIBUTING.md) | Contributing guidelines |
+| [examples/README.md](examples/README.md) | Runnable examples with Kind clusters |
 
 ## Requirements
 
-**Runtime (cluster nodes):**
-- **Linux kernel** with overlayfs support (standard since 3.18)
-- **Kubernetes cluster** with containerd runtime
-- **Root access** on cluster nodes (required for containerd shim installation)
+**Runtime (cluster nodes):** Linux kernel with overlayfs (3.18+), Kubernetes with containerd, root access on nodes.
 
-**Playground (no Rust needed):**
-- [Docker](https://docs.docker.com/get-docker/)
-- [kind](https://kind.sigs.k8s.io/) (Kubernetes in Docker)
-- [kubectl](https://kubernetes.io/docs/tasks/tools/)
-- [Helm](https://helm.sh/docs/intro/install/)
+**Playground:** [Docker](https://docs.docker.com/get-docker/), [kind](https://kind.sigs.k8s.io/), [kubectl](https://kubernetes.io/docs/tasks/tools/), [Helm](https://helm.sh/docs/intro/install/).
 
-**Local development (building from source natively):**
-- All of the above, plus [Rust](https://www.rust-lang.org/tools/install) (toolchain version pinned in `rust-toolchain.toml`)
-
-**Note:** Overlay filesystem is Linux-only. On macOS, the runtime compiles but overlay features are disabled.
+**Building from source:** All of the above, plus [Rust](https://www.rust-lang.org/tools/install) (version pinned in `rust-toolchain.toml`).
 
 ## Testing
 
 ```bash
-# Unit tests (fast, runs locally)
-cargo test
-
-# Full integration tests (Kubernetes + unit tests)
-./scripts/run-integration-tests.sh
-
-# For complete testing guidance, see docs/TESTING.md
+cargo test                            # Unit tests (fast)
+./scripts/run-integration-tests.sh    # Full integration tests (Kubernetes)
 ```
 
-## Configuration
-
-Reaper reads configuration from `/etc/reaper/reaper.conf` on each node. The Helm chart creates this file automatically via the node DaemonSet init container. Environment variables of the same name override file values.
-
-```ini
-# /etc/reaper/reaper.conf
-REAPER_DNS_MODE=kubernetes
-REAPER_RUNTIME_LOG=/run/reaper/runtime.log
-REAPER_OVERLAY_BASE=/run/reaper/overlay
-```
-
-See [deploy/kubernetes/README.md](deploy/kubernetes/README.md#configuration) for the full list of settings.
-
-### Overlay Filesystem
-
-All Reaper workloads share a single overlay filesystem. The host root is the read-only lower layer; writes go to a shared upper layer. This means workloads can share files with each other while protecting the host from modifications.
-
-For details, see [docs/OVERLAY_DESIGN.md](docs/OVERLAY_DESIGN.md).
-
-### Pod Annotations
-
-Users can override certain Reaper configuration parameters per-pod using Kubernetes annotations. This allows fine-grained control without changing the node-level configuration.
-
-**Supported annotations:**
-
-| Annotation | Values | Default | Description |
-|------------|--------|---------|-------------|
-| `reaper.runtime/dns-mode` | `host`, `kubernetes`, `k8s` | Node config (`REAPER_DNS_MODE`) | DNS resolution mode for this pod |
-| `reaper.runtime/overlay-name` | DNS label (e.g., `pippo`) | *(none — uses namespace overlay)* | Named overlay group within the namespace |
-
-**Example:**
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: my-task
-  annotations:
-    reaper.runtime/dns-mode: "kubernetes"    # Use CoreDNS for this pod
-    reaper.runtime/overlay-name: "my-group"  # Isolate overlay from other pods in this namespace
-spec:
-  runtimeClassName: reaper-v2
-  restartPolicy: Never
-  containers:
-    - name: task
-      image: busybox
-      command: ["/bin/sh", "-c", "nslookup kubernetes.default"]
-```
-
-**Security model:**
-- Only annotations in the allowlist above are honored. Unknown annotation keys are silently ignored.
-- Administrator-controlled parameters (overlay paths, filter settings, isolation mode) **cannot** be overridden via annotations.
-- Administrators can disable all annotation processing by setting `REAPER_ANNOTATIONS_ENABLED=false` in the node config.
-
-**How it works:**
-1. The shim extracts `reaper.runtime/*` annotations from the OCI config (populated by kubelet from pod metadata).
-2. Annotations are stored in the container state during `create`.
-3. During `start`, annotations are validated against the allowlist and applied. Invalid values are logged and ignored.
-4. If no annotation is set, the node-level configuration (from `/etc/reaper/reaper.conf` or environment variables) is used as the default.
-
-### Runtime Logging
-
-Enable runtime logging for debugging (in `/etc/reaper/reaper.conf` or via env vars):
-
-```bash
-REAPER_SHIM_LOG=/var/log/reaper-shim.log
-REAPER_RUNTIME_LOG=/var/log/reaper-runtime.log
-```
+See [docs/TESTING.md](docs/TESTING.md) for the complete guide.
 
 ## Known Issues
 
-- **"write on closed stream 0" warning on interactive exit**: When exiting an interactive PTY session (`kubectl run -it ... -- /bin/sh`, then typing `exit`), containerd may log `error stream protocol error: unknown error` and kubectl may print a brief warning. This is a cosmetic race condition in containerd's CRI streaming handler during FIFO teardown and does not affect the workload exit code or pod status.
+- **"write on closed stream 0" warning on interactive exit**: Cosmetic race condition in containerd's CRI streaming handler during FIFO teardown. Does not affect workload exit code or pod status.
 
 ## Contributing
 
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for:
-- Development environment setup
-- Code formatting and linting
-- Git hooks and pre-commit checks
-- CI/CD workflows
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
 
 ## License
 

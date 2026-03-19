@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  labels:
+    app: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  template:
+    metadata:
+      labels:
+        app: node-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+    spec:
+      runtimeClassName: reaper-v2
+      containers:
+        - name: node-exporter
+          image: busybox
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              ARCH=$(uname -m)
+              case "$ARCH" in
+                x86_64)  ARCH_SUFFIX="amd64" ;;
+                aarch64) ARCH_SUFFIX="arm64" ;;
+                *)       echo "Unsupported arch: $ARCH"; exit 1 ;;
+              esac
+
+              VERSION="1.8.2"
+              TARBALL="node_exporter-${VERSION}.linux-${ARCH_SUFFIX}.tar.gz"
+              URL="https://github.com/prometheus/node_exporter/releases/download/v${VERSION}/${TARBALL}"
+
+              echo "=== Downloading node_exporter ${VERSION} (${ARCH_SUFFIX}) ==="
+              if ! command -v node_exporter >/dev/null 2>&1; then
+                curl -fsSL "$URL" -o "/tmp/${TARBALL}"
+                tar xzf "/tmp/${TARBALL}" -C /tmp
+                cp "/tmp/node_exporter-${VERSION}.linux-${ARCH_SUFFIX}/node_exporter" /usr/local/bin/
+                chmod +x /usr/local/bin/node_exporter
+                rm -rf "/tmp/${TARBALL}" "/tmp/node_exporter-${VERSION}.linux-${ARCH_SUFFIX}"
+                echo "=== node_exporter installed ==="
+              else
+                echo "=== node_exporter already installed (shared overlay) ==="
+              fi
+
+              echo "=== Starting node_exporter on $(hostname) ==="
+              exec node_exporter \
+                --web.listen-address=":9100" \
+                --collector.filesystem \
+                --collector.cpu \
+                --collector.meminfo \
+                --collector.netdev \
+                --collector.loadavg \
+                --collector.diskstats
+          ports:
+            - containerPort: 9100
+              name: metrics
+              hostPort: 9100

@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: slurmctld
+  labels:
+    app: slurmctld
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: slurmctld
+  template:
+    metadata:
+      labels:
+        app: slurmctld
+    spec:
+      # Standard container runtime — slurmctld doesn't need host access
+      nodeSelector:
+        role: slurmctld
+      hostname: slurmctld
+      containers:
+        - name: slurmctld
+          image: debian:12
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              echo "=== Installing Slurm controller ==="
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+                munge slurmctld slurm-client 2>&1 | tail -5
+
+              # Create required directories
+              mkdir -p /run/munge /var/log/munge /var/spool/slurmctld /var/log /etc/slurm
+
+              # Set up munge authentication (run as root with --force)
+              cp /etc/munge-key/munge.key /etc/munge/munge.key
+              chmod 400 /etc/munge/munge.key
+              munged --force
+              echo "=== Munge started ==="
+
+              # Copy Slurm config
+              cp /etc/slurm-config/slurm.conf /etc/slurm/slurm.conf
+              cp /etc/slurm-config/cgroup.conf /etc/slurm/cgroup.conf 2>/dev/null || true
+
+              # Start slurmctld in foreground (as root per slurm.conf)
+              echo "=== Starting slurmctld ==="
+              exec slurmctld -D -vv
+          ports:
+            - containerPort: 6817
+              name: slurmctld
+          volumeMounts:
+            - name: slurm-config
+              mountPath: /etc/slurm-config
+              readOnly: true
+            - name: munge-key
+              mountPath: /etc/munge-key
+              readOnly: true
+      volumes:
+        - name: slurm-config
+          configMap:
+            name: slurm-config
+        - name: munge-key
+          secret:
+            secretName: munge-key
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slurmctld
+spec:
+  selector:
+    app: slurmctld
+  ports:
+    - port: 6817
+      targetPort: 6817
+      name: slurmctld
+  clusterIP: None  # Headless — slurmd resolves by hostname
