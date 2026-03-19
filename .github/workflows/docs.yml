@@ -5,11 +5,13 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'examples/README.md'
       - '.github/workflows/docs.yml'
   pull_request:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'examples/README.md'
       - '.github/workflows/docs.yml'
 
 # Allow only one concurrent deployment
@@ -51,6 +53,13 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Check GitHub Pages is enabled
+        run: |
+          echo "If this step fails with a 404, enable GitHub Pages in your repository:"
+          echo "  Settings → Pages → Source: GitHub Actions"
+          echo ""
+          echo "See: https://github.com/miguelgila/reaper/settings/pages"
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
