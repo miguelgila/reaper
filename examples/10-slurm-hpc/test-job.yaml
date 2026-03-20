@@ -39,20 +39,9 @@ spec:
               sinfo
 
               echo ""
-              echo "=== Submitting batch job ==="
-              sbatch --wait --output=/tmp/slurm-out-%j.out --error=/tmp/slurm-err-%j.out \
-                --wrap='echo "Hello from Slurm on $(hostname) at $(date)" && echo "Job completed successfully"'
+              echo "=== Running job via srun ==="
+              srun --nodes=1 bash -c 'echo "Hello from Slurm on $(hostname) at $(date)" && echo "Kernel: $(uname -r)" && echo "Job completed successfully"'
               JOB_EXIT=$?
-
-              echo ""
-              echo "=== Job output ==="
-              cat /tmp/slurm-out-*.out 2>/dev/null || echo "(no output file found)"
-
-              if [ -s /tmp/slurm-err-*.out ] 2>/dev/null; then
-                echo ""
-                echo "=== Job stderr ==="
-                cat /tmp/slurm-err-*.out
-              fi
 
               echo ""
               echo "=== Job queue (should be empty) ==="
