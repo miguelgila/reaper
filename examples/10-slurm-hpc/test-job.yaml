@@ -1,4 +1,4 @@
-# Slurm test: submit a batch job and wait for results.
+# Slurm test: submit a batch job, wait for completion, and verify results.
 # Runs on the slurmctld node (has Slurm client tools).
 apiVersion: batch/v1
 kind: Job
@@ -39,19 +39,29 @@ spec:
               sinfo
 
               echo ""
-              echo "=== Running job via srun ==="
-              srun --nodes=1 bash -c 'echo "Hello from Slurm on $(hostname) at $(date)" && echo "Kernel: $(uname -r)" && echo "Job completed successfully"'
-              JOB_EXIT=$?
+              echo "=== Submitting batch job ==="
+              JOB_ID=$(sbatch --parsable --wrap='hostname && date && echo SUCCESS')
+              echo "Submitted job $JOB_ID"
+
+              # Wait for the job to finish
+              echo "Waiting for job to complete..."
+              for i in $(seq 1 60); do
+                STATE=$(scontrol show job "$JOB_ID" 2>/dev/null | grep -oP 'JobState=\K\S+' || echo "UNKNOWN")
+                if [ "$STATE" = "COMPLETED" ] || [ "$STATE" = "FAILED" ] || [ "$STATE" = "CANCELLED" ]; then
+                  break
+                fi
+                sleep 2
+              done
 
               echo ""
-              echo "=== Job queue (should be empty) ==="
-              squeue --all
+              echo "=== Job details ==="
+              scontrol show job "$JOB_ID"
 
               echo ""
-              if [ "$JOB_EXIT" -eq 0 ]; then
-                echo "=== Test PASSED ==="
+              if [ "$STATE" = "COMPLETED" ]; then
+                echo "=== Test PASSED (job $JOB_ID completed on a compute node) ==="
               else
-                echo "=== Test FAILED (exit code: $JOB_EXIT) ==="
+                echo "=== Test FAILED (job $JOB_ID state: $STATE) ==="
                 exit 1
               fi
           volumeMounts:
