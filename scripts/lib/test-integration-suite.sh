@@ -3298,6 +3298,27 @@ YAML
 }
 
 test_controller_reaperpod_annotations() {
+  # Create the ReaperOverlay first (PVC-like: ReaperPod blocks until overlay is Ready)
+  kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperOverlay
+metadata:
+  name: test-group
+spec:
+  resetPolicy: Manual
+YAML
+
+  # Wait for overlay to be Ready
+  local overlay_phase=""
+  for i in $(seq 1 30); do
+    overlay_phase=$(kubectl get reaperoverlays test-group \
+      -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$overlay_phase" == "Ready" ]]; then
+      break
+    fi
+    sleep 1
+  done
+
   # Create a ReaperPod with dnsMode and overlayName
   kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
 apiVersion: reaper.io/v1alpha1
@@ -3384,6 +3405,7 @@ test_controller_kubectl_get_columns() {
 
 cleanup_controller() {
   kubectl delete reaperpod --all --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete reaperoverlays test-group --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete -f deploy/kubernetes/reaper-controller.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   # Wait for pods to terminate
@@ -3423,8 +3445,7 @@ phase_controller_tests() {
   run_test test_controller_kubectl_get_columns   "kubectl get reaperpods columns"   --hard-fail
   run_test test_controller_gc_on_delete       "GC Pod on ReaperPod delete"          --hard-fail
 
-  # Cleanup controller resources
-  cleanup_controller
+  # NOTE: controller cleanup deferred to after Phase 4c (overlay tests need the controller)
 }
 
 # ---------------------------------------------------------------------------
@@ -3660,7 +3681,7 @@ test_overlay_delete_cleanup() {
   local remaining=""
   for i in $(seq 1 30); do
     remaining=$(kubectl get reaperoverlays test-overlay test-reset nonexistent-overlay \
-      --no-headers 2>/dev/null | grep -v "not found" | wc -l | tr -d ' ' || echo "0")
+      --no-headers 2>&1 | grep -v -e "not found" -e "NotFound" -e "Error" -e "^$" | wc -l | tr -d '[:space:]')
     if [[ "$remaining" -eq 0 ]]; then
       break
     fi
@@ -3700,8 +3721,9 @@ phase_overlay_tests() {
   run_test test_overlay_reset_generation     "ReaperOverlay reset generation"            --hard-fail
   run_test test_overlay_delete_cleanup       "ReaperOverlay delete and finalizer cleanup" --hard-fail
 
-  # Cleanup overlay resources
+  # Cleanup overlay resources, then controller (deferred from Phase 4b)
   cleanup_overlay
+  cleanup_controller
 }
 
 # ---------------------------------------------------------------------------

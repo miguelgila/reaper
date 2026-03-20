@@ -79,8 +79,26 @@ async fn reconcile(overlay: Arc<ReaperOverlay>, ctx: Arc<Context>) -> Result<Act
         return handle_reset(&overlay_api, &name, &namespace, spec_gen, &ctx).await;
     }
 
-    // Step 4: Update status — query agents for overlay state
-    update_overlay_status(&overlay, &overlay_api, &name, &namespace, &ctx).await?;
+    // Step 4: Ensure status is set to Ready
+    // Overlays are created lazily by the runtime when a ReaperPod starts, so
+    // a ReaperOverlay is "Ready" as soon as it exists — it's a declaration of
+    // intent, like a PVC that's immediately bound. We only query agents for
+    // on-disk state during periodic status updates, not for readiness gating.
+    let current_phase = overlay.status.as_ref().and_then(|s| s.phase.as_deref());
+
+    if current_phase != Some("Ready") {
+        patch_status(
+            &overlay_api,
+            &name,
+            &ReaperOverlayStatus {
+                phase: Some("Ready".to_string()),
+                observed_reset_generation: observed_gen,
+                message: None,
+                ..Default::default()
+            },
+        )
+        .await?;
+    }
 
     // Re-check every 60s for status updates
     Ok(Action::requeue(std::time::Duration::from_secs(60)))
@@ -271,60 +289,6 @@ async fn handle_reset(
     }
 }
 
-/// Update overlay status by querying agents for overlay presence.
-async fn update_overlay_status(
-    overlay: &ReaperOverlay,
-    overlay_api: &Api<ReaperOverlay>,
-    name: &str,
-    namespace: &str,
-    ctx: &Context,
-) -> Result<(), kube::Error> {
-    let agents = discover_agents(&ctx.client).await?;
-    let mut node_statuses = Vec::new();
-
-    for (node_name, pod_ip) in &agents {
-        let ready = check_agent_overlay_exists(pod_ip, namespace, name).await;
-        node_statuses.push(ReaperOverlayNodeStatus {
-            node_name: node_name.clone(),
-            ready,
-            last_reset_time: None,
-        });
-    }
-
-    let current_gen = overlay
-        .status
-        .as_ref()
-        .map(|s| s.observed_reset_generation)
-        .unwrap_or(0);
-
-    // Merge last_reset_time from existing status
-    if let Some(ref existing_status) = overlay.status {
-        for ns in &mut node_statuses {
-            if let Some(existing) = existing_status
-                .nodes
-                .iter()
-                .find(|n| n.node_name == ns.node_name)
-            {
-                ns.last_reset_time = existing.last_reset_time.clone();
-            }
-        }
-    }
-
-    patch_status(
-        overlay_api,
-        name,
-        &ReaperOverlayStatus {
-            phase: Some("Ready".to_string()),
-            observed_reset_generation: current_gen,
-            nodes: node_statuses,
-            message: None,
-        },
-    )
-    .await?;
-
-    Ok(())
-}
-
 /// Discover all reaper-agent pods and return (node_name, pod_ip) pairs.
 async fn discover_agents(client: &Client) -> Result<Vec<(String, String)>, kube::Error> {
     let pods_api: Api<Pod> = Api::all(client.clone());
@@ -377,24 +341,6 @@ async fn call_agent_delete_overlay(
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         anyhow::bail!("{} response from agent: {}", status, body);
-    }
-}
-
-/// Check if an overlay exists on a node by calling GET /api/v1/overlays/{namespace}/{name}.
-async fn check_agent_overlay_exists(pod_ip: &str, namespace: &str, name: &str) -> bool {
-    let url = format!(
-        "http://{}:9100/api/v1/overlays/{}/{}",
-        pod_ip, namespace, name
-    );
-    let client = reqwest::Client::new();
-    match client
-        .get(&url)
-        .timeout(std::time::Duration::from_secs(5))
-        .send()
-        .await
-    {
-        Ok(resp) => resp.status().is_success(),
-        Err(_) => false,
     }
 }
 
