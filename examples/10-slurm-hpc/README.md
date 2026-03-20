@@ -65,7 +65,7 @@ kubectl rollout status daemonset/slurmd --timeout=300s
 
 # Submit a test job
 kubectl apply -f examples/10-slurm-hpc/test-job.yaml
-kubectl logs test-slurm-job -f
+kubectl logs job/test-slurm-job -f
 
 # Check overlay status
 kubectl get rovl slurm
