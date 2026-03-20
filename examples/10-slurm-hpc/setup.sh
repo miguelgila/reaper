@@ -127,6 +127,10 @@ KUBECONFIG_FILE="/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
 kind get kubeconfig --name "$CLUSTER_NAME" > "$KUBECONFIG_FILE"
 export KUBECONFIG="$KUBECONFIG_FILE"
 
+# Ensure ReaperOverlay CRD is installed (idempotent — may already exist via Helm)
+info "Ensuring ReaperOverlay CRD is installed"
+kubectl apply -f "$REPO_ROOT/deploy/kubernetes/crds/reaperoverlays.reaper.io.yaml" 2>&1 | if_log
+
 # ---------------------------------------------------------------------------
 # Label nodes
 # ---------------------------------------------------------------------------
@@ -210,6 +214,9 @@ echo "${B}Nodes:${R}"
 kubectl get nodes -o custom-columns='NAME:.metadata.name,STATUS:.status.conditions[-1].type,ROLE:.metadata.labels.role' --no-headers 2>/dev/null | while IFS= read -r line; do
   echo "  $line"
 done
+echo ""
+echo "${B}Connect:${R}"
+echo "  export KUBECONFIG=$KUBECONFIG_FILE"
 echo ""
 echo "Deploy Slurm:"
 echo "  kubectl apply -f examples/10-slurm-hpc/"

@@ -374,6 +374,10 @@ echo "${B}ConfigMap:${R}"
 echo "  $(kubectl get configmap server-config -o jsonpath='{.data}' 2>/dev/null)"
 
 echo ""
+echo "${B}Connect:${R}"
+echo "  export KUBECONFIG=/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
+
+echo ""
 echo "${C}────────────────────────────────────────${R}"
 echo ""
 echo "Run the demo:"

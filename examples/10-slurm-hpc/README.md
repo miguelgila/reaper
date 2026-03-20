@@ -45,6 +45,7 @@ Standard containers would isolate slurmd from the resources it needs to manage.
 - [kind](https://kind.sigs.k8s.io/)
 - kubectl
 - [Helm](https://helm.sh/)
+- ReaperOverlay CRD installed (included in Helm chart, or `kubectl apply -f deploy/kubernetes/crds/reaperoverlays.reaper.io.yaml`)
 
 ## Usage
 
