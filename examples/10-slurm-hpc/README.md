@@ -53,8 +53,8 @@ Standard containers would isolate slurmd from the resources it needs to manage.
 # Create the cluster (generates slurm-config with actual node names)
 ./examples/10-slurm-hpc/setup.sh
 
-# Deploy Slurm components
-kubectl apply -f examples/10-slurm-hpc/slurm-overlay.yaml   # ReaperOverlay (shared overlay for slurmd)
+# Deploy Slurm components (setup.sh generates slurm-config with real node names)
+kubectl apply -f examples/10-slurm-hpc/slurm-overlay.yaml
 kubectl apply -f examples/10-slurm-hpc/munge-secret.yaml
 kubectl apply -f examples/10-slurm-hpc/slurmctld-deployment.yaml
 kubectl apply -f examples/10-slurm-hpc/slurmd-daemonset.yaml
