@@ -3401,6 +3401,14 @@ test_controller_kubectl_get_columns() {
     log_error "Missing EXIT CODE column in kubectl get reaperpods output"
     return 1
   }
+
+  # Verify shortName "rpod" works
+  local short_output
+  short_output=$(kubectl get rpod 2>&1 || true)
+  echo "$short_output" | grep -q "PHASE" || {
+    log_error "shortName 'rpod' not working (kubectl get rpod)"
+    return 1
+  }
 }
 
 cleanup_controller() {
@@ -3538,6 +3546,14 @@ test_overlay_kubectl_get_columns() {
   }
   echo "$output" | grep -q "AGE" || {
     log_error "Missing AGE column in kubectl get reaperoverlays output"
+    return 1
+  }
+
+  # Verify shortName "rovl" works
+  local short_output
+  short_output=$(kubectl get rovl 2>&1 || true)
+  echo "$short_output" | grep -q "PHASE" || {
+    log_error "shortName 'rovl' not working (kubectl get rovl)"
     return 1
   }
 }
