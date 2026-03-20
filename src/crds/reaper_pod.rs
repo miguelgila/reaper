@@ -15,7 +15,8 @@ use std::collections::BTreeMap;
     printcolumn = r#"{"name":"Phase", "type":"string", "jsonPath":".status.phase"}"#,
     printcolumn = r#"{"name":"Node", "type":"string", "jsonPath":".status.nodeName"}"#,
     printcolumn = r#"{"name":"Exit Code", "type":"integer", "jsonPath":".status.exitCode"}"#,
-    printcolumn = r#"{"name":"Age", "type":"date", "jsonPath":".metadata.creationTimestamp"}"#
+    printcolumn = r#"{"name":"Age", "type":"date", "jsonPath":".metadata.creationTimestamp"}"#,
+    shortname = "rpod"
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ReaperPodSpec {

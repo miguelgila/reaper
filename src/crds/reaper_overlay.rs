@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
     printcolumn = r#"{"name":"Phase", "type":"string", "jsonPath":".status.phase"}"#,
     printcolumn = r#"{"name":"Reset Gen", "type":"integer", "jsonPath":".spec.resetGeneration"}"#,
     printcolumn = r#"{"name":"Observed", "type":"integer", "jsonPath":".status.observedResetGeneration"}"#,
-    printcolumn = r#"{"name":"Age", "type":"date", "jsonPath":".metadata.creationTimestamp"}"#
+    printcolumn = r#"{"name":"Age", "type":"date", "jsonPath":".metadata.creationTimestamp"}"#,
+    shortname = "rovl"
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ReaperOverlaySpec {

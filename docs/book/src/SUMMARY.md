@@ -28,5 +28,5 @@
 # Reference
 
 - [Examples](examples.md)
-- [ReaperPod CRD](reference/crds.md)
+- [Custom Resource Definitions](reference/crds.md)
 - [Helm Chart](reference/helm-chart.md)

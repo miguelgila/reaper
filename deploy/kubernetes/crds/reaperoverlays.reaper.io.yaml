@@ -7,6 +7,8 @@ spec:
   names:
     kind: ReaperOverlay
     plural: reaperoverlays
+    shortNames:
+    - rovl
     singular: reaperoverlay
   scope: Namespaced
   versions:
