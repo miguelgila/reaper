@@ -1,14 +1,14 @@
-# Composable vServices: two ReaperDaemonJobs sharing an overlay.
+# Composable node config: two ReaperDaemonJobs sharing an overlay.
 #
 # The first job mounts a filesystem, the second installs packages on it.
-# Both share the "vservice-base" overlay so changes from the first are
+# Both share the "node-config" overlay so changes from the first are
 # visible to the second. The `after` field ensures ordering.
 #
 # Prerequisites:
 #   - Reaper installed on target nodes
 #   - CRDs installed via Helm chart or kubectl apply
 #   - Controller running
-#   - ReaperOverlay "vservice-base" created (optional, for PVC-like blocking)
+#   - ReaperOverlay "node-config" created (optional, for PVC-like blocking)
 #
 # Usage:
 #   kubectl apply -f composable-vservices.yaml
@@ -25,7 +25,7 @@ spec:
       echo "Mounting shared filesystems..."
       mkdir -p /mnt/shared
       echo "Filesystems mounted on $(hostname)"
-  overlayName: vservice-base
+  overlayName: node-config
   nodeSelector:
     role: compute
 ---
@@ -39,7 +39,7 @@ spec:
     - |
       echo "Installing packages on $(hostname)..."
       echo "Packages installed successfully"
-  overlayName: vservice-base
+  overlayName: node-config
   after:
     - mount-filesystems
   nodeSelector:
