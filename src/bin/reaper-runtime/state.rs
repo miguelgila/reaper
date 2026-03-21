@@ -102,6 +102,18 @@ pub fn pid_path(id: &str) -> PathBuf {
     container_dir(id).join("pid")
 }
 
+/// Path for PTY resize signaling (shim writes width/height, runtime reads)
+#[cfg(target_os = "linux")]
+pub fn resize_path(id: &str) -> PathBuf {
+    container_dir(id).join("resize")
+}
+
+/// Path for exec PTY resize signaling
+#[cfg(target_os = "linux")]
+pub fn exec_resize_path(container_id: &str, exec_id: &str) -> PathBuf {
+    container_dir(container_id).join(format!("exec-{}-resize", exec_id))
+}
+
 pub fn save_state(state: &ContainerState) -> anyhow::Result<()> {
     validate_id(&state.id)?;
     let dir = container_dir(&state.id);

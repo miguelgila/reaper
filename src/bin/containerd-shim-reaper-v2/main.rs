@@ -1486,8 +1486,32 @@ impl Task for ReaperTask {
             "resize_pty() called - container_id={}, exec_id={}, width={}, height={}",
             req.id, req.exec_id, req.width, req.height
         );
-        // TODO: Propagate window size to PTY master (requires IPC with runtime daemon)
-        // For now, return success - terminal works but won't resize dynamically
+
+        if req.width == 0 && req.height == 0 {
+            return Ok(api::Empty::new());
+        }
+
+        // Write resize dimensions to a file the runtime daemon polls.
+        // For exec processes, use exec-specific resize file.
+        let resize_file = if req.exec_id.is_empty() {
+            format!("{}/{}/resize", runtime_state_dir(), req.id)
+        } else {
+            format!(
+                "{}/{}/exec-{}-resize",
+                runtime_state_dir(),
+                req.id,
+                req.exec_id
+            )
+        };
+
+        let content = format!("{} {}\n", req.width, req.height);
+        if let Err(e) = std::fs::write(&resize_file, content) {
+            warn!(
+                "resize_pty() - failed to write resize file {}: {}",
+                resize_file, e
+            );
+        }
+
         Ok(api::Empty::new())
     }
 

@@ -366,7 +366,7 @@ cargo clippy --target x86_64-unknown-linux-gnu --all-targets
 
 ### 🔄 Known Limitations
 - Multi-container pods not fully tested
-- ResizePty returns OK but is no-op (no dynamic PTY resize)
+- ResizePty polling interval is 100ms (resize may not feel instant)
 - No cgroup resource limits (by design)
 - No namespace isolation (by design)
 - Volume mounts are shared across all workloads (no per-container isolation)
