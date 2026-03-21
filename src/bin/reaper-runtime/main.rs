@@ -13,6 +13,8 @@ use state::{
     delete as delete_state, load_exec_state, load_pid, load_state, save_exec_state, save_pid,
     save_state, ContainerState, OciUser,
 };
+#[cfg(target_os = "linux")]
+use state::{exec_resize_path, resize_path};
 
 #[cfg(target_os = "linux")]
 mod overlay;
@@ -241,6 +243,58 @@ fn exit_code_from_status(status: std::process::ExitStatus) -> i32 {
         Some(sig) => 128 + sig,
         None => 1,
     }
+}
+
+/// Spawn a thread that polls a resize file and applies `TIOCSWINSZ` to the PTY master.
+///
+/// The shim writes `"width height\n"` to `resize_file`. This thread polls every 100ms,
+/// reads the dimensions, applies them via ioctl, then deletes the file. The thread exits
+/// when `stop` is set to `true` (signaled by the caller after the child process exits).
+#[cfg(target_os = "linux")]
+fn spawn_resize_watcher(
+    master_raw_fd: i32,
+    resize_file: PathBuf,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    std::thread::spawn(move || {
+        use std::sync::atomic::Ordering;
+        while !stop.load(Ordering::Relaxed) {
+            if resize_file.exists() {
+                if let Ok(content) = fs::read_to_string(&resize_file) {
+                    let _ = fs::remove_file(&resize_file);
+                    let parts: Vec<&str> = content.split_whitespace().collect();
+                    if parts.len() == 2 {
+                        if let (Ok(width), Ok(height)) =
+                            (parts[0].parse::<u16>(), parts[1].parse::<u16>())
+                        {
+                            let ws = nix::libc::winsize {
+                                ws_row: height,
+                                ws_col: width,
+                                ws_xpixel: 0,
+                                ws_ypixel: 0,
+                            };
+                            let ret = unsafe {
+                                nix::libc::ioctl(
+                                    master_raw_fd,
+                                    nix::libc::TIOCSWINSZ as _,
+                                    &ws as *const nix::libc::winsize,
+                                )
+                            };
+                            if ret < 0 {
+                                tracing::warn!(
+                                    "TIOCSWINSZ failed: {}",
+                                    std::io::Error::last_os_error()
+                                );
+                            } else {
+                                tracing::debug!("PTY resized to {}x{}", width, height);
+                            }
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -658,12 +712,30 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                         // Close slave in parent - child has it via dup2
                         drop(pty.slave);
 
+                        // Capture master raw fd for resize ioctl before converting to File
+                        #[cfg(target_os = "linux")]
+                        let master_raw_fd = {
+                            use std::os::unix::io::AsRawFd;
+                            pty.master.as_raw_fd()
+                        };
+
                         // Convert PTY master OwnedFd to File for I/O
                         let master_file: std::fs::File = pty.master.into();
                         let master_clone = master_file.try_clone().unwrap_or_else(|e| {
                             tracing::error!("failed to clone master fd: {}", e);
                             std::process::exit(1);
                         });
+
+                        // Start PTY resize watcher thread
+                        #[cfg(target_os = "linux")]
+                        let resize_stop =
+                            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        #[cfg(target_os = "linux")]
+                        spawn_resize_watcher(
+                            master_raw_fd,
+                            resize_path(&container_id),
+                            resize_stop.clone(),
+                        );
 
                         // Relay: stdin FIFO → PTY master (user input to process)
                         if let Some(ref state) = io_state {
@@ -746,6 +818,8 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
 
                         match child.wait() {
                             Ok(exit_status) => {
+                                #[cfg(target_os = "linux")]
+                                resize_stop.store(true, std::sync::atomic::Ordering::Relaxed);
                                 let exit_code = exit_code_from_status(exit_status);
                                 if let Ok(mut state) = load_state(&container_id) {
                                     state.status = "stopped".into();
@@ -754,6 +828,8 @@ fn do_start(id: &str, bundle: &Path) -> Result<()> {
                                 }
                             }
                             Err(_e) => {
+                                #[cfg(target_os = "linux")]
+                                resize_stop.store(true, std::sync::atomic::Ordering::Relaxed);
                                 if let Ok(mut state) = load_state(&container_id) {
                                     state.status = "stopped".into();
                                     state.exit_code = Some(1);
@@ -1167,12 +1243,29 @@ fn exec_with_pty(
     // Close slave in parent - child has it via dup2
     drop(pty.slave);
 
+    // Capture master raw fd for resize ioctl before converting to File
+    #[cfg(target_os = "linux")]
+    let master_raw_fd = {
+        use std::os::unix::io::AsRawFd;
+        pty.master.as_raw_fd()
+    };
+
     // Convert PTY master OwnedFd to File for I/O
     let master_file: std::fs::File = pty.master.into();
     let master_clone = master_file.try_clone().unwrap_or_else(|e| {
         tracing::error!("failed to clone master fd: {}", e);
         std::process::exit(1);
     });
+
+    // Start PTY resize watcher thread
+    #[cfg(target_os = "linux")]
+    let resize_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    #[cfg(target_os = "linux")]
+    spawn_resize_watcher(
+        master_raw_fd,
+        exec_resize_path(container_id, exec_id),
+        resize_stop.clone(),
+    );
 
     // Start relay threads
     // stdin FIFO → PTY master (user input to process)
@@ -1226,10 +1319,13 @@ fn exec_with_pty(
     }
 
     // Wait for child
-    match child.wait() {
+    let exit = match child.wait() {
         Ok(status) => exit_code_from_status(status),
         Err(_) => 1,
-    }
+    };
+    #[cfg(target_os = "linux")]
+    resize_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    exit
 }
 
 #[allow(clippy::too_many_arguments)]

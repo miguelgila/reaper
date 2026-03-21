@@ -110,7 +110,7 @@ service Task {
 | Pause/Resume | ⚠️ | Returns OK but no-op (no cgroup freezer) |
 | Checkpoint | ⚠️ | Not implemented (no CRIU) |
 | Exec | ✅ | Implemented with PTY support |
-| ResizePty | ⚠️ | Returns OK but no-op (no dynamic resize) |
+| ResizePty | ✅ | Shim writes dimensions to resize file, runtime daemon applies via TIOCSWINSZ |
 | CloseIO | ⚠️ | Not implemented |
 | Update | ⚠️ | Not implemented (no cgroups) |
 

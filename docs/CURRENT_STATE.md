@@ -262,7 +262,7 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for development setup and [TESTING.md](TEST
 ### ⏳ Not Started
 - [ ] User/group ID management (currently disabled)
 - [ ] Signal handling robustness
-- [ ] Dynamic PTY resize (ResizePty)
+- [x] Dynamic PTY resize (ResizePty)
 - [ ] Resource monitoring (stats)
 - [ ] Performance optimization
 
