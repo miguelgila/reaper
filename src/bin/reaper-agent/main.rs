@@ -11,6 +11,7 @@ mod health;
 mod jobs;
 mod metrics;
 mod node_condition;
+mod overlay_api;
 mod overlay_gc;
 
 // config.rs is available as shared module but not needed by the agent

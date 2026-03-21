@@ -45,6 +45,7 @@ Standard containers would isolate slurmd from the resources it needs to manage.
 - [kind](https://kind.sigs.k8s.io/)
 - kubectl
 - [Helm](https://helm.sh/)
+- ReaperOverlay CRD installed (included in Helm chart, or `kubectl apply -f deploy/kubernetes/crds/reaperoverlays.reaper.io.yaml`)
 
 ## Usage
 
@@ -52,7 +53,8 @@ Standard containers would isolate slurmd from the resources it needs to manage.
 # Create the cluster (generates slurm-config with actual node names)
 ./examples/10-slurm-hpc/setup.sh
 
-# Deploy Slurm components
+# Deploy Slurm components (setup.sh generates slurm-config with real node names)
+kubectl apply -f examples/10-slurm-hpc/slurm-overlay.yaml
 kubectl apply -f examples/10-slurm-hpc/munge-secret.yaml
 kubectl apply -f examples/10-slurm-hpc/slurmctld-deployment.yaml
 kubectl apply -f examples/10-slurm-hpc/slurmd-daemonset.yaml
@@ -63,9 +65,31 @@ kubectl rollout status daemonset/slurmd --timeout=300s
 
 # Submit a test job
 kubectl apply -f examples/10-slurm-hpc/test-job.yaml
-kubectl logs test-slurm-job -f
+kubectl logs job/test-slurm-job -f
+
+# Check overlay status
+kubectl get rovl slurm
 
 # Clean up
 kubectl delete -f examples/10-slurm-hpc/
 ./examples/10-slurm-hpc/setup.sh --cleanup
+```
+
+## Troubleshooting
+
+### Corrupt overlay (broken dpkg state)
+
+If a package installation fails (e.g., dpkg post-install script error), the shared overlay may be left in a broken state. All subsequent slurmd pods will inherit the broken state.
+
+Reset the overlay without node access:
+
+```bash
+# Reset the overlay (kills helper, removes overlay dirs on all nodes)
+kubectl patch rovl slurm --type merge -p '{"spec":{"resetGeneration":1}}'
+
+# Watch until phase returns to Ready
+kubectl get rovl slurm -w
+
+# Restart slurmd pods to pick up the clean overlay
+kubectl rollout restart daemonset/slurmd
 ```

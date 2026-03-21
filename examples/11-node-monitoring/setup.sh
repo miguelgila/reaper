@@ -121,6 +121,9 @@ kubectl get nodes -o wide --no-headers 2>/dev/null | while IFS= read -r line; do
   echo "  $line"
 done
 echo ""
+echo "${B}Connect:${R}"
+echo "  export KUBECONFIG=$KUBECONFIG_FILE"
+echo ""
 echo "Deploy monitoring:"
 echo "  kubectl apply -f examples/11-node-monitoring/"
 echo ""

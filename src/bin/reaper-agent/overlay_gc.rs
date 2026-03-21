@@ -561,6 +561,33 @@ pub async fn run_overlay_gc(
     Ok(())
 }
 
+// --- Public wrappers for overlay_api.rs ---
+
+/// Public wrapper: check if any running containers reference a namespace.
+pub fn has_running_containers_pub(state_dir: &str, namespace: &str) -> bool {
+    has_running_containers(state_dir, namespace)
+}
+
+/// Public wrapper: read a PID file.
+pub fn read_pid_file_pub(path: &std::path::Path) -> Option<(i32, u64)> {
+    read_pid_file(path)
+}
+
+/// Public wrapper: check if a PID is alive.
+pub fn is_pid_alive_pub(pid: i32) -> bool {
+    is_pid_alive(pid)
+}
+
+/// Public wrapper: kill a helper process.
+pub fn kill_helper_pub(pid: i32) {
+    kill_helper(pid);
+}
+
+/// Public wrapper: try to unmount a path.
+pub fn try_unmount_pub(path: &std::path::Path) {
+    try_unmount(path);
+}
+
 /// Run overlay GC in a loop at the configured interval.
 pub async fn overlay_gc_loop(state_dir: &str, interval_secs: u64, metrics: &MetricsState) {
     let client = match Client::try_default().await {

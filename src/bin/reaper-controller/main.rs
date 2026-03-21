@@ -3,6 +3,7 @@ use tokio::signal;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod overlay_reconciler;
 mod pod_builder;
 mod reconciler;
 
@@ -41,10 +42,15 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     if cli.generate_crds {
-        let crd = serde_json::to_string_pretty(
+        let pod_crd = serde_json::to_string_pretty(
             &<reaper::crds::ReaperPod as kube::CustomResourceExt>::crd(),
         )?;
-        println!("{crd}");
+        let overlay_crd = serde_json::to_string_pretty(
+            &<reaper::crds::ReaperOverlay as kube::CustomResourceExt>::crd(),
+        )?;
+        println!("{pod_crd}");
+        eprintln!("---");
+        println!("{overlay_crd}");
         return Ok(());
     }
 
@@ -52,11 +58,19 @@ async fn main() -> anyhow::Result<()> {
 
     let client = kube::Client::try_default().await?;
 
-    // Run controller with graceful shutdown
+    // Run both controllers with graceful shutdown
+    let reaperpod_client = client.clone();
+    let overlay_client = client.clone();
+
     tokio::select! {
-        result = reconciler::run(client) => {
+        result = reconciler::run(reaperpod_client) => {
             if let Err(e) = result {
-                tracing::error!(error = %e, "controller exited with error");
+                tracing::error!(error = %e, "ReaperPod controller exited with error");
+            }
+        }
+        result = overlay_reconciler::run(overlay_client) => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "ReaperOverlay controller exited with error");
             }
         }
         _ = signal::ctrl_c() => {

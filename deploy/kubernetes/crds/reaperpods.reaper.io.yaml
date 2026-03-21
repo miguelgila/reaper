@@ -7,6 +7,8 @@ spec:
   names:
     kind: ReaperPod
     plural: reaperpods
+    shortNames:
+    - rpod
     singular: reaperpod
   scope: Namespaced
   versions:

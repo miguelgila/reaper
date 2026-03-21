@@ -127,6 +127,11 @@ KUBECONFIG_FILE="/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
 kind get kubeconfig --name "$CLUSTER_NAME" > "$KUBECONFIG_FILE"
 export KUBECONFIG="$KUBECONFIG_FILE"
 
+# Ensure ReaperOverlay CRD is installed (idempotent — may already exist via Helm)
+info "Ensuring ReaperOverlay CRD is installed"
+kubectl apply -f "$REPO_ROOT/deploy/kubernetes/crds/reaperoverlays.reaper.io.yaml" >> "$LOG_FILE" 2>&1
+ok "ReaperOverlay CRD installed"
+
 # ---------------------------------------------------------------------------
 # Label nodes
 # ---------------------------------------------------------------------------
@@ -211,8 +216,19 @@ kubectl get nodes -o custom-columns='NAME:.metadata.name,STATUS:.status.conditio
   echo "  $line"
 done
 echo ""
+echo "${B}Connect:${R}"
+echo "  export KUBECONFIG=$KUBECONFIG_FILE"
+echo ""
 echo "Deploy Slurm:"
-echo "  kubectl apply -f examples/10-slurm-hpc/"
+echo "  kubectl apply -f examples/10-slurm-hpc/slurm-overlay.yaml"
+echo "  kubectl apply -f examples/10-slurm-hpc/munge-secret.yaml"
+echo "  kubectl apply -f examples/10-slurm-hpc/slurmctld-deployment.yaml"
+echo "  kubectl apply -f examples/10-slurm-hpc/slurmd-daemonset.yaml"
+echo ""
+echo "Test:"
+echo "  kubectl delete job test-slurm-job --ignore-not-found"
+echo "  kubectl apply -f examples/10-slurm-hpc/test-job.yaml"
+echo "  kubectl logs job/test-slurm-job -f"
 echo ""
 echo "Clean up:"
 echo "  ./examples/10-slurm-hpc/setup.sh --cleanup"

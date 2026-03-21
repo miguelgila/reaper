@@ -274,6 +274,10 @@ echo "${B}RuntimeClass:${R}"
 echo "  $(kubectl get runtimeclass reaper-v2 -o custom-columns='NAME:.metadata.name,HANDLER:.handler' --no-headers 2>/dev/null)"
 
 echo ""
+echo "${B}Connect:${R}"
+echo "  export KUBECONFIG=/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
+
+echo ""
 echo "${B}Node labels:${R}"
 for node in $(kubectl get nodes --no-headers -o custom-columns=NAME:.metadata.name); do
   role_label=$(kubectl get node "$node" -o jsonpath='{.metadata.labels.node-role}' 2>/dev/null)

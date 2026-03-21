@@ -1,0 +1,12 @@
+# ReaperOverlay for the shared Slurm overlay filesystem.
+# All slurmd DaemonSet pods share this overlay, so packages installed by one
+# pod (e.g., munge, slurmd) are visible to subsequent pods on the same node.
+#
+# To reset a corrupt overlay (e.g., broken dpkg state):
+#   kubectl patch rovl slurm --type merge -p '{"spec":{"resetGeneration":1}}'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperOverlay
+metadata:
+  name: slurm
+spec:
+  resetPolicy: Manual

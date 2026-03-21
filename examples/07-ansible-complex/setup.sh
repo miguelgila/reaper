@@ -341,6 +341,10 @@ echo "${B}RuntimeClass:${R}"
 echo "  $(kubectl get runtimeclass reaper-v2 -o custom-columns='NAME:.metadata.name,HANDLER:.handler' --no-headers 2>/dev/null)"
 
 echo ""
+echo "${B}Connect:${R}"
+echo "  export KUBECONFIG=/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
+
+echo ""
 echo "${C}────────────────────────────────────────${R}"
 echo ""
 echo "Run the demo (single apply — init containers handle ordering):"

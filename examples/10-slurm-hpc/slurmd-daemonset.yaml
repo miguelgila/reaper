@@ -36,8 +36,7 @@ spec:
               echo "=== Installing Slurm worker daemon ==="
 
               # Install slurmd and munge (persists in shared overlay)
-              # Note: runs as root — Reaper overlay filters /etc/gshadow which
-              # prevents user creation (see github.com/miguelgila/reaper/issues/41)
+              # Requires ReaperOverlay "slurm" to exist (kubectl get rovl)
               if ! command -v slurmd >/dev/null 2>&1; then
                 apt-get update -qq
                 # Fix any broken dpkg state from prior runs

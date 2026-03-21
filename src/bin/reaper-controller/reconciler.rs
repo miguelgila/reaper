@@ -9,7 +9,7 @@ use kube::{
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
-use reaper::crds::{ReaperPod, ReaperPodStatus};
+use reaper::crds::{ReaperOverlay, ReaperPod, ReaperPodStatus};
 
 use crate::pod_builder::{self, OWNER_LABEL};
 
@@ -63,6 +63,63 @@ async fn reconcile(rp: Arc<ReaperPod>, ctx: Arc<Context>) -> Result<Action, kube
         .await?;
 
     if owned_pods.items.is_empty() {
+        // PVC-like check: if overlayName is set, require a Ready ReaperOverlay
+        if let Some(ref overlay_name) = rp.spec.overlay_name {
+            let overlay_api: Api<ReaperOverlay> = Api::namespaced(ctx.client.clone(), &namespace);
+            match overlay_api.get(overlay_name).await {
+                Ok(overlay) => {
+                    let phase = overlay
+                        .status
+                        .as_ref()
+                        .and_then(|s| s.phase.as_deref())
+                        .unwrap_or("Pending");
+                    if phase != "Ready" {
+                        info!(
+                            name = %name,
+                            overlay = %overlay_name,
+                            overlay_phase = %phase,
+                            "ReaperOverlay not Ready, keeping ReaperPod Pending"
+                        );
+                        let status = ReaperPodStatus {
+                            phase: Some("Pending".to_string()),
+                            message: Some(format!(
+                                "Waiting for ReaperOverlay '{}' to be Ready (current: {})",
+                                overlay_name, phase
+                            )),
+                            ..Default::default()
+                        };
+                        patch_status(&rp_api, &name, &status).await?;
+                        return Ok(Action::requeue(std::time::Duration::from_secs(5)));
+                    }
+                }
+                Err(kube::Error::Api(ref resp)) if resp.code == 404 => {
+                    info!(
+                        name = %name,
+                        overlay = %overlay_name,
+                        "ReaperOverlay not found, keeping ReaperPod Pending"
+                    );
+                    let status = ReaperPodStatus {
+                        phase: Some("Pending".to_string()),
+                        message: Some(format!(
+                            "Waiting for ReaperOverlay '{}' to be created",
+                            overlay_name
+                        )),
+                        ..Default::default()
+                    };
+                    patch_status(&rp_api, &name, &status).await?;
+                    return Ok(Action::requeue(std::time::Duration::from_secs(5)));
+                }
+                Err(e) => {
+                    warn!(
+                        name = %name,
+                        overlay = %overlay_name,
+                        error = %e,
+                        "failed to check ReaperOverlay, proceeding anyway"
+                    );
+                }
+            }
+        }
+
         // No Pod yet — create one
         let pod = pod_builder::build_pod(&rp)
             .map_err(|e| kube::Error::Service(std::io::Error::other(e).into()))?;

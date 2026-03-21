@@ -341,6 +341,10 @@ echo "  Secret:    app-credentials  (username, password, api-key)"
 echo "  hostPath:  /opt/reaper-demo/html on $DEMO_NODE"
 
 echo ""
+echo "${B}Connect:${R}"
+echo "  export KUBECONFIG=/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
+
+echo ""
 echo "${C}────────────────────────────────────────${R}"
 echo ""
 echo "${Y}NOTE:${R} Reaper workloads share a single overlay namespace per node."

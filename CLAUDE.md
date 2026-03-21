@@ -413,6 +413,19 @@ order, rebuilding node state from scratch. No configuration drift.
 **Controller layering:** `ReaperDaemonJob → ReaperPod → Pod`. No changes to existing
 runtime or reaper-controller — only a new controller/reconciler for the new CRD.
 
+## ReaperOverlay CRD (In Progress)
+
+A PVC-like CRD that decouples overlay lifecycle from pod lifecycle. See
+[docs/REAPER_OVERLAY_PLAN.md](docs/REAPER_OVERLAY_PLAN.md) for the full implementation plan.
+
+**Key design decisions:**
+- PVC-like blocking: ReaperPods with `overlayName` stay Pending until a matching `ReaperOverlay` is Ready
+- Reset via `spec.resetGeneration` counter (monotonic, no race conditions)
+- Deletion triggers on-disk cleanup on all nodes via finalizer
+- Controller-to-agent communication: direct HTTP (v1). **Future nice-to-have**: annotation-based
+  communication (controller sets annotations on agent pods, agent watches and acts) for environments
+  where network policies prevent direct controller→agent HTTP calls.
+
 ## Documentation Map
 
 - **[README.md](README.md)** - Project overview, quick start, features
