@@ -3737,8 +3737,237 @@ phase_overlay_tests() {
   run_test test_overlay_reset_generation     "ReaperOverlay reset generation"            --hard-fail
   run_test test_overlay_delete_cleanup       "ReaperOverlay delete and finalizer cleanup" --hard-fail
 
-  # Cleanup overlay resources, then controller (deferred from Phase 4b)
+  # Cleanup overlay resources (controller cleanup deferred to after Phase 4d)
   cleanup_overlay
+}
+
+# ---------------------------------------------------------------------------
+# Phase 4d: ReaperDaemonJob CRD tests
+# ---------------------------------------------------------------------------
+
+test_daemon_job_crd_install() {
+  # CRD is installed by Helm during setup. Apply idempotently in case of reruns.
+  kubectl apply -f deploy/kubernetes/crds/reaperdaemonjobs.reaper.io.yaml >> "$LOG_FILE" 2>&1
+
+  # Verify CRD is established
+  local established=""
+  for i in $(seq 1 15); do
+    established=$(kubectl get crd reaperdaemonjobs.reaper.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)
+    if [[ "$established" == "True" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ "$established" == "True" ]] || {
+    log_error "CRD reaperdaemonjobs.reaper.io not established after 15s"
+    return 1
+  }
+
+  # Verify we can list ReaperDaemonJobs
+  kubectl get reaperdaemonjobs --all-namespaces --no-headers >> "$LOG_FILE" 2>&1 || {
+    log_error "Cannot list ReaperDaemonJobs"
+    return 1
+  }
+}
+
+test_daemon_job_simple() {
+  # Create a simple ReaperDaemonJob that runs on all nodes
+  kubectl apply -f - <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperDaemonJob
+metadata:
+  name: test-simple-djob
+spec:
+  command: ["/bin/sh", "-c"]
+  args:
+    - echo "hello-from-daemonjob on $(hostname)"
+YAML
+
+  # Wait for ReaperPods to be created (one per ready node)
+  local rp_count=0
+  for i in $(seq 1 30); do
+    rp_count=$(kubectl get reaperpods -l reaper.io/daemon-job=test-simple-djob --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    if [[ "$rp_count" -ge 1 ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ "$rp_count" -ge 1 ]] || {
+    log_error "No ReaperPods created for ReaperDaemonJob test-simple-djob after 30s"
+    return 1
+  }
+  log_verbose "ReaperDaemonJob created $rp_count ReaperPod(s)"
+}
+
+test_daemon_job_status_tracking() {
+  # Wait for the DaemonJob to complete (all nodes Succeeded)
+  local phase=""
+  for i in $(seq 1 60); do
+    phase=$(kubectl get reaperdaemonjob test-simple-djob -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$phase" == "Completed" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$phase" == "Completed" ]] || {
+    log_error "Expected ReaperDaemonJob phase=Completed, got '$phase'"
+    return 1
+  }
+
+  # Verify ready/total counts match
+  local ready total
+  ready=$(kubectl get reaperdaemonjob test-simple-djob -o jsonpath='{.status.readyNodes}' 2>/dev/null || echo "0")
+  total=$(kubectl get reaperdaemonjob test-simple-djob -o jsonpath='{.status.totalNodes}' 2>/dev/null || echo "0")
+  [[ "$ready" -eq "$total" && "$total" -ge 1 ]] || {
+    log_error "Expected readyNodes == totalNodes >= 1, got ready=$ready total=$total"
+    return 1
+  }
+  log_verbose "ReaperDaemonJob completed: $ready/$total nodes"
+}
+
+test_daemon_job_node_statuses() {
+  # Verify per-node status entries exist with Succeeded phase
+  local node_count
+  node_count=$(kubectl get reaperdaemonjob test-simple-djob \
+    -o jsonpath='{.status.nodeStatuses}' 2>/dev/null | python3 -c "import sys,json; print(len(json.loads(sys.stdin.read())))" 2>/dev/null || echo "0")
+  [[ "$node_count" -ge 1 ]] || {
+    log_error "Expected at least 1 nodeStatus entry, got $node_count"
+    return 1
+  }
+
+  # Check first node has Succeeded phase
+  local node_phase
+  node_phase=$(kubectl get reaperdaemonjob test-simple-djob \
+    -o jsonpath='{.status.nodeStatuses[0].phase}' 2>/dev/null || true)
+  [[ "$node_phase" == "Succeeded" ]] || {
+    log_error "Expected first node phase=Succeeded, got '$node_phase'"
+    return 1
+  }
+}
+
+test_daemon_job_kubectl_columns() {
+  # Verify custom printer columns
+  local output
+  output=$(kubectl get reaperdaemonjobs 2>&1 || true)
+  echo "$output" | grep -qi "PHASE" || {
+    log_error "Missing PHASE column in kubectl get reaperdaemonjobs output"
+    return 1
+  }
+  echo "$output" | grep -qi "READY" || {
+    log_error "Missing READY column in kubectl get reaperdaemonjobs output"
+    return 1
+  }
+  echo "$output" | grep -qi "TOTAL" || {
+    log_error "Missing TOTAL column in kubectl get reaperdaemonjobs output"
+    return 1
+  }
+}
+
+test_daemon_job_dependency_ordering() {
+  # Create two DaemonJobs where the second depends on the first
+  kubectl apply -f - <<'YAML'
+apiVersion: reaper.io/v1alpha1
+kind: ReaperDaemonJob
+metadata:
+  name: test-djob-dep-first
+spec:
+  command: ["/bin/sh", "-c"]
+  args: ["echo step-1-done"]
+---
+apiVersion: reaper.io/v1alpha1
+kind: ReaperDaemonJob
+metadata:
+  name: test-djob-dep-second
+spec:
+  command: ["/bin/sh", "-c"]
+  args: ["echo step-2-done"]
+  after:
+    - test-djob-dep-first
+YAML
+
+  # Wait for the first to complete
+  local phase=""
+  for i in $(seq 1 60); do
+    phase=$(kubectl get reaperdaemonjob test-djob-dep-first -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$phase" == "Completed" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$phase" == "Completed" ]] || {
+    log_error "Dependency job test-djob-dep-first did not complete, phase='$phase'"
+    return 1
+  }
+
+  # Now the second should eventually complete too
+  for i in $(seq 1 60); do
+    phase=$(kubectl get reaperdaemonjob test-djob-dep-second -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    if [[ "$phase" == "Completed" ]]; then
+      break
+    fi
+    sleep 2
+  done
+  [[ "$phase" == "Completed" ]] || {
+    log_error "Dependent job test-djob-dep-second did not complete, phase='$phase'"
+    return 1
+  }
+  log_verbose "Dependency ordering works: first completed, then second completed"
+}
+
+test_daemon_job_gc_on_delete() {
+  # Verify that deleting a ReaperDaemonJob garbage collects its ReaperPods
+  local rp_count
+  rp_count=$(kubectl get reaperpods -l reaper.io/daemon-job=test-simple-djob --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+  [[ "$rp_count" -ge 1 ]] || {
+    log_error "Expected at least 1 ReaperPod before deletion"
+    return 1
+  }
+
+  kubectl delete reaperdaemonjob test-simple-djob >> "$LOG_FILE" 2>&1
+
+  # Wait for ReaperPods to be garbage collected
+  for i in $(seq 1 30); do
+    rp_count=$(kubectl get reaperpods -l reaper.io/daemon-job=test-simple-djob --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    if [[ "$rp_count" -eq 0 ]]; then
+      break
+    fi
+    sleep 1
+  done
+  [[ "$rp_count" -eq 0 ]] || {
+    log_error "ReaperPods for test-simple-djob still exist after deletion ($rp_count remaining)"
+    return 1
+  }
+}
+
+cleanup_daemon_jobs() {
+  kubectl delete reaperdaemonjob --all --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete reaperpod -l reaper.io/daemon-job --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  # Wait for pods to terminate
+  for i in $(seq 1 15); do
+    local remaining
+    remaining=$(kubectl get reaperpods -l reaper.io/daemon-job --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    if [[ "$remaining" -eq 0 ]]; then
+      break
+    fi
+    sleep 1
+  done
+}
+
+phase_daemon_job_tests() {
+  log_status ""
+  log_status "${CLR_PHASE}Phase 4d: ReaperDaemonJob CRD tests${CLR_RESET}"
+  log_status "========================================"
+
+  run_test test_daemon_job_crd_install        "ReaperDaemonJob CRD installation"        --hard-fail
+  run_test test_daemon_job_simple             "Simple ReaperDaemonJob creates ReaperPods" --hard-fail
+  run_test test_daemon_job_status_tracking    "ReaperDaemonJob status tracking"          --hard-fail
+  run_test test_daemon_job_node_statuses      "Per-node status entries"                  --hard-fail
+  run_test test_daemon_job_kubectl_columns    "kubectl get reaperdaemonjobs columns"     --hard-fail
+  run_test test_daemon_job_dependency_ordering "Dependency ordering (after)"             --hard-fail
+  run_test test_daemon_job_gc_on_delete       "GC ReaperPods on DaemonJob delete"        --hard-fail
+
+  # Cleanup daemon job resources, then controller (deferred from Phase 4b)
+  cleanup_daemon_jobs
   cleanup_controller
 }
 

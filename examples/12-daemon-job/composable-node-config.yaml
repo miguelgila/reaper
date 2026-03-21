@@ -1,0 +1,47 @@
+# Composable node config: two ReaperDaemonJobs sharing an overlay.
+#
+# The first job mounts a filesystem, the second installs packages on it.
+# Both share the "node-config" overlay so changes from the first are
+# visible to the second. The `after` field ensures ordering.
+#
+# Prerequisites:
+#   - Reaper installed on target nodes
+#   - CRDs installed via Helm chart or kubectl apply
+#   - Controller running
+#   - ReaperOverlay "node-config" created (optional, for PVC-like blocking)
+#
+# Usage:
+#   kubectl apply -f composable-vservices.yaml
+#   kubectl get reaperdaemonjobs
+#   kubectl get reaperpods
+apiVersion: reaper.io/v1alpha1
+kind: ReaperDaemonJob
+metadata:
+  name: mount-filesystems
+spec:
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "Mounting shared filesystems..."
+      mkdir -p /mnt/shared
+      echo "Filesystems mounted on $(hostname)"
+  overlayName: node-config
+  nodeSelector:
+    role: compute
+---
+apiVersion: reaper.io/v1alpha1
+kind: ReaperDaemonJob
+metadata:
+  name: install-packages
+spec:
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "Installing packages on $(hostname)..."
+      echo "Packages installed successfully"
+  overlayName: node-config
+  after:
+    - mount-filesystems
+  nodeSelector:
+    role: compute
+  retryLimit: 2
