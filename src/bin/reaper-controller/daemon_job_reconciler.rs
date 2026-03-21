@@ -1,6 +1,7 @@
 use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Node;
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 use kube::{
     api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams},
     runtime::controller::{Action, Controller},
@@ -12,7 +13,6 @@ use tracing::{debug, error, info, warn};
 
 use reaper::crds::{
     DaemonJobNodeStatus, ReaperDaemonJob, ReaperDaemonJobStatus, ReaperPod, ReaperPodSpec,
-    ReaperPodStatus,
 };
 
 const DAEMONJOB_LABEL: &str = "reaper.io/daemon-job";
@@ -407,7 +407,7 @@ fn build_reaper_pod(dj: &ReaperDaemonJob, rp_name: &str, node_name: &str) -> Rea
         tolerations: dj.spec.tolerations.clone(),
     };
 
-    let owner_ref = kube::api::OwnerReference {
+    let owner_ref = OwnerReference {
         api_version: "reaper.io/v1alpha1".to_string(),
         kind: "ReaperDaemonJob".to_string(),
         name: dj_name.clone(),
@@ -420,13 +420,15 @@ fn build_reaper_pod(dj: &ReaperDaemonJob, rp_name: &str, node_name: &str) -> Rea
     labels.insert(DAEMONJOB_LABEL.to_string(), dj_name);
     labels.insert(NODE_LABEL.to_string(), node_name.to_string());
 
-    ReaperPod::new(rp_name, ReaperPodSpec { ..spec }).with_metadata(kube::api::ObjectMeta {
-        name: Some(rp_name.to_string()),
-        namespace: Some(namespace),
-        labels: Some(labels),
-        owner_references: Some(vec![owner_ref]),
-        ..Default::default()
-    })
+    ReaperPod::new(rp_name, ReaperPodSpec { ..spec }).with_metadata(
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(rp_name.to_string()),
+            namespace: Some(namespace),
+            labels: Some(labels),
+            owner_references: Some(vec![owner_ref]),
+            ..Default::default()
+        },
+    )
 }
 
 /// Patch the ReaperDaemonJob status subresource.
@@ -453,11 +455,17 @@ fn error_policy(_dj: Arc<ReaperDaemonJob>, error: &kube::Error, _ctx: Arc<Contex
 
 /// Helper to construct a ReaperPod with custom metadata.
 trait WithMetadata {
-    fn with_metadata(self, meta: kube::api::ObjectMeta) -> Self;
+    fn with_metadata(
+        self,
+        meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+    ) -> Self;
 }
 
 impl WithMetadata for ReaperPod {
-    fn with_metadata(mut self, meta: kube::api::ObjectMeta) -> Self {
+    fn with_metadata(
+        mut self,
+        meta: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta,
+    ) -> Self {
         self.metadata = meta;
         self
     }
