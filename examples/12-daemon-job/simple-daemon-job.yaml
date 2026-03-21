@@ -1,0 +1,24 @@
+# Simple ReaperDaemonJob: run a command on every node.
+#
+# Prerequisites:
+#   - Reaper installed on target nodes
+#   - CRDs installed via Helm chart or kubectl apply
+#   - Controller running
+#
+# Usage:
+#   kubectl apply -f simple-daemon-job.yaml
+#   kubectl get reaperdaemonjobs
+#   kubectl describe reaperdaemonjob node-info
+#   kubectl delete reaperdaemonjob node-info
+apiVersion: reaper.io/v1alpha1
+kind: ReaperDaemonJob
+metadata:
+  name: node-info
+spec:
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "Node: $(hostname)"
+      echo "Kernel: $(uname -r)"
+      echo "Uptime: $(uptime)"
+      echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"

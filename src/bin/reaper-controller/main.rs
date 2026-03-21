@@ -3,6 +3,7 @@ use tokio::signal;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
+mod daemon_job_reconciler;
 mod overlay_reconciler;
 mod pod_builder;
 mod reconciler;
@@ -48,9 +49,14 @@ async fn main() -> anyhow::Result<()> {
         let overlay_crd = serde_json::to_string_pretty(
             &<reaper::crds::ReaperOverlay as kube::CustomResourceExt>::crd(),
         )?;
+        let daemon_job_crd = serde_json::to_string_pretty(
+            &<reaper::crds::ReaperDaemonJob as kube::CustomResourceExt>::crd(),
+        )?;
         println!("{pod_crd}");
         eprintln!("---");
         println!("{overlay_crd}");
+        eprintln!("---");
+        println!("{daemon_job_crd}");
         return Ok(());
     }
 
@@ -58,9 +64,10 @@ async fn main() -> anyhow::Result<()> {
 
     let client = kube::Client::try_default().await?;
 
-    // Run both controllers with graceful shutdown
+    // Run all controllers with graceful shutdown
     let reaperpod_client = client.clone();
     let overlay_client = client.clone();
+    let daemon_job_client = client.clone();
 
     tokio::select! {
         result = reconciler::run(reaperpod_client) => {
@@ -71,6 +78,11 @@ async fn main() -> anyhow::Result<()> {
         result = overlay_reconciler::run(overlay_client) => {
             if let Err(e) = result {
                 tracing::error!(error = %e, "ReaperOverlay controller exited with error");
+            }
+        }
+        result = daemon_job_reconciler::run(daemon_job_client) => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "ReaperDaemonJob controller exited with error");
             }
         }
         _ = signal::ctrl_c() => {
