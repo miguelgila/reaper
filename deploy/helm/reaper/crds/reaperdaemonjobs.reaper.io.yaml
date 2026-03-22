@@ -209,3 +209,78 @@ spec:
             required:
             - command
             type: object
+          status:
+            description: Status of a ReaperDaemonJob.
+            nullable: true
+            properties:
+              message:
+                description: Human-readable message about the current state.
+                nullable: true
+                type: string
+              nodeStatuses:
+                description: Per-node execution status.
+                items:
+                  description: Per-node execution status within a ReaperDaemonJob.
+                  properties:
+                    exitCode:
+                      description: Exit code of the job on this node.
+                      format: int32
+                      nullable: true
+                      type: integer
+                    lastCompletionTime:
+                      description: ISO 8601 timestamp of last completion.
+                      nullable: true
+                      type: string
+                    lastStartTime:
+                      description: ISO 8601 timestamp of last execution start.
+                      nullable: true
+                      type: string
+                    nodeName:
+                      description: Name of the node.
+                      type: string
+                    phase:
+                      default: Pending
+                      description: 'Per-node phase: Pending, Running, Succeeded, Failed.'
+                      type: string
+                    reaperPodName:
+                      description: Name of the ReaperPod created for this node.
+                      nullable: true
+                      type: string
+                    retryCount:
+                      default: 0
+                      description: Number of retry attempts so far.
+                      format: int32
+                      type: integer
+                  required:
+                  - nodeName
+                  type: object
+                type: array
+              observedGeneration:
+                default: 0
+                description: Spec generation that was last reconciled (detects spec
+                  changes for re-trigger).
+                format: int64
+                type: integer
+              phase:
+                description: 'Current phase: Pending, Running, Completed, PartiallyFailed.'
+                nullable: true
+                type: string
+              readyNodes:
+                default: 0
+                description: Number of nodes that have completed successfully.
+                format: int32
+                type: integer
+              totalNodes:
+                default: 0
+                description: Total number of targeted nodes.
+                format: int32
+                type: integer
+            type: object
+        required:
+        - spec
+        title: ReaperDaemonJob
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
