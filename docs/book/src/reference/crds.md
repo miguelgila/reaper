@@ -1,6 +1,6 @@
 # Custom Resource Definitions
 
-Reaper provides two CRDs for managing workloads and overlay filesystems.
+Reaper provides three CRDs for managing workloads, overlay filesystems, and node-wide configuration tasks.
 
 ## ReaperPod
 
@@ -180,4 +180,105 @@ kubectl get rovl slurm -w   # watch until phase returns to Ready
 
 ```bash
 kubectl delete rovl slurm   # finalizer cleans up on-disk data on all nodes
+```
+
+---
+
+## ReaperDaemonJob
+
+A "DaemonSet for Jobs" that runs a command to completion on every matching node, with support for dependency ordering, retry policies, and shared overlays. Designed for node configuration tasks like Ansible playbooks that compose via shared overlays.
+
+- **Group:** `reaper.io`
+- **Version:** `v1alpha1`
+- **Kind:** `ReaperDaemonJob`
+- **Short name:** `rdjob` (`kubectl get rdjob`)
+
+### Spec
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `command` | `string[]` | *(required)* | Command to execute on each node |
+| `args` | `string[]` | | Arguments to the command |
+| `env` | `EnvVar[]` | | Environment variables (same format as ReaperPod) |
+| `workingDir` | `string` | | Working directory for the command |
+| `overlayName` | `string` | | Named overlay group for shared filesystem |
+| `nodeSelector` | `map[string]string` | | Target specific nodes by labels (all nodes if empty) |
+| `dnsMode` | `string` | | DNS resolution mode (`host` or `kubernetes`) |
+| `runAsUser` | `int` | | UID for the process |
+| `runAsGroup` | `int` | | GID for the process |
+| `volumes` | `Volume[]` | | Volume mounts (same format as ReaperPod) |
+| `tolerations` | `Toleration[]` | | Tolerations for the underlying Pods |
+| `triggerOn` | `string` | `NodeReady` | Trigger events: `NodeReady` or `Manual` |
+| `after` | `string[]` | | Dependency ordering — names of other ReaperDaemonJobs that must complete first |
+| `retryLimit` | `int` | `0` | Maximum retries per node on failure |
+| `concurrencyPolicy` | `string` | `Skip` | What to do on re-trigger while running: `Skip` or `Replace` |
+
+### Status
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `phase` | `string` | Overall phase: `Pending`, `Running`, `Completed`, `PartiallyFailed` |
+| `readyNodes` | `int` | Number of nodes that completed successfully |
+| `totalNodes` | `int` | Total number of targeted nodes |
+| `observedGeneration` | `int` | Last spec generation reconciled |
+| `nodeStatuses[]` | `array` | Per-node execution status |
+| `nodeStatuses[].nodeName` | `string` | Node name |
+| `nodeStatuses[].phase` | `string` | Per-node phase: `Pending`, `Running`, `Succeeded`, `Failed` |
+| `nodeStatuses[].reaperPodName` | `string` | Name of the ReaperPod created for this node |
+| `nodeStatuses[].exitCode` | `int` | Exit code on this node |
+| `nodeStatuses[].retryCount` | `int` | Number of retries so far |
+| `message` | `string` | Human-readable status message |
+
+### Controller Layering
+
+`ReaperDaemonJob` → `ReaperPod` → `Pod`. The DaemonJob controller creates one ReaperPod per matching node, pinned via `nodeName`. The existing ReaperPod controller then creates the backing Pods. No changes to the runtime or shim.
+
+### Dependency Ordering
+
+The `after` field lists other ReaperDaemonJobs that must reach `Completed` phase before this job starts on any node. This enables composable workflows where one job's output is another's input (via shared overlays).
+
+### Examples
+
+#### Simple Node Info
+
+```yaml
+apiVersion: reaper.io/v1alpha1
+kind: ReaperDaemonJob
+metadata:
+  name: node-info
+spec:
+  command: ["/bin/sh", "-c"]
+  args:
+    - |
+      echo "Node: $(hostname)"
+      echo "Kernel: $(uname -r)"
+```
+
+#### Composable Node Config with Dependencies
+
+```yaml
+apiVersion: reaper.io/v1alpha1
+kind: ReaperDaemonJob
+metadata:
+  name: mount-filesystems
+spec:
+  command: ["/bin/sh", "-c"]
+  args: ["mkdir -p /mnt/shared && mount -t nfs server:/export /mnt/shared"]
+  overlayName: node-config
+  nodeSelector:
+    role: compute
+---
+apiVersion: reaper.io/v1alpha1
+kind: ReaperDaemonJob
+metadata:
+  name: install-packages
+spec:
+  command: ["/bin/sh", "-c"]
+  args: ["apt-get update && apt-get install -y htop"]
+  overlayName: node-config
+  after:
+    - mount-filesystems
+  nodeSelector:
+    role: compute
+  retryLimit: 2
 ```
