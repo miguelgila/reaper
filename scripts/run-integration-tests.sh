@@ -162,6 +162,12 @@ main() {
     log_status "Skipping overlay tests (--agent-only)."
   fi
 
+  if ! $AGENT_ONLY; then
+    phase_daemon_job_tests
+  else
+    log_status "Skipping daemon job tests (--agent-only)."
+  fi
+
   phase_summary
 }
 
