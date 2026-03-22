@@ -14,6 +14,8 @@ Think of it as a way to run host-native processes through Kubernetes' orchestrat
 - Interactive sessions (PTY support)
 - UID/GID switching with `securityContext`
 - Per-pod configuration via Kubernetes annotations
+- **Custom Resource Definitions**: [ReaperPod](reference/crds.md#reaperpod) (simplified workloads), [ReaperOverlay](reference/crds.md#reaperoverlay) (overlay lifecycle management), [ReaperDaemonJob](reference/crds.md#reaperdaemonjob) (run jobs on every node with dependency ordering)
+- **[Helm chart](reference/helm-chart.md)** for one-command installation and configuration
 
 ## What Reaper Does NOT Provide
 
