@@ -21,7 +21,7 @@ rules:
   # ReaperPod CRD access
   - apiGroups: ["reaper.io"]
     resources: ["reaperpods"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: ["reaper.io"]
     resources: ["reaperpods/status"]
     verbs: ["get", "patch", "update"]
@@ -32,10 +32,21 @@ rules:
   - apiGroups: ["reaper.io"]
     resources: ["reaperoverlays/status"]
     verbs: ["get", "patch", "update"]
+  # ReaperDaemonJob CRD access
+  - apiGroups: ["reaper.io"]
+    resources: ["reaperdaemonjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["reaper.io"]
+    resources: ["reaperdaemonjobs/status"]
+    verbs: ["get", "patch", "update"]
   # Pod management (create pods from ReaperPod specs)
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "create", "delete"]
+  # Node access (for ReaperDaemonJob node targeting)
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
   # Events (record events on ReaperPod resources)
   - apiGroups: [""]
     resources: ["events"]
