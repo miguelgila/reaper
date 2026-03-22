@@ -1,0 +1,211 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: reaperdaemonjobs.reaper.io
+spec:
+  group: reaper.io
+  names:
+    kind: ReaperDaemonJob
+    plural: reaperdaemonjobs
+    shortNames:
+    - rdjob
+    singular: reaperdaemonjob
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.readyNodes
+      name: Ready
+      type: string
+    - jsonPath: .status.totalNodes
+      name: Total
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ReaperDaemonJobSpec via `CustomResource`
+        properties:
+          spec:
+            description: "ReaperDaemonJob runs a command to completion on every matching\
+              \ node and re-triggers on node events (join, reboot). Designed for node\
+              \ configuration tasks like Ansible playbooks that compose via shared\
+              \ overlays.\n\nController layering: ReaperDaemonJob \u2192 ReaperPod\
+              \ \u2192 Pod."
+            properties:
+              after:
+                description: 'Dependency ordering: names of other ReaperDaemonJobs
+                  in the same namespace that must complete on a node before this job
+                  runs there.'
+                items:
+                  type: string
+                type: array
+              args:
+                description: Arguments to the command.
+                items:
+                  type: string
+                type: array
+              command:
+                description: Command to execute on each node.
+                items:
+                  type: string
+                type: array
+              concurrencyPolicy:
+                description: 'What to do if the job is already running on a node when
+                  a new trigger fires. "Skip" (default): skip the new trigger. "Replace":
+                  terminate and re-run.'
+                type: string
+              dnsMode:
+                description: 'DNS resolution mode: "host" (default) or "kubernetes".'
+                nullable: true
+                type: string
+              env:
+                description: Environment variables.
+                items:
+                  description: Simplified environment variable (name + literal value
+                    or secret/configmap ref).
+                  properties:
+                    configMapKeyRef:
+                      description: Reference to a ConfigMap key.
+                      nullable: true
+                      properties:
+                        key:
+                          description: Key within the Secret or ConfigMap.
+                          type: string
+                        name:
+                          description: Name of the Secret or ConfigMap.
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    name:
+                      description: Environment variable name.
+                      type: string
+                    secretKeyRef:
+                      description: Reference to a Secret key.
+                      nullable: true
+                      properties:
+                        key:
+                          description: Key within the Secret or ConfigMap.
+                          type: string
+                        name:
+                          description: Name of the Secret or ConfigMap.
+                          type: string
+                      required:
+                      - key
+                      - name
+                      type: object
+                    value:
+                      description: Literal value.
+                      nullable: true
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: Select nodes by labels. If empty, targets all nodes.
+                nullable: true
+                type: object
+              overlayName:
+                description: Named overlay group for shared overlay filesystem. Multiple
+                  ReaperDaemonJobs with the same overlayName share an overlay, enabling
+                  composable vServices.
+                nullable: true
+                type: string
+              retryLimit:
+                default: 0
+                description: Maximum number of retries per node on failure. 0 means
+                  no retries.
+                format: int32
+                type: integer
+              runAsGroup:
+                description: Run the process as this GID.
+                format: int64
+                nullable: true
+                type: integer
+              runAsUser:
+                description: Run the process as this UID.
+                format: int64
+                nullable: true
+                type: integer
+              tolerations:
+                description: Tolerations passed through to the underlying Pods.
+                items:
+                  description: Simplified toleration.
+                  properties:
+                    effect:
+                      description: 'Effect: "NoSchedule", "PreferNoSchedule", or "NoExecute".'
+                      nullable: true
+                      type: string
+                    key:
+                      description: Toleration key.
+                      nullable: true
+                      type: string
+                    operator:
+                      description: 'Operator: "Exists" or "Equal".'
+                      nullable: true
+                      type: string
+                    value:
+                      description: Value to match (when operator is "Equal").
+                      nullable: true
+                      type: string
+                  type: object
+                type: array
+              triggerOn:
+                default: NodeReady
+                description: 'Events that trigger (re-)execution on nodes. Valid values:
+                  "NodeReady" (default), "Manual". NodeReady: run when a node becomes
+                  Ready (join or reboot). Manual: only run when the spec changes or
+                  the resource is created.'
+                type: string
+              volumes:
+                description: Volumes with inline mount paths.
+                items:
+                  description: A simplified volume definition with inline mountPath.
+                  properties:
+                    configMap:
+                      description: ConfigMap name to mount.
+                      nullable: true
+                      type: string
+                    emptyDir:
+                      default: false
+                      description: Use an emptyDir volume.
+                      type: boolean
+                    hostPath:
+                      description: Host path to mount.
+                      nullable: true
+                      type: string
+                    mountPath:
+                      description: Path inside the overlay where this volume is mounted.
+                      type: string
+                    name:
+                      description: Volume name (used internally).
+                      type: string
+                    readOnly:
+                      default: false
+                      description: Mount as read-only.
+                      type: boolean
+                    secret:
+                      description: Secret name to mount.
+                      nullable: true
+                      type: string
+                  required:
+                  - mountPath
+                  - name
+                  type: object
+                type: array
+              workingDir:
+                description: Working directory for the command.
+                nullable: true
+                type: string
+            required:
+            - command
+            type: object
