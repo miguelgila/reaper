@@ -2,8 +2,8 @@ apiVersion: v2
 name: reaper
 description: Reaper — lightweight Kubernetes runtime for direct host execution
 type: application
-version: 0.2.19
-appVersion: "0.2.19"
+version: 0.2.20
+appVersion: "0.2.20"
 keywords:
   - kubernetes
   - runtime
