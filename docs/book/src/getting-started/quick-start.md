@@ -124,3 +124,13 @@ spec:
 ```
 
 See [Pod Compatibility](../configuration/compatibility.md) for the full list of supported and ignored fields.
+
+## What's Next
+
+Reaper provides Custom Resource Definitions for higher-level workflows:
+
+- **[ReaperPod](../reference/crds.md#reaperpod)** — Simplified pod spec without container boilerplate
+- **[ReaperOverlay](../reference/crds.md#reaperoverlay)** — PVC-like overlay lifecycle management
+- **[ReaperDaemonJob](../reference/crds.md#reaperdaemonjob)** — Run jobs to completion on every matching node, with dependency ordering and shared overlays
+
+See the [CRD Reference](../reference/crds.md) for full documentation and the [examples](https://github.com/miguelgila/reaper/tree/main/examples) for runnable demos.

@@ -188,9 +188,28 @@ kubectl apply -f examples/11-node-monitoring/
 kubectl port-forward svc/prometheus 9090:9090
 ```
 
+### [12-daemon-job/](12-daemon-job/) — ReaperDaemonJob CRD (Node Configuration)
+
+Demonstrates the **ReaperDaemonJob Custom Resource Definition** — a "DaemonSet for Jobs" that runs commands to completion on every matching node. Designed for node configuration tasks like Ansible playbooks that compose via shared overlays.
+
+- **Dependency ordering** via `after` field (second job waits for first)
+- **Shared overlays** via `overlayName` (composable node config)
+- **Per-node status tracking** with retry support
+
+```bash
+# Prerequisites: Reaper + controller running (via Helm or setup-playground.sh)
+kubectl apply -f examples/12-daemon-job/simple-daemon-job.yaml
+kubectl get reaperdaemonjobs
+kubectl describe reaperdaemonjob node-info
+
+# Composable example with dependencies
+kubectl apply -f examples/12-daemon-job/composable-node-config.yaml
+kubectl get rdjob -w   # watch until both jobs complete
+```
+
 ## Cleanup
 
-Each example can be cleaned up independently:
+Examples with `setup.sh` scripts can be cleaned up independently:
 
 ```bash
 ./examples/01-scheduling/setup.sh --cleanup
@@ -201,4 +220,13 @@ Each example can be cleaned up independently:
 ./examples/06-ansible-jobs/setup.sh --cleanup
 ./examples/07-ansible-complex/setup.sh --cleanup
 ./examples/08-mix-container-runtime-engines/setup.sh --cleanup
+./examples/10-slurm-hpc/setup.sh --cleanup
+./examples/11-node-monitoring/setup.sh --cleanup
+```
+
+For CRD-based examples (09, 12), delete the resources directly:
+
+```bash
+kubectl delete reaperpod --all
+kubectl delete reaperdaemonjob --all
 ```

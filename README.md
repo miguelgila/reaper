@@ -22,6 +22,8 @@ Reaper is a containerd shim that runs processes directly on the host system whil
 - Interactive sessions (PTY support for `kubectl run -it` and `kubectl exec -it`)
 - UID/GID switching with `securityContext`
 - Per-pod configuration via Kubernetes annotations
+- Custom Resource Definitions: [ReaperPod](docs/book/src/reference/crds.md#reaperpod) (simplified workloads), [ReaperOverlay](docs/book/src/reference/crds.md#reaperoverlay) (overlay lifecycle), [ReaperDaemonJob](docs/book/src/reference/crds.md#reaperdaemonjob) (node-wide config tasks)
+- [Helm chart](deploy/helm/reaper/) for one-command installation (`helm install`)
 
 **What Reaper does NOT provide:**
 - Container isolation (namespaces, cgroups)
