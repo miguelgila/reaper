@@ -134,29 +134,24 @@ cargo fmt --all -- --check
 
 ### Linting
 
-Run clippy to catch common mistakes and improve code quality:
+Reaper only runs on Linux and large portions of the codebase are gated behind `#[cfg(target_os = "linux")]`. **Always lint against the Linux target** — macOS clippy silently skips Linux-only code and gives false confidence:
 
 ```bash
-# Quick check
-cargo clippy --all-targets --all-features
+# Authoritative check (use this — catches all Linux-gated code)
+make clippy
+# equivalent to: cargo clippy --target x86_64-unknown-linux-gnu --all-targets -- -D warnings
 
-# Match CI exactly (treats warnings as errors)
-cargo clippy -- -D warnings
+# One-time setup for Linux cross-check on macOS
+rustup target add x86_64-unknown-linux-gnu
+```
+
+For a faster iteration cycle that only checks macOS-compiled code (does **not** replace the Linux check):
+
+```bash
+make clippy-local
 ```
 
 CI runs clippy with `-D warnings`, so any warning is a hard failure. The pre-push hook runs this automatically if you've installed hooks via `./scripts/install-hooks.sh`.
-
-### Linux Cross-Check (macOS only)
-
-The overlay module (`src/bin/reaper-runtime/overlay.rs`) is gated by `#[cfg(target_os = "linux")]` and doesn't compile on macOS. To catch compilation errors in Linux-only code:
-
-```bash
-# One-time setup
-rustup target add x86_64-unknown-linux-gnu
-
-# Check compilation for Linux target
-cargo clippy --target x86_64-unknown-linux-gnu --all-targets --all-features
-```
 
 ## Git Hooks
 
@@ -258,9 +253,9 @@ Configuration lives in `tarpaulin.toml`. Functions requiring root + Linux namesp
    cargo fmt --all
    ```
 
-2. **Run linting:**
+2. **Run linting (Linux target):**
    ```bash
-   cargo clippy --all-targets --all-features
+   make clippy
    ```
 
 3. **Run tests:**
@@ -285,7 +280,7 @@ For fast feedback during development:
 ```bash
 # Quick iteration cycle
 cargo test              # Unit tests (seconds)
-cargo clippy            # Linting
+make clippy             # Linting (Linux target)
 
 # Before pushing
 cargo fmt --all         # Format code
@@ -396,12 +391,9 @@ RUST_LOG=debug cargo test <test-name> -- --nocapture
 
 ## Troubleshooting
 
-### Clippy Errors on macOS for Linux-only Code
+### Clippy Errors in Linux-only Code
 
-Run clippy with Linux target:
-```bash
-cargo clippy --target x86_64-unknown-linux-gnu --all-targets
-```
+The default `make clippy` targets Linux. If you see errors in `#[cfg(target_os = "linux")]` code, that's expected — fix them before pushing. Running `make clippy-local` will skip these, but is **not** a substitute.
 
 ### Tests Fail with "Permission Denied"
 

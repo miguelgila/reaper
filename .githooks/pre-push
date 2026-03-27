@@ -6,8 +6,9 @@ ROOT_DIR="$(git rev-parse --show-toplevel)"
 cd "$ROOT_DIR" || exit 0
 
 if command -v cargo >/dev/null 2>&1; then
-  echo "Running cargo clippy -- -D warnings..."
-  cargo clippy -- -D warnings
+  LINUX_TARGET="x86_64-unknown-linux-gnu"
+  echo "Running cargo clippy --target $LINUX_TARGET --all-targets -- -D warnings..."
+  cargo clippy --target "$LINUX_TARGET" --all-targets -- -D warnings
 else
   echo "cargo not found in PATH; skipping clippy."
 fi
