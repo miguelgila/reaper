@@ -2075,9 +2075,9 @@ test_agent_deployment() {
       "agent=ghcr.io/miguelgila/reaper-agent:${reaper_version}" >> "$LOG_FILE" 2>&1
   fi
 
-  # Patch DaemonSet to use faster overlay GC interval for testing (30s instead of 300s)
+  # Patch DaemonSet to use faster GC intervals for testing (10s instead of 60s/300s)
   kubectl patch daemonset reaper-agent -n reaper-system --type=json \
-    -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--overlay-gc-interval=30"}]' >> "$LOG_FILE" 2>&1
+    -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--overlay-gc-interval=10"},{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--gc-interval=10"}]' >> "$LOG_FILE" 2>&1
 
   # Wait for agent DaemonSet rollout
   if ! kubectl rollout status daemonset/reaper-agent -n reaper-system --timeout=120s >> "$LOG_FILE" 2>&1; then
@@ -2223,10 +2223,10 @@ test_agent_stale_gc() {
 }
 EOF' >> "$LOG_FILE" 2>&1
 
-  # Wait for the next GC cycle (default 60s, but initial GC runs on startup too)
+  # Wait for the next GC cycle (interval=10s in test)
   # The agent should detect pid 999999 as dead and mark it stopped
   log_verbose "Waiting for GC cycle to detect stale PID..."
-  local max_wait=90
+  local max_wait=45
   local elapsed=0
   while [[ $elapsed -lt $max_wait ]]; do
     local state_status
@@ -2236,8 +2236,8 @@ EOF' >> "$LOG_FILE" 2>&1
       log_verbose "GC correctly marked stale container as stopped"
       return 0
     fi
-    sleep 5
-    elapsed=$((elapsed + 5))
+    sleep 3
+    elapsed=$((elapsed + 3))
   done
 
   log_error "GC did not mark stale container as stopped within ${max_wait}s"
@@ -2258,8 +2258,8 @@ test_agent_overlay_gc_basic() {
   # Delete the namespace so overlay becomes orphaned
   kubectl delete namespace reaper-gc-test --wait=true >> "$LOG_FILE" 2>&1
 
-  # Poll until all artifacts are gone (overlay GC interval is 30s in test)
-  local max_wait=180
+  # Poll until all artifacts are gone (overlay GC interval is 10s in test)
+  local max_wait=60
   local elapsed=0
   while [[ $elapsed -lt $max_wait ]]; do
     local remaining=0
@@ -2274,8 +2274,8 @@ test_agent_overlay_gc_basic() {
     fi
 
     log_verbose "Waiting for overlay GC ($remaining artifacts remaining, ${elapsed}s/${max_wait}s)..."
-    sleep 10
-    elapsed=$((elapsed + 10))
+    sleep 3
+    elapsed=$((elapsed + 3))
   done
 
   log_error "overlay GC did not clean artifacts within ${max_wait}s"
@@ -2288,9 +2288,9 @@ test_agent_overlay_gc_preserves_active() {
   docker exec "$NODE_ID" mkdir -p /run/reaper/overlay/default/upper /run/reaper/overlay/default/work >> "$LOG_FILE" 2>&1
   docker exec "$NODE_ID" mkdir -p /run/reaper/merged/default >> "$LOG_FILE" 2>&1
 
-  # Wait 2 overlay GC cycles (interval=30s in test, so 40s = 1 full cycle + margin)
-  log_verbose "Waiting 40s (1+ overlay GC cycles) to verify artifacts are preserved..."
-  sleep 40
+  # Wait 2 overlay GC cycles (interval=10s in test, so 15s = 1 full cycle + margin)
+  log_verbose "Waiting 15s (1+ overlay GC cycles) to verify artifacts are preserved..."
+  sleep 15
 
   # Assert overlay artifacts still exist (ns files are managed by ns cleanup, not overlay GC)
   local ok=true
@@ -2327,8 +2327,8 @@ test_agent_overlay_gc_named_groups() {
   # Delete namespace
   kubectl delete namespace reaper-gc-named --wait=true >> "$LOG_FILE" 2>&1
 
-  # Poll until all artifacts are gone
-  local max_wait=180
+  # Poll until all artifacts are gone (overlay GC interval is 10s in test)
+  local max_wait=60
   local elapsed=0
   while [[ $elapsed -lt $max_wait ]]; do
     local remaining=0
@@ -2345,8 +2345,8 @@ test_agent_overlay_gc_named_groups() {
     fi
 
     log_verbose "Waiting for overlay GC ($remaining artifacts remaining, ${elapsed}s/${max_wait}s)..."
-    sleep 10
-    elapsed=$((elapsed + 10))
+    sleep 3
+    elapsed=$((elapsed + 3))
   done
 
   log_error "overlay GC did not clean named group artifacts within ${max_wait}s"
@@ -2380,9 +2380,9 @@ EOF' >> "$LOG_FILE" 2>&1
   # Delete the namespace
   kubectl delete namespace reaper-gc-running --wait=true >> "$LOG_FILE" 2>&1
 
-  # Wait 2 overlay GC cycles — artifacts should NOT be removed
-  log_verbose "Waiting 40s (1+ overlay GC cycles) to verify running container prevents cleanup..."
-  sleep 40
+  # Wait 2 overlay GC cycles (interval=10s) — artifacts should NOT be removed
+  log_verbose "Waiting 15s (1+ overlay GC cycles) to verify running container prevents cleanup..."
+  sleep 15
 
   # Assert artifacts still exist (GC skipped due to running container)
   local ok=true
@@ -2399,7 +2399,7 @@ EOF' >> "$LOG_FILE" 2>&1
   # Now remove the fake container state and verify GC cleans up
   docker exec "$NODE_ID" rm -rf /run/reaper/fake-gc-container >> "$LOG_FILE" 2>&1
 
-  local max_wait=90
+  local max_wait=45
   local elapsed=0
   while [[ $elapsed -lt $max_wait ]]; do
     local remaining=0
@@ -2411,8 +2411,8 @@ EOF' >> "$LOG_FILE" 2>&1
       return 0
     fi
 
-    sleep 10
-    elapsed=$((elapsed + 10))
+    sleep 3
+    elapsed=$((elapsed + 3))
   done
 
   log_error "overlay GC did not clean up after running container was removed within ${max_wait}s"
@@ -2470,8 +2470,8 @@ test_agent_ns_cleanup_stale_file() {
   docker exec "$NODE_ID" mkdir -p /run/reaper/ns >> "$LOG_FILE" 2>&1
   docker exec "$NODE_ID" touch /run/reaper/ns/stale-ns-test >> "$LOG_FILE" 2>&1
 
-  # Poll until the stale file is removed (GC interval is 30s in test)
-  local max_wait=180
+  # Poll until the stale file is removed (GC interval is 10s in test)
+  local max_wait=60
   local elapsed=0
   while [[ $elapsed -lt $max_wait ]]; do
     if ! docker exec "$NODE_ID" test -f /run/reaper/ns/stale-ns-test 2>/dev/null; then
@@ -2480,8 +2480,8 @@ test_agent_ns_cleanup_stale_file() {
     fi
 
     log_verbose "Waiting for ns cleanup to remove stale file (${elapsed}s/${max_wait}s)..."
-    sleep 10
-    elapsed=$((elapsed + 10))
+    sleep 3
+    elapsed=$((elapsed + 3))
   done
 
   log_error "ns cleanup did not remove stale file within ${max_wait}s"
@@ -2509,9 +2509,9 @@ test_agent_ns_cleanup_preserves_active() {
 }
 EOF' >> "$LOG_FILE" 2>&1
 
-  # Wait 2 GC cycles (interval=30s, so 40s = 1 full cycle + margin)
-  log_verbose "Waiting 40s (1+ GC cycles) to verify ns file is preserved by running container..."
-  sleep 40
+  # Wait 2 GC cycles (interval=10s, so 15s = 1 full cycle + margin)
+  log_verbose "Waiting 15s (1+ GC cycles) to verify ns file is preserved by running container..."
+  sleep 15
 
   # Assert ns file still exists (protected by running container)
   if docker exec "$NODE_ID" test -f /run/reaper/ns/ns-protect-test 2>/dev/null; then
@@ -2520,15 +2520,15 @@ EOF' >> "$LOG_FILE" 2>&1
     # Now remove the fake container and verify the ns file gets cleaned
     docker exec "$NODE_ID" rm -rf /run/reaper/fake-ns-protect >> "$LOG_FILE" 2>&1
 
-    local max_wait=90
+    local max_wait=45
     local elapsed=0
     while [[ $elapsed -lt $max_wait ]]; do
       if ! docker exec "$NODE_ID" test -f /run/reaper/ns/ns-protect-test 2>/dev/null; then
         log_verbose "ns cleanup removed ns file after running container was removed"
         return 0
       fi
-      sleep 10
-      elapsed=$((elapsed + 10))
+      sleep 3
+      elapsed=$((elapsed + 3))
     done
 
     log_error "ns cleanup did not remove ns file after running container was removed within ${max_wait}s"

@@ -51,7 +51,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-audit
-        run: cargo install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
       - name: Run cargo-audit
         run: cargo audit
 
@@ -89,10 +89,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo-musl-cache/registry
+            ~/.cargo-musl-cache/git
+            target/x86_64-unknown-linux-musl
+          key: musl-${{ hashFiles('Cargo.lock') }}
+          restore-keys: musl-
       - name: Build all binaries (musl static)
         run: |
+          mkdir -p ~/.cargo-musl-cache/registry ~/.cargo-musl-cache/git
           docker run --rm \
             -v ${{ github.workspace }}:/work \
+            -v ~/.cargo-musl-cache/registry:/root/.cargo/registry \
+            -v ~/.cargo-musl-cache/git:/root/.cargo/git \
             -w /work \
             messense/rust-musl-cross:x86_64-musl \
             cargo build --release --features agent,controller \

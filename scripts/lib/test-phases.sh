@@ -155,9 +155,37 @@ phase_readiness() {
 }
 
 # ---------------------------------------------------------------------------
+# Import results from file-based collection (parallel phases)
+# ---------------------------------------------------------------------------
+import_results_from_files() {
+  local results_dir="${1:-}"
+  [[ -d "$results_dir" ]] || return 0
+
+  for rfile in "$results_dir"/*.results; do
+    [[ -f "$rfile" ]] || continue
+    while IFS='|' read -r status name duration; do
+      [[ -z "$status" ]] && continue
+      TEST_NAMES+=("$name")
+      TEST_RESULTS+=("$status")
+      TEST_DURATIONS+=("$duration")
+      case "$status" in
+        PASS) TESTS_PASSED=$((TESTS_PASSED + 1)) ;;
+        FAIL) TESTS_FAILED=$((TESTS_FAILED + 1)) ;;
+        WARN) TESTS_WARNED=$((TESTS_WARNED + 1)) ;;
+      esac
+    done < "$rfile"
+  done
+}
+
+# ---------------------------------------------------------------------------
 # Phase 5: Summary
 # ---------------------------------------------------------------------------
 phase_summary() {
+  # Import any results from parallel phase execution
+  if [[ -n "${PARALLEL_RESULTS_DIR:-}" ]]; then
+    import_results_from_files "$PARALLEL_RESULTS_DIR"
+  fi
+
   log_status ""
   log_status "${CLR_PHASE}Summary${CLR_RESET}"
   log_status "========================================"
