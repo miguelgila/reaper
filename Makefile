@@ -7,7 +7,7 @@ LINUX_TARGET := x86_64-unknown-linux-gnu
 DOCKER_IMAGE := reaper-dev
 COVERAGE_VOL := reaper-cargo-cache
 
-.PHONY: help build test fmt clippy check-linux coverage ci clean docs docs-serve
+.PHONY: help build test fmt clippy clippy-local coverage ci clean docs docs-serve
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -17,10 +17,10 @@ help: ## Show this help
 # Build
 # ---------------------------------------------------------------------------
 
-build: ## Build debug binaries (macOS native)
+build: ## Build debug binaries (native)
 	cargo build
 
-build-release: ## Build release binaries (macOS native)
+build-release: ## Build release binaries (native)
 	cargo build --release
 
 # ---------------------------------------------------------------------------
@@ -30,17 +30,17 @@ build-release: ## Build release binaries (macOS native)
 fmt: ## Check formatting (fails if unformatted)
 	cargo fmt -- --check
 
-clippy: ## Run clippy for macOS target
-	cargo clippy -- -D warnings
-
-check-linux: ## Cross-check clippy for Linux target (catches cfg(linux) issues)
+clippy: ## Run clippy for Linux target (authoritative — catches all cfg(linux) code)
 	cargo clippy --target $(LINUX_TARGET) --all-targets -- -D warnings
+
+clippy-local: ## Run clippy for local (macOS) target (fast, but skips Linux-only code)
+	cargo clippy -- -D warnings
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
-test: ## Run all unit and integration tests (macOS native)
+test: ## Run all unit and integration tests
 	cargo test --verbose
 
 test-unit: ## Run only unit tests for reaper-runtime
@@ -72,7 +72,7 @@ coverage: ## Run tarpaulin in Docker (same as CI, with caching)
 # CI — run everything GitHub Actions runs (except kind integration)
 # ---------------------------------------------------------------------------
 
-ci: fmt clippy check-linux test coverage ## Full CI-equivalent check (format + clippy + linux check + tests + coverage)
+ci: fmt clippy test coverage ## Full CI-equivalent check (format + clippy + tests + coverage)
 	@echo ""
 	@echo "All CI checks passed."
 
