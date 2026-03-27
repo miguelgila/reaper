@@ -10,6 +10,7 @@ This document contains information for developers working on the Reaper project.
 - [Code Quality](#code-quality)
 - [Git Hooks](#git-hooks)
 - [Docker (Optional)](#docker-optional)
+- [Documentation](#documentation)
 - [VS Code Setup](#vs-code-setup)
 - [CI/CD](#cicd)
 - [Coverage](#coverage)
@@ -332,6 +333,26 @@ reaper/
 ├── docs/                               # Documentation
 └── .githooks/                          # Git hooks (pre-commit, pre-push)
 ```
+
+## Documentation
+
+The project documentation is built with [mdBook](https://rust-lang.github.io/mdBook/) and served via GitHub Pages. You can build and preview it locally using Docker (no mdBook installation required).
+
+### Build Documentation
+
+```bash
+make docs
+```
+
+The static site is generated at `docs/book/book/`.
+
+### Serve Locally with Live-Reload
+
+```bash
+make docs-serve
+```
+
+This starts a local server at [http://localhost:3000](http://localhost:3000) with live-reload — edits to any `.md` file under `docs/book/src/` are reflected automatically.
 
 ## Common Tasks
 
