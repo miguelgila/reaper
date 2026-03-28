@@ -12,7 +12,7 @@ use tracing::{debug, error, info, warn};
 
 use reaper::crds::{ReaperOverlay, ReaperOverlayNodeStatus, ReaperOverlayStatus};
 
-const FINALIZER: &str = "reaper.io/overlay-cleanup";
+const FINALIZER: &str = "reaper.giar.dev/overlay-cleanup";
 const AGENT_LABEL: &str = "app.kubernetes.io/component=agent,app.kubernetes.io/name=reaper";
 
 /// Shared state for the overlay controller.

@@ -19,7 +19,7 @@ reset, and delete overlay filesystems.
 ## CRD Design
 
 ```yaml
-apiVersion: reaper.io/v1alpha1   # see #46 for planned migration to reaper.giar.dev
+apiVersion: reaper.giar.dev/v1alpha1   # see #46 for planned migration to reaper.giar.dev
 kind: ReaperOverlay
 metadata:
   name: slurm              # = overlay-name
@@ -84,7 +84,7 @@ When a `ReaperPod` specifies `overlayName: "slurm"`, the controller:
 
 When a `ReaperOverlay` is deleted:
 
-1. Finalizer `reaper.io/overlay-cleanup` prevents immediate deletion
+1. Finalizer `reaper.giar.dev/overlay-cleanup` prevents immediate deletion
 2. Controller calls agent on each node to tear down the overlay
 3. Agent kills helper process, unmounts namespace, removes overlay dirs
 4. Once all nodes confirm cleanup, controller removes finalizer → object is deleted
@@ -140,7 +140,7 @@ then calls the agent's HTTP API on each node's pod IP directly.
 **Future consideration: Annotation-based (Option B)**
 
 Controller sets annotations on agent DaemonSet pods (e.g.,
-`reaper.io/reset-overlay: "<ns>/<name>"`). Agent watches its own pod annotations
+`reaper.giar.dev/reset-overlay: "<ns>/<name>"`). Agent watches its own pod annotations
 and acts on them. More decoupled but slower and more complex. Could be useful if
 agent pods are not directly reachable from the controller (e.g., network policies).
 
@@ -154,15 +154,15 @@ New file following the same pattern as `reaper_pod.rs`:
 - `ReaperOverlayStatus`: `phase`, `observedResetGeneration`, `nodes[]`, `message`
 - `ReaperOverlayNodeStatus`: `nodeName`, `ready`, `lastResetTime`
 - Derive: `CustomResource`, `JsonSchema`, `Serialize`, `Deserialize`, `Clone`, `Debug`
-- Same API group (`reaper.io`) and version (`v1alpha1`)
+- Same API group (`reaper.giar.dev`) and version (`v1alpha1`)
 - Export from `src/crds/mod.rs`
 
 ### Step 2: CRD Generation
 
 - Add `ReaperOverlay` to `--generate-crds` in `src/bin/reaper-controller/main.rs`
 - Update `scripts/generate-crds.sh` to generate both CRDs
-- Output: `deploy/helm/reaper/crds/reaperoverlays.reaper.io.yaml`
-- Output: `deploy/kubernetes/crds/reaperoverlays.reaper.io.yaml`
+- Output: `deploy/helm/reaper/crds/reaperoverlays.reaper.giar.dev.yaml`
+- Output: `deploy/kubernetes/crds/reaperoverlays.reaper.giar.dev.yaml`
 
 ### Step 3: Agent Overlay Reset Endpoint
 
@@ -191,7 +191,7 @@ New reconciler registered alongside the existing ReaperPod reconciler:
 
 **Reconciliation logic:**
 
-1. **Ensure finalizer** `reaper.io/overlay-cleanup` is present
+1. **Ensure finalizer** `reaper.giar.dev/overlay-cleanup` is present
 2. **If being deleted** (deletionTimestamp set):
    - Call `DELETE /api/v1/overlays/{ns}/{name}` on all agent pods
    - Remove finalizer when all nodes confirm cleanup
@@ -219,7 +219,7 @@ Modify existing reconciler to enforce PVC-like blocking:
 
 ### Step 6: Helm Chart Updates
 
-- Add `deploy/helm/reaper/crds/reaperoverlays.reaper.io.yaml`
+- Add `deploy/helm/reaper/crds/reaperoverlays.reaper.giar.dev.yaml`
 - Update `deploy/helm/reaper/templates/controller-rbac.yaml`:
   - Add `reaperoverlays` to the ClusterRole (get, list, watch, create, update, patch, delete)
   - Add `reaperoverlays/status` (get, patch, update)
@@ -246,8 +246,8 @@ Add to `scripts/lib/test-integration-suite.sh`:
 | `src/bin/reaper-controller/reconciler.rs` | Add PVC-like blocking for overlayName |
 | `src/bin/reaper-agent/main.rs` | Register new routes |
 | `src/bin/reaper-agent/overlay_gc.rs` | Extract cleanup into reusable function |
-| `deploy/helm/reaper/crds/reaperoverlays.reaper.io.yaml` | **New** — generated CRD |
-| `deploy/kubernetes/crds/reaperoverlays.reaper.io.yaml` | **New** — generated CRD |
+| `deploy/helm/reaper/crds/reaperoverlays.reaper.giar.dev.yaml` | **New** — generated CRD |
+| `deploy/kubernetes/crds/reaperoverlays.reaper.giar.dev.yaml` | **New** — generated CRD |
 | `deploy/helm/reaper/templates/controller-rbac.yaml` | Add reaperoverlays permissions |
 | `scripts/generate-crds.sh` | Generate both CRDs |
 | `scripts/lib/test-integration-suite.sh` | New integration tests |
@@ -263,7 +263,7 @@ Add to `scripts/lib/test-integration-suite.sh`:
 
 ```yaml
 # 1. Create the overlay (like creating a PVC)
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperOverlay
 metadata:
   name: slurm
@@ -273,7 +273,7 @@ spec:
 
 ---
 # 2. Use the overlay in a ReaperPod (like referencing a PVC)
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: install-slurm

@@ -143,7 +143,7 @@ Demonstrates the **ReaperPod Custom Resource Definition** — a simplified, Reap
 ```bash
 # Prerequisites: install CRD and controller
 kubectl create namespace reaper-system
-kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml
+kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.giar.dev.yaml
 kubectl apply -f deploy/kubernetes/reaper-controller.yaml
 
 # Run a simple task

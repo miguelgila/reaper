@@ -7,7 +7,7 @@ This guide assumes you have a Reaper-enabled cluster (see [Installation](install
 The simplest way to run a command on the host is with a ReaperPod:
 
 ```yaml
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: my-task
@@ -24,7 +24,7 @@ kubectl get reaperpods
 ## With Volumes
 
 ```yaml
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: config-reader
@@ -40,7 +40,7 @@ spec:
 ## With Node Selector
 
 ```yaml
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: compute-task

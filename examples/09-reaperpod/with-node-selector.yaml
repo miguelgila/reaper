@@ -9,7 +9,7 @@
 #   kubectl get reaperpods
 #   kubectl describe reaperpod node-info
 #   kubectl delete reaperpod node-info
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: node-info

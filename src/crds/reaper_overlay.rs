@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 /// overlay creation, inspection, reset, and deletion without requiring node access.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
-    group = "reaper.io",
+    group = "reaper.giar.dev",
     version = "v1alpha1",
     kind = "ReaperOverlay",
     namespaced,

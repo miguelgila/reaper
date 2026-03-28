@@ -22,7 +22,7 @@ helm upgrade --install reaper deploy/helm/reaper/ \
 |----------|-------------|
 | **DaemonSet** (`reaper-node`) | Init container copies shim + runtime binaries to every node |
 | **Deployment** (`reaper-controller`) | Watches `ReaperPod` CRDs and creates Pods |
-| **CRD** (`reaperpods.reaper.io`) | Custom resource for simplified Reaper workloads |
+| **CRD** (`reaperpods.reaper.giar.dev`) | Custom resource for simplified Reaper workloads |
 | **RuntimeClass** (`reaper-v2`) | Kubernetes RuntimeClass pointing to the Reaper shim |
 | **RBAC** | ServiceAccount, ClusterRole, ClusterRoleBinding for the controller |
 
@@ -52,5 +52,5 @@ helm uninstall reaper --namespace reaper-system
 Note: CRDs are not removed by `helm uninstall` (Helm convention). To remove:
 
 ```bash
-kubectl delete crd reaperpods.reaper.io
+kubectl delete crd reaperpods.reaper.giar.dev
 ```

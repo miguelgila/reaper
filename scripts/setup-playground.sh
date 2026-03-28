@@ -522,7 +522,7 @@ if ! $QUIET; then
   echo ""
   echo "  ${B}# Quick inline ReaperPod${R}"
   echo "  kubectl --context=${CTX} apply -f - <<'YAML'"
-  echo "apiVersion: reaper.io/v1alpha1"
+  echo "apiVersion: reaper.giar.dev/v1alpha1"
   echo "kind: ReaperPod"
   echo "metadata:"
   echo "  name: quick-test"

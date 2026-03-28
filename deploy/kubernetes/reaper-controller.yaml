@@ -19,24 +19,24 @@ metadata:
     app.kubernetes.io/component: controller
 rules:
   # ReaperPod CRD access
-  - apiGroups: ["reaper.io"]
+  - apiGroups: ["reaper.giar.dev"]
     resources: ["reaperpods"]
     verbs: ["get", "list", "watch", "create", "delete"]
-  - apiGroups: ["reaper.io"]
+  - apiGroups: ["reaper.giar.dev"]
     resources: ["reaperpods/status"]
     verbs: ["get", "patch", "update"]
   # ReaperOverlay CRD access
-  - apiGroups: ["reaper.io"]
+  - apiGroups: ["reaper.giar.dev"]
     resources: ["reaperoverlays"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["reaper.io"]
+  - apiGroups: ["reaper.giar.dev"]
     resources: ["reaperoverlays/status"]
     verbs: ["get", "patch", "update"]
   # ReaperDaemonJob CRD access
-  - apiGroups: ["reaper.io"]
+  - apiGroups: ["reaper.giar.dev"]
     resources: ["reaperdaemonjobs"]
     verbs: ["get", "list", "watch"]
-  - apiGroups: ["reaper.io"]
+  - apiGroups: ["reaper.giar.dev"]
     resources: ["reaperdaemonjobs/status"]
     verbs: ["get", "patch", "update"]
   # Pod management (create pods from ReaperPod specs)

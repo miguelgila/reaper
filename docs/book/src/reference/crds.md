@@ -6,7 +6,7 @@ Reaper provides three CRDs for managing workloads, overlay filesystems, and node
 
 A simplified, Reaper-native way to run workloads without standard container boilerplate.
 
-- **Group:** `reaper.io`
+- **Group:** `reaper.giar.dev`
 - **Version:** `v1alpha1`
 - **Kind:** `ReaperPod`
 - **Short name:** `rpod` (`kubectl get rpod`)
@@ -60,7 +60,7 @@ volumes:
 #### Simple Task
 
 ```yaml
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: hello-world
@@ -71,7 +71,7 @@ spec:
 #### With Volumes
 
 ```yaml
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: with-config
@@ -87,7 +87,7 @@ spec:
 #### With Node Selector
 
 ```yaml
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: compute-task
@@ -112,7 +112,7 @@ The `reaper-controller` watches ReaperPod resources and creates backing Pods wit
 
 A PVC-like resource that manages named overlay filesystem lifecycles independently from ReaperPod workloads. Enables Kubernetes-native overlay creation, reset, and deletion without requiring direct node access.
 
-- **Group:** `reaper.io`
+- **Group:** `reaper.giar.dev`
 - **Version:** `v1alpha1`
 - **Kind:** `ReaperOverlay`
 - **Short name:** `rovl` (`kubectl get rovl`)
@@ -149,7 +149,7 @@ ReaperOverlay works like a PersistentVolumeClaim:
 #### Create an Overlay
 
 ```yaml
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperOverlay
 metadata:
   name: slurm
@@ -160,7 +160,7 @@ spec:
 #### Use with a ReaperPod
 
 ```yaml
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: install-slurm
@@ -188,7 +188,7 @@ kubectl delete rovl slurm   # finalizer cleans up on-disk data on all nodes
 
 A "DaemonSet for Jobs" that runs a command to completion on every matching node, with support for dependency ordering, retry policies, and shared overlays. Designed for node configuration tasks like Ansible playbooks that compose via shared overlays.
 
-- **Group:** `reaper.io`
+- **Group:** `reaper.giar.dev`
 - **Version:** `v1alpha1`
 - **Kind:** `ReaperDaemonJob`
 - **Short name:** `rdjob` (`kubectl get rdjob`)
@@ -242,7 +242,7 @@ The `after` field lists other ReaperDaemonJobs that must reach `Completed` phase
 #### Simple Node Info
 
 ```yaml
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperDaemonJob
 metadata:
   name: node-info
@@ -257,7 +257,7 @@ spec:
 #### Composable Node Config with Dependencies
 
 ```yaml
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperDaemonJob
 metadata:
   name: mount-filesystems
@@ -268,7 +268,7 @@ spec:
   nodeSelector:
     role: compute
 ---
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperDaemonJob
 metadata:
   name: install-packages
