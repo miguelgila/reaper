@@ -9,16 +9,14 @@
 #   - ConfigMap 'nginx-playbook' containing an Ansible playbook
 #
 # Usage:
-#   ./examples/06-ansible-jobs/setup.sh              # Create cluster (latest release)
-#   ./examples/06-ansible-jobs/setup.sh v0.2.5       # Create cluster (specific release)
-#   ./examples/06-ansible-jobs/setup.sh --build      # Build binaries from source
-#   ./examples/06-ansible-jobs/setup.sh --cleanup    # Delete cluster
+#   ./examples/06-ansible-jobs/setup.sh           # Create cluster and install via Helm
+#   ./examples/06-ansible-jobs/setup.sh --cleanup # Delete cluster
 #
 # Prerequisites:
 #   - Docker running
 #   - kind installed (https://kind.sigs.k8s.io/)
-#   - Ansible installed (pip install ansible)
-#   - curl (for downloading release binaries)
+#   - helm installed (https://helm.sh/)
+#   - kubectl
 #   - Run from the repository root
 
 set -euo pipefail
@@ -54,15 +52,11 @@ fail()  { echo " ${Y}ERR${R} $*" >&2; exit 1; }
 # Help
 # ---------------------------------------------------------------------------
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  echo "Usage: $0 [VERSION] [OPTIONS]"
+  echo "Usage: $0 [OPTIONS]"
   echo ""
-  echo "Create a 3-node Kind cluster for the Ansible jobs demo."
-  echo ""
-  echo "Arguments:"
-  echo "  VERSION      Release version to install (e.g., v0.2.5). Default: latest"
+  echo "Create a 10-node Kind cluster for the Ansible jobs demo."
   echo ""
   echo "Options:"
-  echo "  --build      Build binaries from source instead of downloading a release"
   echo "  --cleanup    Delete the Kind cluster"
   echo "  -h, --help   Show this help message"
   exit 0
@@ -79,17 +73,6 @@ if [[ "${1:-}" == "--cleanup" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Parse arguments
-# ---------------------------------------------------------------------------
-BUILD_MODE=false
-
-for arg in "$@"; do
-  case "$arg" in
-    --build) BUILD_MODE=true ;;
-  esac
-done
-
-# ---------------------------------------------------------------------------
 # Preflight checks
 # ---------------------------------------------------------------------------
 info "Preflight checks"
@@ -98,39 +81,9 @@ command -v docker >/dev/null 2>&1 || fail "docker not found. Install Docker firs
 docker info >/dev/null 2>&1       || fail "Docker daemon not running."
 command -v kind >/dev/null 2>&1   || fail "kind not found. Install from https://kind.sigs.k8s.io/"
 command -v kubectl >/dev/null 2>&1 || fail "kubectl not found."
-command -v ansible-playbook >/dev/null 2>&1 || fail "ansible-playbook not found. Install with: pip install ansible"
-
-if [[ ! -f "$REPO_ROOT/scripts/install-reaper.sh" ]]; then
-  fail "Run this script from the repository root: ./examples/06-ansible-jobs/setup.sh"
-fi
+command -v helm >/dev/null 2>&1   || fail "helm not found. Install from https://helm.sh/"
 
 ok "All prerequisites found."
-
-# ---------------------------------------------------------------------------
-# Resolve release version (skip when building from source)
-# ---------------------------------------------------------------------------
-if ! $BUILD_MODE; then
-  # shellcheck source=../../scripts/lib/release-utils.sh
-  source "$REPO_ROOT/scripts/lib/release-utils.sh"
-
-  # Accept optional version argument (first non-flag arg)
-  RELEASE_VERSION="latest"
-  for arg in "$@"; do
-    case "$arg" in
-      --build|--cleanup|--help|-h) ;;
-      *) RELEASE_VERSION="$arg" ;;
-    esac
-  done
-
-  if [[ "$RELEASE_VERSION" == "latest" ]]; then
-    info "Resolving latest release..."
-    RELEASE_VERSION=$(resolve_latest_release) || \
-      fail "Could not determine latest release. Specify a version: ./examples/06-ansible-jobs/setup.sh v0.2.5"
-    ok "Latest release: $RELEASE_VERSION"
-  else
-    ok "Using release: $RELEASE_VERSION"
-  fi
-fi
 
 # ---------------------------------------------------------------------------
 # Create Kind config for 10 nodes (1 control-plane + 9 workers)
@@ -156,95 +109,21 @@ EOF
 ok "Config written to $KIND_CONFIG"
 
 # ---------------------------------------------------------------------------
-# Create or reuse cluster
+# Create cluster and install Reaper via Helm
 # ---------------------------------------------------------------------------
-info "Creating Kind cluster '$CLUSTER_NAME' (10 nodes)"
+info "Setting up cluster '$CLUSTER_NAME' with Reaper (Helm)..."
 
-if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
-  warn "Cluster '$CLUSTER_NAME' already exists, reusing."
-else
-  kind create cluster --name "$CLUSTER_NAME" --config "$KIND_CONFIG" 2>&1 | tee "$LOG_FILE"
-  ok "Cluster created."
-fi
+"$REPO_ROOT/scripts/setup-playground.sh" \
+  --cluster-name "$CLUSTER_NAME" \
+  --kind-config "$KIND_CONFIG" \
+  --quiet \
+  || fail "Cluster setup failed. See /tmp/reaper-playground-setup.log"
 
-# ---------------------------------------------------------------------------
-# Build from source (--build mode)
-# ---------------------------------------------------------------------------
-if $BUILD_MODE; then
-  info "Building Reaper binaries for Kind nodes"
+ok "Cluster created and Reaper installed via Helm."
 
-  cd "$REPO_ROOT"
-
-  NODE_ID=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}')
-  NODE_ARCH=$(docker exec "$NODE_ID" uname -m 2>&1) || fail "Cannot detect node architecture"
-
-  case "$NODE_ARCH" in
-    aarch64)
-      TARGET_TRIPLE="aarch64-unknown-linux-musl"
-      MUSL_IMAGE="messense/rust-musl-cross:aarch64-musl"
-      ;;
-    x86_64)
-      TARGET_TRIPLE="x86_64-unknown-linux-musl"
-      MUSL_IMAGE="messense/rust-musl-cross:x86_64-musl"
-      ;;
-    *)
-      fail "Unsupported architecture: $NODE_ARCH"
-      ;;
-  esac
-
-  echo "  Architecture: $NODE_ARCH ($TARGET_TRIPLE)"
-
-  docker run --rm \
-    -v "$(pwd)":/work \
-    -w /work \
-    "$MUSL_IMAGE" \
-    cargo build --release \
-      --bin containerd-shim-reaper-v2 \
-      --bin reaper-runtime \
-      --target "$TARGET_TRIPLE" \
-    >> "$LOG_FILE" 2>&1 || {
-      fail "Build failed. See $LOG_FILE for details."
-    }
-
-  mkdir -p target/release
-  cp "target/$TARGET_TRIPLE/release/containerd-shim-reaper-v2" target/release/
-  cp "target/$TARGET_TRIPLE/release/reaper-runtime" target/release/
-
-  ok "Binaries built."
-fi
-
-# ---------------------------------------------------------------------------
-# Install Reaper on all nodes via Ansible
-# ---------------------------------------------------------------------------
-if $BUILD_MODE; then
-  info "Installing Reaper on all nodes (built from source)"
-else
-  info "Installing Reaper $RELEASE_VERSION on all nodes (pre-built release)"
-fi
-
-cd "$REPO_ROOT"
-
-INSTALL_ARGS=(--kind "$CLUSTER_NAME")
-if ! $BUILD_MODE; then
-  INSTALL_ARGS+=(--release "$RELEASE_VERSION")
-fi
-
-./scripts/install-reaper.sh "${INSTALL_ARGS[@]}" >> "$LOG_FILE" 2>&1 || {
-  fail "Ansible install failed. See $LOG_FILE for details."
-}
-
-ok "Reaper installed on all nodes."
-
-# ---------------------------------------------------------------------------
-# Wait for nodes to be ready
-# ---------------------------------------------------------------------------
-info "Waiting for all nodes to be Ready"
-
-kubectl wait --for=condition=Ready node --all --timeout=120s >> "$LOG_FILE" 2>&1 || {
-  fail "Nodes did not become Ready. See $LOG_FILE"
-}
-
-ok "All nodes Ready."
+# Set KUBECONFIG for subsequent kubectl commands
+export KUBECONFIG="/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
+kind get kubeconfig --name "$CLUSTER_NAME" > "$KUBECONFIG"
 
 # ---------------------------------------------------------------------------
 # Create ConfigMap from Ansible playbook file
@@ -280,11 +159,7 @@ WORKERS=($(kubectl get nodes --no-headers -o custom-columns=NAME:.metadata.name 
 echo ""
 echo "${C}========================================${R}"
 echo "${B}Cluster ready: $CLUSTER_NAME${R}"
-if $BUILD_MODE; then
-  echo "${B}Reaper: built from source${R}"
-else
-  echo "${B}Reaper release: $RELEASE_VERSION${R}"
-fi
+echo "${B}Reaper: installed via Helm${R}"
 echo "${C}========================================${R}"
 echo ""
 

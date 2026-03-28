@@ -63,7 +63,6 @@ From the repository root:
 ./examples/06-ansible-jobs/setup.sh
 
 # Or pin a specific version
-./examples/06-ansible-jobs/setup.sh v0.2.5
 ```
 
 This creates:
@@ -79,7 +78,7 @@ No Rust toolchain or source build is needed.
 - [kind](https://kind.sigs.k8s.io/)
 - kubectl
 - curl
-- Ansible (`pip install ansible`)
+- [Helm](https://helm.sh/)
 
 ## Running the Demo
 

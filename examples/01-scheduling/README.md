@@ -21,7 +21,7 @@ This creates a 3-node Kind cluster (`reaper-scheduling-demo`) with:
 - Docker
 - [kind](https://kind.sigs.k8s.io/)
 - kubectl
-- Ansible (`pip install ansible`)
+- [Helm](https://helm.sh/)
 
 ## Examples
 

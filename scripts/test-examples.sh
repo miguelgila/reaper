@@ -257,9 +257,24 @@ else
       }
 
       REAPERPOD_DIR="$EXAMPLES_DIR/09-reaperpod"
-      test_reaperpod "$REAPERPOD_DIR/simple-task.yaml"       "hello-world"       60
-      test_reaperpod "$REAPERPOD_DIR/with-node-selector.yaml" "hello-node-selector" 60
-      test_reaperpod "$REAPERPOD_DIR/with-volumes.yaml"       "hello-volumes"      60
+
+      # Clean stale ReaperPods from previous runs
+      kubectl delete reaperpod --all --ignore-not-found >/dev/null 2>&1 || true
+      kubectl delete pod -l reaper.giar.dev/owner --ignore-not-found >/dev/null 2>&1 || true
+
+      # Set up prerequisites for example 09
+      WORKER_NODE=$(kubectl get nodes --no-headers -o custom-columns=NAME:.metadata.name | grep -v control-plane | head -1)
+      kubectl label node "$WORKER_NODE" workload-type=compute --overwrite >/dev/null 2>&1 || true
+      kubectl create configmap app-config --from-literal=greeting="Hello from ConfigMap" --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
+
+      # Names must match metadata.name in each YAML file
+      test_reaperpod "$REAPERPOD_DIR/simple-task.yaml"        "hello-world"    60
+      test_reaperpod "$REAPERPOD_DIR/with-node-selector.yaml" "node-info"      60
+      test_reaperpod "$REAPERPOD_DIR/with-volumes.yaml"       "config-reader"  60
+
+      # Clean up prerequisites
+      kubectl label node "$WORKER_NODE" workload-type- >/dev/null 2>&1 || true
+      kubectl delete configmap app-config --ignore-not-found >/dev/null 2>&1 || true
 
       # -----------------------------------------------------------------------
       # Test example 01: DaemonSet scheduling
@@ -301,6 +316,18 @@ else
       VOLUMES_DIR="$EXAMPLES_DIR/04-volumes"
       VOLUMES_OK=true
 
+      # Set up prerequisites for example 04
+      NODE_ID=$(docker ps --filter "name=reaper-examples-test-control-plane" --format '{{.ID}}')
+      DEMO_NODE=$(kubectl get nodes --no-headers -o custom-columns=NAME:.metadata.name | grep -v control-plane | head -1)
+      kubectl label node "$DEMO_NODE" role=demo --overwrite >/dev/null 2>&1 || true
+      kubectl create configmap nginx-config --from-literal=demo.conf='server { listen 8080; location / { return 200 "hello"; } }' --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
+      kubectl create secret generic app-credentials --from-literal=username=demo-user --from-literal=password=s3cret --dry-run=client -o yaml | kubectl apply -f - >/dev/null 2>&1
+      DEMO_NODE_ID=$(docker ps --filter "name=${DEMO_NODE}" --format '{{.ID}}')
+      if [[ -n "$DEMO_NODE_ID" ]]; then
+        docker exec "$DEMO_NODE_ID" mkdir -p /opt/reaper-demo/html >/dev/null 2>&1 || true
+        docker exec "$DEMO_NODE_ID" sh -c 'echo "<h1>Hello</h1>" > /opt/reaper-demo/html/index.html' >/dev/null 2>&1 || true
+      fi
+
       for yaml_file in "$VOLUMES_DIR"/*.yaml; do
         [[ -f "$yaml_file" ]] || continue
         if ! kubectl apply -f "$yaml_file" >/dev/null 2>&1; then
@@ -315,9 +342,9 @@ else
         elapsed=0
         VOL_OK=false
         while [[ $elapsed -lt 30 ]]; do
-          running=$(kubectl get pods -l "app in (emptydir-workspace,hostpath-logger)" \
+          running=$(kubectl get pods -l "app in (configmap-nginx,emptydir-worker,hostpath-reader,secret-reader)" \
             --field-selector='status.phase=Running' --no-headers 2>/dev/null | wc -l | tr -d ' ')
-          succeeded=$(kubectl get pods -l "app in (emptydir-workspace,hostpath-logger)" \
+          succeeded=$(kubectl get pods -l "app in (configmap-nginx,emptydir-worker,hostpath-reader,secret-reader)" \
             --field-selector='status.phase=Succeeded' --no-headers 2>/dev/null | wc -l | tr -d ' ')
           total=$(( running + succeeded ))
           if [[ "$total" -gt 0 ]]; then
@@ -342,6 +369,11 @@ else
           kubectl delete -f "$yaml_file" --ignore-not-found >/dev/null 2>&1 || true
         done
       fi
+
+      # Clean up volume prerequisites
+      kubectl label node "$DEMO_NODE" role- >/dev/null 2>&1 || true
+      kubectl delete configmap nginx-config --ignore-not-found >/dev/null 2>&1 || true
+      kubectl delete secret app-credentials --ignore-not-found >/dev/null 2>&1 || true
     fi
   fi
 fi

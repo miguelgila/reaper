@@ -8,9 +8,7 @@ All examples require:
 - Docker
 - [kind](https://kind.sigs.k8s.io/)
 - kubectl
-- [Helm](https://helm.sh/) (for examples using `setup-playground.sh`)
-
-> **Note:** Examples 01–08 use the legacy Ansible-based installer. Newer examples (09+) use the Helm-based `setup-playground.sh` pattern.
+- [Helm](https://helm.sh/)
 
 Run all scripts from the **repository root**.
 

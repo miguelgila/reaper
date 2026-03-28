@@ -37,7 +37,7 @@ This creates a 4-node Kind cluster (`reaper-client-server-demo`) with:
 - Docker
 - [kind](https://kind.sigs.k8s.io/)
 - kubectl
-- Ansible (`pip install ansible`)
+- [Helm](https://helm.sh/)
 
 ## Running the Demo
 
