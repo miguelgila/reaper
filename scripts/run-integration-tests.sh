@@ -113,8 +113,9 @@ cleanup() {
     log_status "Deleting kind cluster $CLUSTER_NAME..."
     kind delete cluster --name "$CLUSTER_NAME" >> "$LOG_FILE" 2>&1 || true
   fi
-  # Clean up dedicated kubeconfig
+  # Clean up dedicated kubeconfig and parallel results
   rm -f "/tmp/reaper-${CLUSTER_NAME}-kubeconfig"
+  rm -rf "${PARALLEL_RESULTS_DIR:-/tmp/nonexistent}" 2>/dev/null || true
   exit "$exit_code"
 }
 trap cleanup EXIT
@@ -144,28 +145,65 @@ main() {
     log_status "Skipping integration tests (--agent-only or --crd-only)."
   fi
 
-  if ! $CRD_ONLY; then
-    phase_agent_tests
-  else
-    log_status "Skipping agent tests (--crd-only)."
+  # Run remaining phases in parallel when all are enabled (no --test filter,
+  # not --agent-only or --crd-only). Agent tests are independent of CRD phases
+  # (controller, overlay, daemon-job) — they use different resources and namespaces.
+  local run_parallel=false
+  if ! $AGENT_ONLY && ! $CRD_ONLY && [[ -z "${TEST_FILTER:-}" ]]; then
+    run_parallel=true
   fi
 
-  if ! $AGENT_ONLY; then
+  if $run_parallel; then
+    log_status ""
+    log_status "${CLR_PHASE}Running agent tests and CRD phases in parallel...${CLR_RESET}"
+
+    # Set up per-phase result files for cross-process collection
+    PARALLEL_RESULTS_DIR=$(mktemp -d /tmp/reaper-parallel-results-XXXXXX)
+    export PARALLEL_RESULTS_DIR
+
+    # Agent tests in background subshell
+    (
+      export RESULTS_FILE="$PARALLEL_RESULTS_DIR/agent.results"
+      : > "$RESULTS_FILE"
+      phase_agent_tests
+    ) > >(tee -a "$LOG_FILE") 2>&1 &
+    local agent_pid=$!
+
+    # CRD phases in foreground (sequential — they share controller state)
+    export RESULTS_FILE="$PARALLEL_RESULTS_DIR/crd.results"
+    : > "$RESULTS_FILE"
     phase_controller_tests
-  else
-    log_status "Skipping controller tests (--agent-only)."
-  fi
-
-  if ! $AGENT_ONLY; then
     phase_overlay_tests
-  else
-    log_status "Skipping overlay tests (--agent-only)."
-  fi
-
-  if ! $AGENT_ONLY; then
     phase_daemon_job_tests
+    unset RESULTS_FILE
+
+    # Wait for agent tests to complete
+    log_status "Waiting for agent tests to finish..."
+    wait "$agent_pid" || true
   else
-    log_status "Skipping daemon job tests (--agent-only)."
+    if ! $CRD_ONLY; then
+      phase_agent_tests
+    else
+      log_status "Skipping agent tests (--crd-only)."
+    fi
+
+    if ! $AGENT_ONLY; then
+      phase_controller_tests
+    else
+      log_status "Skipping controller tests (--agent-only)."
+    fi
+
+    if ! $AGENT_ONLY; then
+      phase_overlay_tests
+    else
+      log_status "Skipping overlay tests (--agent-only)."
+    fi
+
+    if ! $AGENT_ONLY; then
+      phase_daemon_job_tests
+    else
+      log_status "Skipping daemon job tests (--agent-only)."
+    fi
   fi
 
   phase_summary

@@ -308,6 +308,11 @@ run_test() {
     log_status ""
   fi
 
+  # Write result to file for cross-process collection (parallel phases)
+  if [[ -n "${RESULTS_FILE:-}" ]]; then
+    echo "${TEST_RESULTS[-1]}|${name}|${duration}" >> "$RESULTS_FILE"
+  fi
+
   rm -f "$stderr_file"
   return 0  # never abort mid-suite; summary handles exit code
 }
