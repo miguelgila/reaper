@@ -75,7 +75,7 @@ base-config DaemonSet starts (Reaper, all 3 workers)
 - Docker running
 - [kind](https://kind.sigs.k8s.io/) installed
 - kubectl installed
-- Ansible installed (`pip install ansible`)
+- [Helm](https://helm.sh/)
 - Run from the repository root
 
 ## Setup
@@ -85,7 +85,6 @@ base-config DaemonSet starts (Reaper, all 3 workers)
 ./examples/08-mix-container-runtime-engines/setup.sh
 
 # Or specify a version
-./examples/08-mix-container-runtime-engines/setup.sh v0.2.5
 ```
 
 ## Running the Demo

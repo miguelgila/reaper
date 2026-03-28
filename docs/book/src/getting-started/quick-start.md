@@ -125,6 +125,49 @@ spec:
 
 See [Pod Compatibility](../configuration/compatibility.md) for the full list of supported and ignored fields.
 
+---
+
+## Node-Wide Jobs with ReaperDaemonJob
+
+A ReaperDaemonJob runs a command to completion on every matching node — like a "DaemonSet for Jobs." Useful for node configuration tasks (mounting filesystems, installing packages, running Ansible playbooks).
+
+```yaml
+apiVersion: reaper.giar.dev/v1alpha1
+kind: ReaperDaemonJob
+metadata:
+  name: node-info
+spec:
+  command: ["/bin/sh", "-c"]
+  args: ["echo Node: $(hostname) && uname -r && uptime"]
+```
+
+```bash
+kubectl apply -f node-info.yaml
+kubectl get rdjob -w         # Watch progress: Pending → Running → Completed
+kubectl get rpod             # See per-node ReaperPods created by the controller
+```
+
+### Dependency Ordering
+
+Multiple ReaperDaemonJobs can share an overlay and run in order using the `after` field:
+
+```yaml
+apiVersion: reaper.giar.dev/v1alpha1
+kind: ReaperDaemonJob
+metadata:
+  name: install-packages
+spec:
+  command: ["/bin/sh", "-c"]
+  args: ["apt-get update && apt-get install -y htop"]
+  overlayName: node-config
+  after: [mount-filesystems]
+  retryLimit: 2
+  nodeSelector:
+    role: compute
+```
+
+See [ReaperDaemonJob CRD Reference](../reference/crds.md#reaperdaemonjob) for the full spec and [Example 12](https://github.com/miguelgila/reaper/tree/main/examples/12-daemon-job) for runnable demos.
+
 ## What's Next
 
 Reaper provides Custom Resource Definitions for higher-level workflows:

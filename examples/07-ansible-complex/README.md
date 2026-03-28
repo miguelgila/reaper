@@ -82,7 +82,6 @@ From the repository root:
 ./examples/07-ansible-complex/setup.sh
 
 # Or pin a specific version
-./examples/07-ansible-complex/setup.sh v0.2.5
 ```
 
 This creates:
@@ -97,7 +96,7 @@ This creates:
 - [kind](https://kind.sigs.k8s.io/)
 - kubectl
 - curl
-- Ansible (`pip install ansible`)
+- [Helm](https://helm.sh/)
 
 ## Running the Demo
 
