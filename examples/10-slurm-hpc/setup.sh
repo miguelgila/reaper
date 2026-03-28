@@ -129,7 +129,7 @@ export KUBECONFIG="$KUBECONFIG_FILE"
 
 # Ensure ReaperOverlay CRD is installed (idempotent — may already exist via Helm)
 info "Ensuring ReaperOverlay CRD is installed"
-kubectl apply -f "$REPO_ROOT/deploy/kubernetes/crds/reaperoverlays.reaper.io.yaml" >> "$LOG_FILE" 2>&1
+kubectl apply -f "$REPO_ROOT/deploy/kubernetes/crds/reaperoverlays.reaper.giar.dev.yaml" >> "$LOG_FILE" 2>&1
 ok "ReaperOverlay CRD installed"
 
 # ---------------------------------------------------------------------------

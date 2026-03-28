@@ -2,7 +2,7 @@
 #
 # Prerequisites:
 #   - Reaper installed on target nodes
-#   - CRD installed: kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml
+#   - CRD installed: kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.giar.dev.yaml
 #   - Namespace created: kubectl create namespace reaper-system
 #   - Controller running: kubectl apply -f deploy/kubernetes/reaper-controller.yaml
 #
@@ -11,7 +11,7 @@
 #   kubectl get reaperpods
 #   kubectl describe reaperpod hello-world
 #   kubectl delete reaperpod hello-world
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: hello-world

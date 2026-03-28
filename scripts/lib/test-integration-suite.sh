@@ -3116,19 +3116,19 @@ phase_agent_tests() {
 
 test_controller_crd_install() {
   # CRD is installed by Helm during setup. Apply idempotently in case of --crd-only reruns.
-  kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml >> "$LOG_FILE" 2>&1
+  kubectl apply -f deploy/kubernetes/crds/reaperpods.reaper.giar.dev.yaml >> "$LOG_FILE" 2>&1
 
   # Verify CRD is established
   local established=""
   for i in $(seq 1 15); do
-    established=$(kubectl get crd reaperpods.reaper.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)
+    established=$(kubectl get crd reaperpods.reaper.giar.dev -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)
     if [[ "$established" == "True" ]]; then
       break
     fi
     sleep 1
   done
   [[ "$established" == "True" ]] || {
-    log_error "CRD reaperpods.reaper.io not established after 15s"
+    log_error "CRD reaperpods.reaper.giar.dev not established after 15s"
     return 1
   }
 
@@ -3174,7 +3174,7 @@ test_controller_deployment() {
 test_controller_simple_reaperpod() {
   # Create a simple ReaperPod
   kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: test-simple
@@ -3185,7 +3185,7 @@ YAML
   # Wait for the underlying Pod to be created
   local pod_name=""
   for i in $(seq 1 30); do
-    pod_name=$(kubectl get pods -l reaper.io/owner=test-simple \
+    pod_name=$(kubectl get pods -l reaper.giar.dev/owner=test-simple \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
     if [[ -n "$pod_name" ]]; then
       break
@@ -3256,7 +3256,7 @@ test_controller_status_mirroring() {
 test_controller_exit_code() {
   # Create a ReaperPod that exits with code 42
   kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: test-exit-code
@@ -3267,7 +3267,7 @@ YAML
   # Wait for the underlying Pod to complete
   local pod_name=""
   for i in $(seq 1 30); do
-    pod_name=$(kubectl get pods -l reaper.io/owner=test-exit-code \
+    pod_name=$(kubectl get pods -l reaper.giar.dev/owner=test-exit-code \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
     if [[ -n "$pod_name" ]]; then
       break
@@ -3300,7 +3300,7 @@ YAML
 test_controller_reaperpod_annotations() {
   # Create the ReaperOverlay first (PVC-like: ReaperPod blocks until overlay is Ready)
   kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperOverlay
 metadata:
   name: test-group
@@ -3321,7 +3321,7 @@ YAML
 
   # Create a ReaperPod with dnsMode and overlayName
   kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: test-annotations
@@ -3334,7 +3334,7 @@ YAML
   # Wait for Pod to be created
   local pod_name=""
   for i in $(seq 1 30); do
-    pod_name=$(kubectl get pods -l reaper.io/owner=test-annotations \
+    pod_name=$(kubectl get pods -l reaper.giar.dev/owner=test-annotations \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
     if [[ -n "$pod_name" ]]; then
       break
@@ -3364,7 +3364,7 @@ YAML
 test_controller_gc_on_delete() {
   # Delete the ReaperPod and verify the owned Pod is garbage collected
   local pod_name
-  pod_name=$(kubectl get pods -l reaper.io/owner=test-simple \
+  pod_name=$(kubectl get pods -l reaper.giar.dev/owner=test-simple \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
   kubectl delete reaperpod test-simple >> "$LOG_FILE" 2>&1
@@ -3415,11 +3415,11 @@ cleanup_controller() {
   kubectl delete reaperpod --all --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete reaperoverlays test-group --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   kubectl delete -f deploy/kubernetes/reaper-controller.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
-  kubectl delete -f deploy/kubernetes/crds/reaperpods.reaper.io.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete -f deploy/kubernetes/crds/reaperpods.reaper.giar.dev.yaml --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   # Wait for pods to terminate
   for i in $(seq 1 15); do
     local remaining
-    remaining=$(kubectl get pods -l reaper.io/owner --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    remaining=$(kubectl get pods -l reaper.giar.dev/owner --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
     if [[ "$remaining" -eq 0 ]]; then
       break
     fi
@@ -3462,19 +3462,19 @@ phase_controller_tests() {
 
 test_overlay_crd_install() {
   # CRD is installed by Helm during setup. Apply idempotently in case of reruns.
-  kubectl apply -f deploy/kubernetes/crds/reaperoverlays.reaper.io.yaml >> "$LOG_FILE" 2>&1
+  kubectl apply -f deploy/kubernetes/crds/reaperoverlays.reaper.giar.dev.yaml >> "$LOG_FILE" 2>&1
 
   # Verify CRD is established
   local established=""
   for i in $(seq 1 15); do
-    established=$(kubectl get crd reaperoverlays.reaper.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)
+    established=$(kubectl get crd reaperoverlays.reaper.giar.dev -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)
     if [[ "$established" == "True" ]]; then
       break
     fi
     sleep 1
   done
   [[ "$established" == "True" ]] || {
-    log_error "CRD reaperoverlays.reaper.io not established after 15s"
+    log_error "CRD reaperoverlays.reaper.giar.dev not established after 15s"
     return 1
   }
 
@@ -3488,7 +3488,7 @@ test_overlay_crd_install() {
 test_overlay_create_and_status() {
   # Create a ReaperOverlay with default spec
   kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperOverlay
 metadata:
   name: test-overlay
@@ -3561,7 +3561,7 @@ test_overlay_kubectl_get_columns() {
 test_overlay_pvc_blocking() {
   # Create a ReaperPod referencing a nonexistent overlay
   kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: test-overlay-pending
@@ -3592,7 +3592,7 @@ YAML
 
   # Now create the matching ReaperOverlay
   kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperOverlay
 metadata:
   name: nonexistent-overlay
@@ -3616,7 +3616,7 @@ YAML
   # Verify the ReaperPod eventually progresses (phase changes from Pending — Pod gets created)
   local pod_created=""
   for i in $(seq 1 30); do
-    pod_created=$(kubectl get pods -l "reaper.io/owner=test-overlay-pending" \
+    pod_created=$(kubectl get pods -l "reaper.giar.dev/owner=test-overlay-pending" \
       -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
     if [[ -n "$pod_created" ]]; then
       break
@@ -3640,7 +3640,7 @@ YAML
 test_overlay_reset_generation() {
   # Create a fresh ReaperOverlay for reset testing
   kubectl apply -f - >> "$LOG_FILE" 2>&1 <<'YAML'
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperOverlay
 metadata:
   name: test-reset
@@ -3716,7 +3716,7 @@ cleanup_overlay() {
   # Wait for overlay-related pods to terminate
   for i in $(seq 1 15); do
     local remaining
-    remaining=$(kubectl get pods -l "reaper.io/owner=test-overlay-pending" \
+    remaining=$(kubectl get pods -l "reaper.giar.dev/owner=test-overlay-pending" \
       --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
     if [[ "$remaining" -eq 0 ]]; then
       break
@@ -3747,19 +3747,19 @@ phase_overlay_tests() {
 
 test_daemon_job_crd_install() {
   # CRD is installed by Helm during setup. Apply idempotently in case of reruns.
-  kubectl apply -f deploy/kubernetes/crds/reaperdaemonjobs.reaper.io.yaml >> "$LOG_FILE" 2>&1
+  kubectl apply -f deploy/kubernetes/crds/reaperdaemonjobs.reaper.giar.dev.yaml >> "$LOG_FILE" 2>&1
 
   # Verify CRD is established
   local established=""
   for i in $(seq 1 15); do
-    established=$(kubectl get crd reaperdaemonjobs.reaper.io -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)
+    established=$(kubectl get crd reaperdaemonjobs.reaper.giar.dev -o jsonpath='{.status.conditions[?(@.type=="Established")].status}' 2>/dev/null || true)
     if [[ "$established" == "True" ]]; then
       break
     fi
     sleep 1
   done
   [[ "$established" == "True" ]] || {
-    log_error "CRD reaperdaemonjobs.reaper.io not established after 15s"
+    log_error "CRD reaperdaemonjobs.reaper.giar.dev not established after 15s"
     return 1
   }
 
@@ -3773,7 +3773,7 @@ test_daemon_job_crd_install() {
 test_daemon_job_simple() {
   # Create a simple ReaperDaemonJob that runs on all nodes
   kubectl apply -f - <<'YAML'
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperDaemonJob
 metadata:
   name: test-simple-djob
@@ -3786,7 +3786,7 @@ YAML
   # Wait for ReaperPods to be created (one per ready node)
   local rp_count=0
   for i in $(seq 1 30); do
-    rp_count=$(kubectl get reaperpods -l reaper.io/daemon-job=test-simple-djob --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    rp_count=$(kubectl get reaperpods -l reaper.giar.dev/daemon-job=test-simple-djob --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
     if [[ "$rp_count" -ge 1 ]]; then
       break
     fi
@@ -3866,7 +3866,7 @@ test_daemon_job_kubectl_columns() {
 test_daemon_job_dependency_ordering() {
   # Create two DaemonJobs where the second depends on the first
   kubectl apply -f - <<'YAML'
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperDaemonJob
 metadata:
   name: test-djob-dep-first
@@ -3874,7 +3874,7 @@ spec:
   command: ["/bin/sh", "-c"]
   args: ["echo step-1-done"]
 ---
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperDaemonJob
 metadata:
   name: test-djob-dep-second
@@ -3917,7 +3917,7 @@ YAML
 test_daemon_job_gc_on_delete() {
   # Verify that deleting a ReaperDaemonJob garbage collects its ReaperPods
   local rp_count
-  rp_count=$(kubectl get reaperpods -l reaper.io/daemon-job=test-simple-djob --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+  rp_count=$(kubectl get reaperpods -l reaper.giar.dev/daemon-job=test-simple-djob --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
   [[ "$rp_count" -ge 1 ]] || {
     log_error "Expected at least 1 ReaperPod before deletion"
     return 1
@@ -3927,7 +3927,7 @@ test_daemon_job_gc_on_delete() {
 
   # Wait for ReaperPods to be garbage collected
   for i in $(seq 1 30); do
-    rp_count=$(kubectl get reaperpods -l reaper.io/daemon-job=test-simple-djob --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    rp_count=$(kubectl get reaperpods -l reaper.giar.dev/daemon-job=test-simple-djob --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
     if [[ "$rp_count" -eq 0 ]]; then
       break
     fi
@@ -3941,11 +3941,11 @@ test_daemon_job_gc_on_delete() {
 
 cleanup_daemon_jobs() {
   kubectl delete reaperdaemonjob --all --ignore-not-found >> "$LOG_FILE" 2>&1 || true
-  kubectl delete reaperpod -l reaper.io/daemon-job --ignore-not-found >> "$LOG_FILE" 2>&1 || true
+  kubectl delete reaperpod -l reaper.giar.dev/daemon-job --ignore-not-found >> "$LOG_FILE" 2>&1 || true
   # Wait for pods to terminate
   for i in $(seq 1 15); do
     local remaining
-    remaining=$(kubectl get reaperpods -l reaper.io/daemon-job --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+    remaining=$(kubectl get reaperpods -l reaper.giar.dev/daemon-job --no-headers 2>/dev/null | wc -l | tr -d ' ' || echo "0")
     if [[ "$remaining" -eq 0 ]]; then
       break
     fi

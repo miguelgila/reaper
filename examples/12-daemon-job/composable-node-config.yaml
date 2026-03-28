@@ -14,7 +14,7 @@
 #   kubectl apply -f composable-vservices.yaml
 #   kubectl get reaperdaemonjobs
 #   kubectl get reaperpods
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperDaemonJob
 metadata:
   name: mount-filesystems
@@ -29,7 +29,7 @@ spec:
   nodeSelector:
     role: compute
 ---
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperDaemonJob
 metadata:
   name: install-packages

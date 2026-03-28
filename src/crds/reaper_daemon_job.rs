@@ -12,7 +12,7 @@ use super::{ReaperEnvVar, ReaperToleration, ReaperVolume};
 /// Controller layering: ReaperDaemonJob → ReaperPod → Pod.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
-    group = "reaper.io",
+    group = "reaper.giar.dev",
     version = "v1alpha1",
     kind = "ReaperDaemonJob",
     namespaced,

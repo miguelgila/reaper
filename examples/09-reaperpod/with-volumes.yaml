@@ -12,7 +12,7 @@
 #   kubectl get reaperpods
 #   kubectl logs <pod-name>     # check the pod created by the controller
 #   kubectl delete reaperpod config-reader
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: config-reader

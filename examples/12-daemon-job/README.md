@@ -9,7 +9,7 @@ Node configuration tasks that need to run on every node (or a subset) and re-tri
 ## Prerequisites
 
 - Reaper installed on target nodes
-- CRDs installed (`reaperdaemonjobs.reaper.io`)
+- CRDs installed (`reaperdaemonjobs.reaper.giar.dev`)
 - Controller running (`reaper-controller`)
 
 The easiest way is via the Helm chart:

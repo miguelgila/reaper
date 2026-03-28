@@ -239,7 +239,7 @@ reaper/
 │       ├── runtimeclass.yaml
 │       ├── reaper-controller.yaml
 │       └── crds/
-│           └── reaperpods.reaper.io.yaml
+│           └── reaperpods.reaper.giar.dev.yaml
 └── docs/
     ├── SHIMV2_DESIGN.md         # Shim v2 protocol implementation
     ├── SHIM_ARCHITECTURE.md     # Architecture deep-dive

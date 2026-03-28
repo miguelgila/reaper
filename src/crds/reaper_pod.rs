@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 /// The controller translates it into a real Pod with runtimeClassName: reaper-v2.
 #[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
 #[kube(
-    group = "reaper.io",
+    group = "reaper.giar.dev",
     version = "v1alpha1",
     kind = "ReaperPod",
     namespaced,

@@ -32,14 +32,14 @@ from the per-node `reaper-agent` DaemonSet. Rationale:
 ### API Group & Version
 
 ```
-apiGroup: reaper.io
+apiGroup: reaper.giar.dev
 version: v1alpha1
 ```
 
 ### ReaperPod Spec
 
 ```yaml
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperPod
 metadata:
   name: my-task
@@ -177,7 +177,7 @@ Pure function in `src/bin/reaper-controller/pod_builder.rs` with 9 unit tests co
 - `runAsUser` / `runAsGroup` -> `securityContext`
 - `nodeName` / `nodeSelector` / `tolerations` mapped directly
 - `restartPolicy` defaulted to `Never`
-- Owner reference set to the ReaperPod (for GC via `reaper.io/owner` label)
+- Owner reference set to the ReaperPod (for GC via `reaper.giar.dev/owner` label)
 
 ### Step 4: Reconciler — DONE
 
@@ -185,7 +185,7 @@ Using `kube::runtime::Controller` in `src/bin/reaper-controller/reconciler.rs`:
 
 **Reconcile logic implemented:**
 1. Fetch the `ReaperPod` resource
-2. Check if owned Pod already exists (by label `reaper.io/owner=<name>`)
+2. Check if owned Pod already exists (by label `reaper.giar.dev/owner=<name>`)
 3. If no Pod exists -> build Pod, create it, update status to `Pending`
 4. If Pod exists -> read its status, mirror phase/nodeName/exitCode back to ReaperPod status
 5. Extract exit code + completion time from container terminated state
@@ -205,12 +205,12 @@ Using `kube::runtime::Controller` in `src/bin/reaper-controller/reconciler.rs`:
 ### Step 6: Deployment manifests — DONE
 
 **Files created:**
-- `deploy/kubernetes/crds/reaperpods.reaper.io.yaml` — CRD definition (auto-generated from Rust types via `--generate-crds`)
+- `deploy/kubernetes/crds/reaperpods.reaper.giar.dev.yaml` — CRD definition (auto-generated from Rust types via `--generate-crds`)
 - `deploy/kubernetes/reaper-controller.yaml` — ServiceAccount, ClusterRole, ClusterRoleBinding, Deployment
 
 **RBAC permissions:**
-- `reaperpods.reaper.io`: get, list, watch
-- `reaperpods.reaper.io/status`: get, patch, update
+- `reaperpods.reaper.giar.dev`: get, list, watch
+- `reaperpods.reaper.giar.dev/status`: get, patch, update
 - `pods`: get, list, watch, create, delete
 - `events`: create, patch
 
@@ -225,7 +225,7 @@ Using `kube::runtime::Controller` in `src/bin/reaper-controller/reconciler.rs`:
 - Runs `cargo run --features controller --bin reaper-controller -- --generate-crds`
 - Converts JSON to YAML via Python
 - Cleans up empty arrays from kube-rs derive
-- Output: `deploy/kubernetes/crds/reaperpods.reaper.io.yaml`
+- Output: `deploy/kubernetes/crds/reaperpods.reaper.giar.dev.yaml`
 
 ### Step 8: Dockerfile & build script — DONE
 
@@ -283,7 +283,7 @@ src/
 deploy/
   kubernetes/
     crds/
-      reaperpods.reaper.io.yaml
+      reaperpods.reaper.giar.dev.yaml
     reaper-controller.yaml
 Dockerfile.controller
 scripts/

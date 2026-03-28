@@ -10,7 +10,7 @@
 #   kubectl get reaperdaemonjobs
 #   kubectl describe reaperdaemonjob node-info
 #   kubectl delete reaperdaemonjob node-info
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperDaemonJob
 metadata:
   name: node-info

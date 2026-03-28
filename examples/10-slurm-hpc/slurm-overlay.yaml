@@ -4,7 +4,7 @@
 #
 # To reset a corrupt overlay (e.g., broken dpkg state):
 #   kubectl patch rovl slurm --type merge -p '{"spec":{"resetGeneration":1}}'
-apiVersion: reaper.io/v1alpha1
+apiVersion: reaper.giar.dev/v1alpha1
 kind: ReaperOverlay
 metadata:
   name: slurm

@@ -15,8 +15,8 @@ use reaper::crds::{
     DaemonJobNodeStatus, ReaperDaemonJob, ReaperDaemonJobStatus, ReaperPod, ReaperPodSpec,
 };
 
-const DAEMONJOB_LABEL: &str = "reaper.io/daemon-job";
-const NODE_LABEL: &str = "reaper.io/daemon-job-node";
+const DAEMONJOB_LABEL: &str = "reaper.giar.dev/daemon-job";
+const NODE_LABEL: &str = "reaper.giar.dev/daemon-job-node";
 
 /// Shared state for the controller.
 pub struct Context {
@@ -408,7 +408,7 @@ fn build_reaper_pod(dj: &ReaperDaemonJob, rp_name: &str, node_name: &str) -> Rea
     };
 
     let owner_ref = OwnerReference {
-        api_version: "reaper.io/v1alpha1".to_string(),
+        api_version: "reaper.giar.dev/v1alpha1".to_string(),
         kind: "ReaperDaemonJob".to_string(),
         name: dj_name.clone(),
         uid: dj.metadata.uid.clone().unwrap_or_default(),

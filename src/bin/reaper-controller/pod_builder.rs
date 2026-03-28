@@ -9,7 +9,7 @@ use reaper::crds::{ReaperEnvVar, ReaperPod, ReaperToleration, ReaperVolume};
 use std::collections::BTreeMap;
 
 /// Label applied to all Pods created by the controller.
-pub const OWNER_LABEL: &str = "reaper.io/owner";
+pub const OWNER_LABEL: &str = "reaper.giar.dev/owner";
 
 /// Placeholder image — pulled by kubelet but ignored by Reaper runtime.
 const PLACEHOLDER_IMAGE: &str = "busybox:latest";
@@ -81,7 +81,7 @@ pub fn build_pod(rp: &ReaperPod) -> Result<Pod> {
 
     // Owner reference for garbage collection
     let owner_ref = OwnerReference {
-        api_version: "reaper.io/v1alpha1".to_string(),
+        api_version: "reaper.giar.dev/v1alpha1".to_string(),
         kind: "ReaperPod".to_string(),
         name: name.to_string(),
         uid: uid.to_string(),
